@@ -93,6 +93,7 @@
     "resegment": "重新分段",
     "translated": "已翻译",
     "parsed": "已精讲",
+    "viewModeLabel": "阅读模式",
     "viewMode": {
       "original": "仅原文",
       "bilingual": "对照阅读",

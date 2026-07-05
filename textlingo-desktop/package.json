@@ -6,13 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:agent-worker": "npm --prefix agent-worker run build",
+    "build:all": "npm run build && npm run build:agent-worker",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "e2e": "playwright test",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev:core": "TAURI_CONFIG='{\"bundle\":{\"externalBin\":[]}}' tauri dev",
+    "tauri:build:core": "TAURI_CONFIG='{\"bundle\":{\"externalBin\":[]}}' tauri build"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.7",

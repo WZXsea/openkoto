@@ -1,5 +1,5 @@
-use crate::moonshot::moonshot_base_url;
 use crate::commands::save_mind_map_artifact_in_dir;
+use crate::moonshot::moonshot_base_url;
 use crate::storage::{
     list_agent_tasks_in_dir, load_agent_task_in_dir, save_agent_task_in_dir,
     update_article_active_mind_map_artifact_in_dir,
@@ -20,6 +20,14 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const WORKER_HEALTH_TIMEOUT_SECONDS: i64 = 45;
 const WORKER_LOG_LIMIT: usize = 100;
+const WORKER_ENTRYPOINT: &str = "dist/index.js";
+const REQUIRED_WORKER_OUTPUTS: [&str; 5] = [
+    "index.js",
+    "assistantTask.js",
+    "mindMapTask.js",
+    "protocol.js",
+    "runtime.js",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -297,9 +305,14 @@ impl AgentWorkerManager {
             command.env(key, value);
         }
 
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("Failed to launch agent worker: {}", e))?;
+        let mut child = command.spawn().map_err(|e| {
+            format!(
+                "Failed to launch agent worker: {} (program: {}, cwd: {})",
+                e,
+                config.program,
+                config.cwd.display()
+            )
+        })?;
         let stdin = child
             .stdin
             .take()
@@ -432,7 +445,10 @@ impl AgentWorkerManager {
         self.record_log(
             WorkerLogLevel::Info,
             "task",
-            format!("submitted assistant.agent_turn for article {}", task.article_id),
+            format!(
+                "submitted assistant.agent_turn for article {}",
+                task.article_id
+            ),
         );
         let mut guard = self.stdin.lock().unwrap();
         let stdin = guard
@@ -776,7 +792,9 @@ pub fn apply_worker_event_in_dir(
             task.progress = 1.0;
             task.stage = Some("done".to_string());
             task.message = Some(match task.task_type {
-                crate::types::AgentTaskType::AssistantAgentTurn => "Agent turn completed".to_string(),
+                crate::types::AgentTaskType::AssistantAgentTurn => {
+                    "Agent turn completed".to_string()
+                }
                 _ => "Mind map generated".to_string(),
             });
             task.error = None;
@@ -789,8 +807,12 @@ pub fn apply_worker_event_in_dir(
             let artifact = if payload.artifact_type == "article_answer" {
                 None
             } else {
-                let artifact =
-                    save_mind_map_artifact_in_dir(data_dir, &task.id, &task.article_id, payload.content)?;
+                let artifact = save_mind_map_artifact_in_dir(
+                    data_dir,
+                    &task.id,
+                    &task.article_id,
+                    payload.content,
+                )?;
                 update_article_active_mind_map_artifact_in_dir(
                     data_dir,
                     &task.article_id,
@@ -827,7 +849,9 @@ fn extract_open_material_id(content: &Value) -> Option<String> {
     content
         .get("action")
         .and_then(|value| value.as_object())
-        .filter(|action| action.get("kind").and_then(|value| value.as_str()) == Some("open_material"))
+        .filter(|action| {
+            action.get("kind").and_then(|value| value.as_str()) == Some("open_material")
+        })
         .and_then(|action| action.get("material_id"))
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
@@ -877,14 +901,112 @@ pub fn resolve_worker_launch_config(app_handle: &AppHandle) -> Result<WorkerLaun
         });
     }
 
+    if cfg!(debug_assertions) {
+        let cwd = worker_project_dir();
+        if worker_source_project_exists(&cwd) {
+            ensure_worker_bundle(&cwd)?;
+            return Ok(WorkerLaunchConfig {
+                program: resolve_node_program(),
+                args: vec![WORKER_ENTRYPOINT.to_string()],
+                cwd,
+                envs: default_worker_envs(app_handle)?,
+            });
+        }
+    }
+
+    if let Some(cwd) = bundled_worker_dir(app_handle) {
+        if worker_bundle_outputs_exist(&cwd) {
+            return Ok(WorkerLaunchConfig {
+                program: resolve_node_program(),
+                args: vec![WORKER_ENTRYPOINT.to_string()],
+                cwd,
+                envs: default_worker_envs(app_handle)?,
+            });
+        }
+    }
+
     let cwd = worker_project_dir();
-    ensure_worker_bundle(&cwd)?;
-    Ok(WorkerLaunchConfig {
-        program: "node".to_string(),
-        args: vec!["dist/index.js".to_string()],
-        cwd,
-        envs: default_worker_envs(app_handle)?,
-    })
+    if worker_source_project_exists(&cwd) {
+        ensure_worker_bundle(&cwd)?;
+        return Ok(WorkerLaunchConfig {
+            program: resolve_node_program(),
+            args: vec![WORKER_ENTRYPOINT.to_string()],
+            cwd,
+            envs: default_worker_envs(app_handle)?,
+        });
+    }
+
+    let bundled_hint = bundled_worker_dir(app_handle)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<resource dir unavailable>".to_string());
+    Err(format!(
+        "Agent worker bundle not found. Expected built worker files under bundled resource path {} or source path {}. Run `npm run build:agent-worker` before packaging, and ensure agent-worker resources are bundled.",
+        bundled_hint,
+        cwd.display()
+    ))
+}
+
+fn worker_source_project_exists(cwd: &Path) -> bool {
+    cwd.join("package.json").is_file() && cwd.join("src").is_dir()
+}
+
+fn bundled_worker_dir(app_handle: &AppHandle) -> Option<PathBuf> {
+    app_handle
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|resource_dir| resource_dir.join("agent-worker"))
+}
+
+fn worker_bundle_outputs_exist(cwd: &Path) -> bool {
+    REQUIRED_WORKER_OUTPUTS
+        .iter()
+        .all(|file| cwd.join("dist").join(file).is_file())
+}
+
+fn resolve_node_program() -> String {
+    resolve_program_from_env_or_common_paths(
+        "TEXTLINGO_AGENT_WORKER_NODE",
+        &[
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ],
+        "node",
+    )
+}
+
+fn resolve_npm_program() -> String {
+    resolve_program_from_env_or_common_paths(
+        "TEXTLINGO_AGENT_WORKER_NPM",
+        &[
+            "/opt/homebrew/bin/npm",
+            "/usr/local/bin/npm",
+            "/usr/bin/npm",
+        ],
+        "npm",
+    )
+}
+
+fn resolve_program_from_env_or_common_paths(
+    env_key: &str,
+    common_paths: &[&str],
+    fallback: &str,
+) -> String {
+    if let Ok(path) = std::env::var(env_key) {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    for path in common_paths {
+        if Path::new(path).is_file() {
+            return (*path).to_string();
+        }
+    }
+
+    fallback.to_string()
 }
 
 fn default_worker_envs(app_handle: &AppHandle) -> Result<Vec<(String, String)>, String> {
@@ -922,13 +1044,10 @@ fn worker_project_dir() -> PathBuf {
 pub fn worker_bundle_is_fresh(cwd: &Path) -> Result<bool, String> {
     let dist_dir = cwd.join("dist");
     let src_dir = cwd.join("src");
-    let required_outputs = [
-        dist_dir.join("index.js"),
-        dist_dir.join("assistantTask.js"),
-        dist_dir.join("mindMapTask.js"),
-        dist_dir.join("protocol.js"),
-        dist_dir.join("runtime.js"),
-    ];
+    let required_outputs: Vec<PathBuf> = REQUIRED_WORKER_OUTPUTS
+        .iter()
+        .map(|file| dist_dir.join(file))
+        .collect();
 
     if required_outputs.iter().any(|path| !path.exists()) {
         return Ok(false);
@@ -956,15 +1075,29 @@ pub fn worker_bundle_is_fresh(cwd: &Path) -> Result<bool, String> {
 }
 
 fn ensure_worker_bundle(cwd: &Path) -> Result<(), String> {
+    if !worker_source_project_exists(cwd) {
+        return Err(format!(
+            "Agent worker source project not found at {}",
+            cwd.display()
+        ));
+    }
     if worker_bundle_is_fresh(cwd)? {
         return Ok(());
     }
 
-    let status = Command::new("npm")
+    let npm = resolve_npm_program();
+    let status = Command::new(&npm)
         .args(["run", "build"])
         .current_dir(cwd)
         .status()
-        .map_err(|e| format!("Failed to build agent worker bundle: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to build agent worker bundle: {} (program: {}, cwd: {})",
+                e,
+                npm,
+                cwd.display()
+            )
+        })?;
     if !status.success() {
         return Err("Failed to build agent worker bundle".to_string());
     }
@@ -1110,10 +1243,8 @@ fn emit_worker_event(
                         }
                     }
                     _ => {
-                        let _ = app_handle.emit(
-                            &format!("mind-map-finished://{}", payload.task_id),
-                            &task,
-                        );
+                        let _ = app_handle
+                            .emit(&format!("mind-map-finished://{}", payload.task_id), &task);
                     }
                 }
                 let _ = app_handle.emit("agent-task-updated", &task);

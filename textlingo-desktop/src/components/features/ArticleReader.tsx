@@ -1045,7 +1045,7 @@ export function ArticleReader({
                       <Button
                         variant={viewMode !== 'original' ? "default" : "secondary"}
                         size="sm"
-                        title={t("articleReader.viewMode") || "View Mode"}
+                        title={t("articleReader.viewModeLabel") || "View Mode"}
                         className="h-8 md:h-9"
                         data-testid="reader-toolbar-view-mode-trigger"
                       >

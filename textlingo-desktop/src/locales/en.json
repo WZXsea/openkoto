@@ -93,6 +93,7 @@
     "resegment": "Resegment Article",
     "translated": "Translated",
     "parsed": "Deep Dived",
+    "viewModeLabel": "View Mode",
     "viewMode": {
       "original": "Original",
       "bilingual": "Bilingual",

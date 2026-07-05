@@ -92,6 +92,7 @@
     "resegment": "再セグメント化",
     "translated": "翻訳済み",
     "parsed": "精読済み",
+    "viewModeLabel": "表示モード",
     "viewMode": {
       "original": "原文のみ",
       "bilingual": "対訳",

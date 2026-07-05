@@ -1,5 +1,6 @@
 use crate::agent_worker::{
-    default_base_url, resolve_runtime_provider_config, AgentWorkerManager, AgentWorkerStatusSnapshot,
+    default_base_url, resolve_runtime_provider_config, AgentWorkerManager,
+    AgentWorkerStatusSnapshot,
 };
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
@@ -266,6 +267,143 @@ pub fn filter_material_summaries(
         .take(limit)
         .cloned()
         .collect()
+}
+
+fn builtin_agent_turn_payload(
+    user_message: &str,
+    current_material: &MaterialSummary,
+    available_materials: &[MaterialSummary],
+) -> Option<(serde_json::Value, Option<String>)> {
+    let normalized = user_message.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if matches!(
+        normalized.as_str(),
+        "查看当前素材" | "current material" | "view current material" | "show current material"
+    ) {
+        let reply = format!(
+            "当前素材：{}\n\n- ID: {}\n- 类型: {}\n- 创建时间: {}\n- 翻译状态: {}",
+            current_material.title,
+            current_material.id,
+            current_material.material_type,
+            current_material.created_at,
+            if current_material.translated {
+                "已翻译"
+            } else {
+                "未完整翻译"
+            }
+        );
+        return Some((
+            serde_json::json!({
+                "reply": reply,
+                "action": { "kind": "get_current_material" }
+            }),
+            None,
+        ));
+    }
+
+    if matches!(
+        normalized.as_str(),
+        "列出素材" | "list materials" | "show materials" | "list material"
+    ) {
+        let mut lines = vec!["当前素材列表：".to_string()];
+        for (index, material) in available_materials.iter().take(20).enumerate() {
+            lines.push(format!(
+                "{}. {} ({}, {})",
+                index + 1,
+                material.title,
+                material.material_type,
+                material.id
+            ));
+        }
+        if available_materials.len() > 20 {
+            lines.push(format!(
+                "其余 {} 个素材未显示。",
+                available_materials.len() - 20
+            ));
+        }
+        return Some((
+            serde_json::json!({
+                "reply": lines.join("\n"),
+                "action": { "kind": "list_materials" }
+            }),
+            None,
+        ));
+    }
+
+    let open_prefixes = ["打开素材", "open material"];
+    let open_target = open_prefixes
+        .iter()
+        .find_map(|prefix| normalized.strip_prefix(prefix).map(str::trim));
+    if let Some(target) = open_target {
+        if target.is_empty() {
+            return Some((
+                serde_json::json!({
+                    "reply": "请提供要打开的素材标题或 ID。你也可以先点击“列出素材”查看可用素材。",
+                    "action": null
+                }),
+                None,
+            ));
+        }
+
+        let matched = available_materials.iter().find(|material| {
+            material.id.to_lowercase() == target || material.title.to_lowercase().contains(target)
+        });
+        if let Some(material) = matched {
+            return Some((
+                serde_json::json!({
+                    "reply": format!("正在打开素材：{}", material.title),
+                    "action": {
+                        "kind": "open_material",
+                        "material_id": material.id
+                    }
+                }),
+                Some(material.id.clone()),
+            ));
+        }
+
+        return Some((
+            serde_json::json!({
+                "reply": format!("没有找到匹配“{}”的素材。请检查标题或 ID。", target),
+                "action": null
+            }),
+            None,
+        ));
+    }
+
+    None
+}
+
+fn complete_builtin_agent_turn(
+    app_handle: &AppHandle,
+    mut task: AgentTask,
+    payload: serde_json::Value,
+    open_material_id: Option<String>,
+) -> Result<AgentTask, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    task.status = AgentTaskStatus::Succeeded;
+    task.progress = 1.0;
+    task.stage = Some("done".to_string());
+    task.message = Some("Agent turn handled locally".to_string());
+    task.error = None;
+    task.updated_at = now.clone();
+    task.started_at = Some(task.started_at.unwrap_or_else(|| now.clone()));
+    task.finished_at = Some(now);
+    save_agent_task(app_handle, &task)?;
+
+    let _ = app_handle.emit(&format!("assistant-agent-progress://{}", task.id), &task);
+    let _ = app_handle.emit(&format!("assistant-agent-result://{}", task.id), &payload);
+    let _ = app_handle.emit("agent-task-updated", &task);
+    if let Some(material_id) = open_material_id {
+        let _ = app_handle.emit(
+            "agent://open-material",
+            serde_json::json!({ "materialId": material_id }),
+        );
+    }
+
+    Ok(task)
 }
 
 pub fn read_article_window(
@@ -567,8 +705,6 @@ pub async fn run_agent_turn_cmd(
 ) -> Result<AgentTask, String> {
     let article = get_article(app_handle.clone(), article_id.clone()).await?;
     let articles = list_articles_cmd(app_handle.clone()).await?;
-    let active_model = require_active_agent_model_config(load_config(&app_handle)?)?;
-    let provider_config = resolve_runtime_provider_config(&active_model);
     let now = chrono::Utc::now().to_rfc3339();
     let task = AgentTask {
         id: task_id,
@@ -600,6 +736,15 @@ pub async fn run_agent_turn_cmd(
         .iter()
         .map(material_summary_from_article)
         .collect::<Vec<_>>();
+
+    if let Some((payload, open_material_id)) =
+        builtin_agent_turn_payload(&user_message, &current_material, &available_materials)
+    {
+        return complete_builtin_agent_turn(&app_handle, task, payload, open_material_id);
+    }
+
+    let active_model = require_active_agent_model_config(load_config(&app_handle)?)?;
+    let provider_config = resolve_runtime_provider_config(&active_model);
 
     if let Err(error) = worker_manager.submit_assistant_turn(
         &app_handle,
@@ -3597,5 +3742,61 @@ mod word_pack_import_tests {
         let parsed = parse_import_word_pack_json(json).expect("should parse BOM-prefixed json");
         assert_eq!(parsed.pack.name, "BOM Pack");
         assert_eq!(parsed.entries.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod builtin_agent_turn_tests {
+    use super::*;
+
+    fn material(id: &str, title: &str, material_type: &str) -> MaterialSummary {
+        MaterialSummary {
+            id: id.to_string(),
+            title: title.to_string(),
+            material_type: material_type.to_string(),
+            created_at: "2026-07-02T00:00:00Z".to_string(),
+            translated: false,
+        }
+    }
+
+    #[test]
+    fn builtin_agent_turn_reports_current_material() {
+        let current = material("a1", "Current Article", "web");
+        let payload = builtin_agent_turn_payload("查看当前素材", &current, &[current.clone()])
+            .expect("current material prompt should be handled locally")
+            .0;
+
+        assert_eq!(payload["action"]["kind"], "get_current_material");
+        assert!(payload["reply"]
+            .as_str()
+            .expect("reply should be a string")
+            .contains("Current Article"));
+    }
+
+    #[test]
+    fn builtin_agent_turn_lists_materials() {
+        let current = material("a1", "Current Article", "web");
+        let materials = vec![current.clone(), material("a2", "Second Article", "article")];
+        let payload = builtin_agent_turn_payload("列出素材", &current, &materials)
+            .expect("list materials prompt should be handled locally")
+            .0;
+
+        assert_eq!(payload["action"]["kind"], "list_materials");
+        let reply = payload["reply"].as_str().expect("reply should be a string");
+        assert!(reply.contains("Current Article"));
+        assert!(reply.contains("Second Article"));
+    }
+
+    #[test]
+    fn builtin_agent_turn_opens_matching_material() {
+        let current = material("a1", "Current Article", "web");
+        let materials = vec![current.clone(), material("a2", "Second Article", "article")];
+        let (payload, open_id) =
+            builtin_agent_turn_payload("打开素材 second", &current, &materials)
+                .expect("open material prompt should be handled locally");
+
+        assert_eq!(open_id.as_deref(), Some("a2"));
+        assert_eq!(payload["action"]["kind"], "open_material");
+        assert_eq!(payload["action"]["material_id"], "a2");
     }
 }
