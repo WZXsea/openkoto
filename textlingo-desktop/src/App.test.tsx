@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 
@@ -9,6 +9,11 @@ const invokeMock = vi.fn();
 const getApiClientMock = vi.fn();
 
 vi.stubGlobal("__APP_VERSION__", "test");
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -34,9 +39,28 @@ vi.mock("./components/features/ArticleList", () => ({
 }));
 
 vi.mock("./components/features/ArticleReader", () => ({
-  ArticleReader: ({ onOpenKtvExport }: { onOpenKtvExport?: () => void }) => (
+  ArticleReader: ({
+    article,
+    hasNext,
+    onBack,
+    onNext,
+    onOpenKtvExport,
+  }: {
+    article: { title: string };
+    hasNext?: boolean;
+    onBack: () => void;
+    onNext: () => void;
+    onOpenKtvExport?: () => void;
+  }) => (
     <div>
       <div>ArticleReader</div>
+      <div>Reading {article.title}</div>
+      <button type="button" onClick={onBack}>
+        Back to list
+      </button>
+      <button type="button" onClick={onNext} disabled={!hasNext}>
+        Next Article
+      </button>
       <button type="button" onClick={onOpenKtvExport}>
         Open KTV Export
       </button>
@@ -57,7 +81,21 @@ vi.mock("./components/features/NewMaterialDialog", () => ({
 }));
 
 vi.mock("./components/features/FavoritesPage", () => ({
-  FavoritesPage: () => <div>FavoritesPage</div>,
+  FavoritesPage: ({
+    onSelectArticle,
+  }: {
+    onSelectArticle: (article: { id: string; title: string }) => void;
+  }) => (
+    <div>
+      <div>FavoritesPage</div>
+      <button
+        type="button"
+        onClick={() => onSelectArticle({ id: "article-1", title: "Article One" })}
+      >
+        Open Favorite Article
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("./components/features/SettingsDialog", () => ({
@@ -222,5 +260,83 @@ describe("App onboarding", () => {
 
     expect(screen.queryByText("KtvExportPage")).not.toBeInTheDocument();
     expect(screen.getByText("ArticleReader")).toBeInTheDocument();
+  });
+
+  it("keeps the favorites return target after switching articles in the reader", async () => {
+    const sampleArticles = [
+      {
+        id: "article-1",
+        title: "Article One",
+        content: "one",
+        source_type: "article",
+        source_url: null,
+        media_path: null,
+        book_path: null,
+        book_type: null,
+        created_at: "2026-03-30T00:00:00Z",
+        translated: false,
+        active_mind_map_artifact_id: null,
+        segments: [],
+      },
+      {
+        id: "article-2",
+        title: "Article Two",
+        content: "two",
+        source_type: "article",
+        source_url: null,
+        media_path: null,
+        book_path: null,
+        book_type: null,
+        created_at: "2026-03-31T00:00:00Z",
+        translated: false,
+        active_mind_map_artifact_id: null,
+        segments: [],
+      },
+    ];
+
+    const validConfig = {
+      onboarding_completed: true,
+      active_model_id: "model-1",
+      model_configs: [
+        {
+          id: "model-1",
+          name: "Primary",
+          api_key: "secret",
+          api_provider: "google",
+          model: "gemini-2.0-flash",
+          is_default: true,
+        },
+      ],
+      target_language: "zh-CN",
+      interface_language: "en",
+      prompt_features: [],
+    };
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve(validConfig);
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve(sampleArticles);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "收藏夹" }));
+    expect(await screen.findByText("FavoritesPage")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open Favorite Article" }));
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Next Article" }));
+    expect(await screen.findByText("Reading Article Two")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
+    expect(await screen.findByText("FavoritesPage")).toBeInTheDocument();
+    expect(screen.queryByText("ArticleList")).not.toBeInTheDocument();
   });
 });
