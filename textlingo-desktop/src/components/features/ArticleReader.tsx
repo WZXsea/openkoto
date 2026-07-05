@@ -46,6 +46,7 @@ import {
 } from "../ui/dropdown-menu";
 import { useConfig } from "../../lib/hooks";
 import { buildMediaResourceUrl } from "../../lib/media";
+import { hasActiveModelConfig, isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
 
 const DEFAULT_BATCH_TRANSLATION_CONCURRENCY = 3;
 const MIN_BATCH_TRANSLATION_CONCURRENCY = 1;
@@ -98,6 +99,7 @@ export function ArticleReader({
   const [selectedText, setSelectedText] = useState<string>("");
   const [viewMode, setViewMode] = useState<ViewMode>("original");
   const [fontSize, setFontSize] = useState(18);
+  const [mediaUrl, setMediaUrl] = useState("");
 
   // Segment Explorer State
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
@@ -162,6 +164,30 @@ export function ArticleReader({
   // Config hook
   const { config } = useConfig();
   const targetLanguage = config?.target_language || "zh-CN";
+  const canUseAi = hasActiveModelConfig(config);
+  const aiUnavailableMessage = t("common.aiUnavailable", "基础阅读可用。配置 AI 模型后可启用翻译、讲解和分析。");
+  const canAutoExtractSubtitles = isPhase1CapabilityEnabled("autoSubtitleExtraction");
+  const canOpenKtvExport = isPhase1CapabilityEnabled("ktvExport");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMediaUrl = async () => {
+      try {
+        const url = await buildMediaResourceUrl(article.media_path, "video");
+        if (!cancelled) setMediaUrl(url);
+      } catch (error) {
+        console.warn("[ArticleReader] Failed to build media URL:", error);
+        if (!cancelled) setMediaUrl("");
+      }
+    };
+
+    void loadMediaUrl();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [article.media_path]);
 
   // 刷新文章数据 - 仅更新本地状态，不触发父组件更新
   const refreshArticle = async () => {
@@ -269,7 +295,7 @@ export function ArticleReader({
 
   // 自动滚动到激活的段落（非视频模式）
   useEffect(() => {
-    if (selectedSegmentId && activeSegmentRef.current && !article.media_path) {
+    if (selectedSegmentId && activeSegmentRef.current?.scrollIntoView && !article.media_path) {
       activeSegmentRef.current.scrollIntoView({
         behavior: "smooth",
         block: "center",
@@ -293,6 +319,11 @@ export function ArticleReader({
   };
 
   const handleTranslate = async () => {
+    if (!canUseAi) {
+      setError(aiUnavailableMessage);
+      return;
+    }
+
     setIsTranslating(true);
     setTranslationProgress(null);
     setError(null);
@@ -321,6 +352,11 @@ export function ArticleReader({
   };
 
   const handleAnalyze = async () => {
+    if (!canUseAi) {
+      setError(aiUnavailableMessage);
+      return;
+    }
+
     setIsAnalyzing(true);
     setError(null);
     setAnalysisResult("");
@@ -343,6 +379,10 @@ export function ArticleReader({
   //   undefined → 默认（激活 ASR，否则回退听写）。
   const handleExtractSubtitles = async (transcriptionConfigId?: string) => {
     if (!article.media_path) return;
+    if (!canAutoExtractSubtitles) {
+      setError(t("common.phase1Disabled", "第一阶段保留本地阅读核心能力，此增强功能暂不启用。"));
+      return;
+    }
 
     setError(null);
 
@@ -499,7 +539,7 @@ export function ArticleReader({
 
     // Check if we need to auto-generate explanation
     const segment = localSegments.find(s => s.id === id);
-    if (segment && !segment.explanation && !isGeneratingExplanation) {
+    if (canUseAi && segment && !segment.explanation && !isGeneratingExplanation) {
       // Auto-trigger generation
       setTimeout(() => handleGenerateExplanation(id), 0);
     }
@@ -513,6 +553,11 @@ export function ArticleReader({
 
   // 启动批量分析 - 显示确认对话框
   const handleBatchTranslate = () => {
+    if (!canUseAi) {
+      setError(aiUnavailableMessage);
+      return;
+    }
+
     console.log("[ArticleReader] handleBatchTranslate clicked!");
     console.log("[ArticleReader] localSegments:", localSegments);
     if (!localSegments || localSegments.length === 0) {
@@ -620,6 +665,10 @@ export function ArticleReader({
   const handleGenerateExplanation = async (segmentId?: string) => {
     const targetId = segmentId || selectedSegmentId;
     if (!targetId || !article.id) return;
+    if (!canUseAi) {
+      setError(aiUnavailableMessage);
+      return;
+    }
 
     setIsGeneratingExplanation(true);
     setError(null);
@@ -1093,8 +1142,8 @@ export function ArticleReader({
                     variant="secondary"
                     size="sm"
                     onClick={handleBatchTranslate}
-                    disabled={isBatchTranslating || !hasSegments}
-                    title={t("articleReader.analyzeAll")}
+                    disabled={isBatchTranslating || !hasSegments || !canUseAi}
+                    title={canUseAi ? t("articleReader.analyzeAll") : aiUnavailableMessage}
                     className="h-8 md:h-9"
                   >
                     <Sparkles size={16} />
@@ -1187,9 +1236,9 @@ export function ArticleReader({
             <Button
               size="sm"
               onClick={handleTranslate}
-              disabled={isTranslating}
+              disabled={isTranslating || !canUseAi}
               className="gap-2 h-8 md:h-9 relative overflow-hidden"
-              title={t("articleReader.translate")}
+              title={canUseAi ? t("articleReader.translate") : aiUnavailableMessage}
               variant="secondary"
             >
               {/* Progress Bar Background */}
@@ -1266,7 +1315,6 @@ export function ArticleReader({
                 <div className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth">
                   {/* 视频/音频模式：使用 VideoSubtitlePlayer 组件 */}
                   {article.media_path && (() => {
-                    const mediaUrl = buildMediaResourceUrl(article.media_path, "video");
                     const filename = article.media_path.split('/').pop() || article.media_path.split('\\').pop() || '';
                     const audioExtensions = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'wma'];
                     const ext = filename.split('.').pop()?.toLowerCase() || '';
@@ -1281,17 +1329,17 @@ export function ArticleReader({
                         viewMode={viewMode}
                         isExtractingSubtitles={isExtractingSubtitles}
                         isImportingSubtitles={isImportingSubtitles}
-                        onExtractSubtitles={handleExtractSubtitles}
+                        onExtractSubtitles={canAutoExtractSubtitles ? handleExtractSubtitles : undefined}
                         asrOptions={asrOptions}
                         onImportSubtitles={handleImportSubtitles}
                         articleTitle={article.title}
                         articleId={article.id}
                         extractionProgress={extractionProgress}
                         isTranslating={isTranslating}
-                        onQuickTranslate={handleTranslate}
+                        onQuickTranslate={canUseAi ? handleTranslate : undefined}
                         translationProgress={translationProgress}
                         isAudio={isAudioFile}
-                        onOpenKtvExport={onOpenKtvExport}
+                        onOpenKtvExport={canOpenKtvExport ? onOpenKtvExport : undefined}
                         onViewModeChange={setViewMode}
                       />
                     );
@@ -1413,7 +1461,9 @@ export function ArticleReader({
                         variant={analysisType === type.value ? "default" : "secondary"}
                         size="sm"
                         onClick={() => setAnalysisType(type.value)}
+                        disabled={!canUseAi}
                         className="gap-2"
+                        title={canUseAi ? type.label : aiUnavailableMessage}
                       >
                         {type.icon}
                         {type.label}
@@ -1422,8 +1472,9 @@ export function ArticleReader({
                   </div>
                   <Button
                     onClick={handleAnalyze}
-                    disabled={isAnalyzing}
+                    disabled={isAnalyzing || !canUseAi}
                     className="gap-2 ml-auto"
+                    title={canUseAi ? t("articleReader.analyze") : aiUnavailableMessage}
                   >
                     {isAnalyzing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
                     {t("articleReader.analyze")}
@@ -1456,11 +1507,18 @@ export function ArticleReader({
     </>
   );
 
+  const aiDisabledPanel = (
+    <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
+      <Sparkles size={48} className="mb-4 opacity-50" />
+      <p>{aiUnavailableMessage}</p>
+    </div>
+  );
+
   const sidebarTabs = [
     {
       value: "explanation",
       label: t("articleReader.explanation", "讲解"),
-      content: selectedSegment ? (
+      content: !canUseAi && !selectedSegment?.explanation ? aiDisabledPanel : selectedSegment ? (
         <ArticleExplanationPanel
           segment={selectedSegment}
           explanation={selectedSegment.explanation || null}
@@ -1477,36 +1535,36 @@ export function ArticleReader({
     {
       value: "mind_map",
       label: t("articleReader.mindMap", "思维导图"),
-      content: ({ panelMode }: { panelMode: AssistantPanelMode }) => (
+      content: canUseAi ? ({ panelMode }: { panelMode: AssistantPanelMode }) => (
         <ArticleMindMapPanel
           article={article}
           targetLanguage={targetLanguage}
           panelMode={panelMode}
         />
-      ),
+      ) : aiDisabledPanel,
     },
     {
       value: "chat",
       label: t("articleReader.chat", "对话"),
-      content: (
+      content: canUseAi ? (
         <ArticleChatAssistant
           articleId={article.id}
           articleTitle={article.title}
           targetLanguage={targetLanguage}
           selectedText={selectedText || (selectedSegment ? selectedSegment.text : "")}
         />
-      ),
+      ) : aiDisabledPanel,
     },
     {
       value: "agent",
       label: t("assistant.mode.agent", "Agent"),
-      content: (
+      content: canUseAi ? (
         <AgentPanel
           articleId={article.id}
           articleTitle={article.title}
           targetLanguage={targetLanguage}
         />
-      ),
+      ) : aiDisabledPanel,
     },
   ] as const;
 

@@ -125,6 +125,17 @@ vi.mock("../../lib/hooks", () => ({
   useConfig: () => ({
     config: {
       target_language: "zh-CN",
+      active_model_id: "model-1",
+      model_configs: [
+        {
+          id: "model-1",
+          name: "Model",
+          api_provider: "openai",
+          api_key: "key",
+          model: "gpt-4o-mini",
+          is_default: true,
+        },
+      ],
     },
   }),
 }));

@@ -1,17 +1,20 @@
 {
   "app": {
     "title": "OpenKoto",
-    "subtitle": "クロスランゲージ読解・再生・学習ツール",
+    "subtitle": "ローカル読解ワークスペース。AI 翻訳と解説は拡張機能です。",
     "loading": "OpenKotoを読み込み中...",
     "notConfigured": "未設定"
   },
   "common": {
     "refresh": "更新",
     "close": "閉じる",
-    "cancel": "キャンセル"
+    "cancel": "キャンセル",
+    "aiUnavailable": "基本的な読解機能は利用できます。AI モデルを設定すると翻訳、解説、分析を利用できます。",
+    "phase1Disabled": "第1段階ではローカル読解の中核機能を優先します。この拡張機能はまだ有効化していません。"
   },
   "header": {
-    "configureApiKey": "使用を開始するにはAPIキーを設定してください",
+    "configureApiKey": "基本的な読解機能は利用できます。AI 設定後に翻訳、解説、分析を利用できます",
+    "localReadingReady": "ローカル読解は利用可能。AI は任意の拡張機能です",
     "newArticle": "新規記事",
     "settings": "設定",
     "favorites": "お気に入り",

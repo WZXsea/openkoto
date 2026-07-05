@@ -2,6 +2,7 @@
 pub mod agent_worker;
 mod ai_service;
 pub mod commands;
+pub mod feature_gate;
 pub mod ffmpeg;
 pub mod ktv_export;
 pub mod logging;
@@ -12,7 +13,7 @@ pub mod storage;
 mod subtitle_extraction;
 pub mod subtitle_import;
 pub mod types;
-mod video_server;
+pub mod video_server;
 mod youtube;
 
 // Re-exports
@@ -48,6 +49,7 @@ pub fn run() {
             commands::update_article_segment,
             commands::delete_article_cmd,
             commands::fetch_url_content,
+            video_server::get_resource_server_info_cmd,
             commands::import_web_material_cmd,
             commands::article_get_overview_cmd,
             commands::article_read_window_cmd,

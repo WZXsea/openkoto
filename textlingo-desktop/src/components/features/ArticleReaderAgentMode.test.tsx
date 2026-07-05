@@ -8,6 +8,13 @@ import type { Article } from "../../types";
 const invokeMock = vi.fn();
 const openMock = vi.fn();
 const localStorageStore = new Map<string, string>();
+const configMock = vi.hoisted(() => ({
+  current: {
+    target_language: "zh-CN",
+    active_model_id: "model-1",
+    model_configs: [{ id: "model-1", name: "Model", api_provider: "openai", api_key: "key", model: "gpt-4o-mini", is_default: true }],
+  } as any,
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -39,9 +46,7 @@ vi.mock("docx", () => ({
 
 vi.mock("../../lib/hooks", () => ({
   useConfig: () => ({
-    config: {
-      target_language: "zh-CN",
-    },
+    config: configMock.current,
   }),
 }));
 
@@ -107,7 +112,21 @@ function createArticle(overrides: Partial<Article> = {}): Article {
 describe("ArticleReader agent mode", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_resource_server_info_cmd") {
+        return Promise.resolve({
+          base_url: "http://127.0.0.1:19420",
+          token: "test-token",
+        });
+      }
+      return Promise.resolve(undefined);
+    });
     openMock.mockReset();
+    configMock.current = {
+      target_language: "zh-CN",
+      active_model_id: "model-1",
+      model_configs: [{ id: "model-1", name: "Model", api_provider: "openai", api_key: "key", model: "gpt-4o-mini", is_default: true }],
+    };
     localStorageStore.clear();
     Object.defineProperty(window, "localStorage", {
       value: {
@@ -143,7 +162,7 @@ describe("ArticleReader agent mode", () => {
 
   it("lets media articles import subtitles from a local srt file", async () => {
     openMock.mockResolvedValue("/tmp/sample.srt");
-    invokeMock.mockResolvedValue({
+    const importedArticle = {
       ...createArticle({
         media_path: "/tmp/sample.mp4",
         segments: [],
@@ -160,6 +179,18 @@ describe("ArticleReader agent mode", () => {
         },
       ],
       content: "Imported subtitle",
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_resource_server_info_cmd") {
+        return Promise.resolve({
+          base_url: "http://127.0.0.1:19420",
+          token: "test-token",
+        });
+      }
+      if (command === "import_article_subtitles_cmd" || command === "get_article") {
+        return Promise.resolve(importedArticle);
+      }
+      return Promise.resolve(undefined);
     });
 
     render(
@@ -191,6 +222,24 @@ describe("ArticleReader agent mode", () => {
 
     expect(screen.getByTestId("player-view-mode-trigger")).toBeInTheDocument();
     expect(screen.queryByTestId("reader-toolbar-view-mode-trigger")).not.toBeInTheDocument();
+  });
+
+  it("does not auto invoke AI explanation when no model is configured", async () => {
+    configMock.current = {
+      target_language: "zh-CN",
+      active_model_id: undefined,
+      model_configs: [],
+    };
+    invokeMock.mockResolvedValue(undefined);
+
+    render(<ArticleReader article={createArticle()} />);
+
+    await userEvent.click(screen.getByText("Alpha beta gamma."));
+
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "segment_translate_explain_cmd",
+      expect.anything(),
+    );
   });
 
   it("keeps the top toolbar view mode control for non-media articles", () => {

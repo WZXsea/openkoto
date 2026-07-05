@@ -113,6 +113,41 @@ export function ArticleList({
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
+  const [bookUrls, setBookUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadResourceUrls = async () => {
+      const nextMediaUrls: Record<string, string> = {};
+      const nextBookUrls: Record<string, string> = {};
+
+      await Promise.all(articles.map(async (article) => {
+        try {
+          if (article.media_path) {
+            nextMediaUrls[article.id] = await buildMediaResourceUrl(article.media_path, "video");
+          }
+          if (article.book_path) {
+            nextBookUrls[article.id] = await buildMediaResourceUrl(article.book_path, "book");
+          }
+        } catch (error) {
+          console.warn("[ArticleList] Failed to build resource URL:", error);
+        }
+      }));
+
+      if (!cancelled) {
+        setMediaUrls(nextMediaUrls);
+        setBookUrls(nextBookUrls);
+      }
+    };
+
+    void loadResourceUrls();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [articles]);
 
   const handleDeleteClick = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -210,12 +245,12 @@ export function ArticleList({
     return "bg-primary/10 text-primary border-primary/20";
   };
 
-  const getVideoUrl = (mediaPath: string) => {
-    return buildMediaResourceUrl(mediaPath, "video");
+  const getVideoUrl = (article: Article) => {
+    return mediaUrls[article.id] || "";
   };
 
-  const getBookUrl = (bookPath: string) => {
-    return buildMediaResourceUrl(bookPath, "book");
+  const getBookUrl = (article: Article) => {
+    return bookUrls[article.id] || "";
   };
 
   const getCoverStyle = (type: string) => {
@@ -325,7 +360,7 @@ export function ArticleList({
                 {type === 'VIDEO' && article.media_path ? (
                   <div className="w-full h-full relative">
                     <video
-                      src={getVideoUrl(article.media_path)}
+                      src={getVideoUrl(article)}
                       className="w-full h-full object-cover"
                       muted
                       loop
@@ -345,7 +380,7 @@ export function ArticleList({
                   <div className="w-full h-full relative overflow-hidden flex justify-center items-start pt-4 bg-gray-100 dark:bg-gray-800">
                     <div className="w-[120px] shadow-lg origin-top transition-transform group-hover:scale-105">
                       <Document
-                        file={getBookUrl(article.book_path)}
+                        file={getBookUrl(article)}
                         loading={<div className="h-[160px] bg-white animate-pulse" />}
                         error={<div className="h-[160px] bg-white flex items-center justify-center text-xs text-red-500">Error</div>}
                       >
@@ -364,7 +399,7 @@ export function ArticleList({
                 ) : type === 'EPUB' && article.book_path ? (
                   // 3. EPUB Cover
                   <EpubCover
-                    url={getBookUrl(article.book_path)}
+                    url={getBookUrl(article)}
                     title={article.title}
                     className={getCoverStyle(type)}
                     typeIcon={getTypeIcon(type, 28)}

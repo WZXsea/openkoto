@@ -23,11 +23,12 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' http://127.0.0.1:19420 data: blob:; connect-src 'self' http://127.0.0.1:19420 http://localhost:1420 http://127.0.0.1:1420 ws://localhost:1420 ws://127.0.0.1:1420; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPDATA/**",
+          "$APPDATA/videos/**",
+          "$APPDATA/books/**",
           "$APPCACHE/**"
         ]
       }
@@ -46,11 +47,7 @@
     "category": "Education",
     "shortDescription": "AI-powered article reader and translator",
     "longDescription": "OpenKoto Desktop is a powerful AI-powered application for reading, translating, and analyzing articles. Use your own API keys to access the latest AI models.",
-    "externalBin": [
-      "binaries/yt-dlp",
-      "binaries/ffmpeg",
-      "binaries/openkoto-pdf-translator"
-    ],
+    "externalBin": [],
     "resources": {
       "resources/pdf-assets": "resources/pdf-assets",
       "../agent-worker/dist": "agent-worker/dist",

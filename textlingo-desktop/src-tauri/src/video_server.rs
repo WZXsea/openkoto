@@ -5,9 +5,11 @@
 use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
+use uuid::Uuid;
 use warp::http::{Response, StatusCode};
 use warp::hyper::Body;
 use warp::Filter;
@@ -17,10 +19,41 @@ use crate::platform::safe_paths::{resolve_existing_child_path, SafePathError};
 /// 视频服务器端口（固定使用一个不太常用的端口）
 pub const VIDEO_SERVER_PORT: u16 = 19420;
 
+static RESOURCE_SESSION_TOKEN: OnceLock<String> = OnceLock::new();
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResourceServerInfo {
+    pub base_url: String,
+    pub token: String,
+}
+
+pub fn resource_session_token() -> String {
+    RESOURCE_SESSION_TOKEN
+        .get_or_init(|| Uuid::new_v4().simple().to_string())
+        .clone()
+}
+
+pub fn resource_server_info() -> ResourceServerInfo {
+    ResourceServerInfo {
+        base_url: format!("http://127.0.0.1:{VIDEO_SERVER_PORT}"),
+        token: resource_session_token(),
+    }
+}
+
+#[tauri::command]
+pub async fn get_resource_server_info_cmd() -> Result<ResourceServerInfo, String> {
+    Ok(resource_server_info())
+}
+
+pub(crate) fn validate_resource_token(provided: &str, expected: &str) -> bool {
+    !provided.is_empty() && provided == expected
+}
+
 /// 启动资源服务器（在后台运行）
 /// 提供视频和书籍文件的本地访问
 pub async fn start_resource_server(app_data_dir: PathBuf) -> Result<(), String> {
     let app_data_dir = Arc::new(app_data_dir);
+    let session_token = Arc::new(resource_session_token());
 
     // 视频目录: app_data_dir/videos
     let videos_dir_filter = {
@@ -34,25 +67,42 @@ pub async fn start_resource_server(app_data_dir: PathBuf) -> Result<(), String> 
         warp::any().map(move || Arc::new(dir.clone()))
     };
 
-    // GET /video/{filename}
-    let video_route = warp::path("video")
+    let token_filter = {
+        let token = session_token.clone();
+        warp::any().map(move || token.clone())
+    };
+
+    // GET /resource/{token}/video/{filename}
+    let video_route = warp::path("resource")
+        .and(warp::path::param::<String>())
+        .and(warp::path("video"))
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(warp::header::optional::<String>("range"))
         .and(videos_dir_filter)
+        .and(token_filter.clone())
         .and_then(serve_file);
 
-    // GET /book/{filename}
-    let book_route = warp::path("book")
+    // GET /resource/{token}/book/{filename}
+    let book_route = warp::path("resource")
+        .and(warp::path::param::<String>())
+        .and(warp::path("book"))
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(warp::header::optional::<String>("range"))
         .and(books_dir_filter)
+        .and(token_filter)
         .and_then(serve_file);
 
-    // CORS 支持（允许来自 Tauri webview 的请求）
+    // CORS 支持（仅允许 Tauri WebView 和本地开发服务器）
     let cors = warp::cors()
-        .allow_any_origin()
+        .allow_origins(vec![
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://localhost:1420",
+            "http://127.0.0.1:1420",
+        ])
         .allow_methods(vec!["GET", "HEAD", "OPTIONS"])
         .allow_headers(vec!["range", "content-type"]);
 
@@ -72,10 +122,19 @@ pub async fn start_resource_server(app_data_dir: PathBuf) -> Result<(), String> 
 /// 提供文件（支持 Range 请求）
 /// 通用于视频和书籍
 async fn serve_file(
+    provided_token: String,
     filename: String,
     range_header: Option<String>,
     base_dir: Arc<PathBuf>,
+    expected_token: Arc<String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    if !validate_resource_token(&provided_token, expected_token.as_str()) {
+        return Ok(Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(Body::from("Invalid resource token"))
+            .unwrap());
+    }
+
     // URL 解码文件名
     let decoded_filename = urlencoding::decode(&filename)
         .map(|s| s.to_string())
@@ -165,7 +224,6 @@ async fn serve_file(
             .header("Content-Type", content_type)
             .header("Content-Length", "0")
             .header("Accept-Ranges", "bytes")
-            .header("Access-Control-Allow-Origin", "*")
             .body(Body::empty())
             .unwrap());
     }
@@ -211,8 +269,7 @@ async fn serve_file(
         .status(status_code)
         .header("Content-Type", content_type)
         .header("Content-Length", chunk_size.to_string())
-        .header("Accept-Ranges", "bytes")
-        .header("Access-Control-Allow-Origin", "*");
+        .header("Accept-Ranges", "bytes");
 
     // 仅在分段传输时附带 Content-Range
     if status_code == StatusCode::PARTIAL_CONTENT {
@@ -309,5 +366,25 @@ mod tests {
 
         assert_eq!(resolved, books.join("book.pdf").canonicalize().unwrap());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resource_token_validation_requires_exact_session_token() {
+        assert!(validate_resource_token("abc123", "abc123"));
+        assert!(!validate_resource_token("", "abc123"));
+        assert!(!validate_resource_token("abc123", "ABC123"));
+        assert!(!validate_resource_token("abc123/", "abc123"));
+    }
+
+    #[test]
+    fn resource_server_info_exposes_token_and_base_url() {
+        let info = resource_server_info();
+
+        assert_eq!(
+            info.base_url,
+            format!("http://127.0.0.1:{VIDEO_SERVER_PORT}")
+        );
+        assert_eq!(info.token, resource_session_token());
+        assert!(info.token.len() >= 32);
     }
 }

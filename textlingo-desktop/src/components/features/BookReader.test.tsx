@@ -7,6 +7,20 @@ import { Article } from "../../types";
 
 const invokeMock = vi.fn();
 const localStorageStore = new Map<string, string>();
+const configMock = vi.hoisted(() => ({
+  current: {
+    target_language: "zh-CN",
+    active_model_id: "model-1",
+    model_configs: [
+      {
+        id: "model-1",
+        api_provider: "openai",
+        api_key: "secret",
+        model: "gpt-4o-mini",
+      },
+    ],
+  } as any,
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -28,9 +42,7 @@ vi.mock("react-i18next", () => ({
 
 vi.mock("../../lib/hooks", () => ({
   useConfig: () => ({
-    config: {
-      target_language: "zh-CN",
-    },
+    config: configMock.current,
   }),
 }));
 
@@ -74,10 +86,30 @@ function createBookArticle(overrides: Partial<Article> = {}): Article {
 describe("BookReader", () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    invokeMock.mockResolvedValue({});
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_resource_server_info_cmd") {
+        return Promise.resolve({
+          base_url: "http://127.0.0.1:19420",
+          token: "test-token",
+        });
+      }
+      return Promise.resolve({});
+    });
     vi.stubGlobal("confirm", vi.fn(() => false));
     vi.stubGlobal("alert", vi.fn());
     localStorageStore.clear();
+    configMock.current = {
+      target_language: "zh-CN",
+      active_model_id: "model-1",
+      model_configs: [
+        {
+          id: "model-1",
+          api_provider: "openai",
+          api_key: "secret",
+          model: "gpt-4o-mini",
+        },
+      ],
+    };
     Object.defineProperty(window, "localStorage", {
       value: {
         getItem: (key: string) => localStorageStore.get(key) ?? null,
@@ -144,10 +176,29 @@ describe("BookReader", () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
-  it("starts pdf translation without plugin install gating", async () => {
+  it("renders a local-reading message instead of AI panels when no model is configured", () => {
+    configMock.current = {
+      target_language: "zh-CN",
+      active_model_id: undefined,
+      model_configs: [],
+    };
+
+    render(<BookReader article={createBookArticle()} />);
+
+    expect(screen.queryByTestId("article-mind-map-panel")).not.toBeInTheDocument();
+    expect(screen.getByText("基础阅读可用。配置 AI 模型后可启用翻译、讲解和分析。")).toBeInTheDocument();
+  });
+
+  it("disables pdf translation during phase 1", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "check_pdf_translation_files") {
         return {};
+      }
+      if (command === "get_resource_server_info_cmd") {
+        return {
+          base_url: "http://127.0.0.1:19420",
+          token: "test-token",
+        };
       }
       if (command === "get_config") {
         return {
@@ -177,17 +228,11 @@ describe("BookReader", () => {
 
     render(<BookReader article={createBookArticle({ book_type: "pdf", book_path: "/tmp/book.pdf" })} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "翻译全文" }));
+    const translateButton = screen.getByRole("button", { name: "翻译全文" });
+    expect(translateButton).toBeDisabled();
 
     expect(invokeMock.mock.calls.some(([command]) => command === "check_plugin_installed_cmd")).toBe(false);
-    expect(invokeMock).toHaveBeenCalledWith("translate_pdf_document", {
-      pdfPath: "/tmp/book.pdf",
-      langIn: "auto",
-      langOut: "zh-CN",
-      provider: "openai",
-      apiKey: "secret",
-      model: "gpt-4o-mini",
-      baseUrl: undefined,
-    });
+    await userEvent.click(translateButton);
+    expect(invokeMock.mock.calls.some(([command]) => command === "translate_pdf_document")).toBe(false);
   });
 });

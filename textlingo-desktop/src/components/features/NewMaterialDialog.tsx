@@ -12,6 +12,7 @@ import { LocalAudioImportForm } from "./LocalAudioImportForm";
 import { LocalSubtitleImportForm } from "./LocalSubtitleImportForm";
 import { WebImportForm } from "./WebImportForm";
 import { cn } from "../../lib/utils";
+import { isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
 
 const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'wma'];
 
@@ -34,14 +35,16 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
     const [activeTab, setActiveTab] = useState<MaterialType>("article");
     const activeTabClassName = "bg-primary/10 text-primary";
     const inactiveTabClassName = "hover:bg-muted text-muted-foreground hover:text-foreground";
+    const canUseWebImport = isPhase1CapabilityEnabled("webImport");
+    const canUseYouTubeImport = isPhase1CapabilityEnabled("youtubeImport");
 
     // Initialize/reset tab when the dialog opens or the edited material changes.
     useEffect(() => {
         if (!isOpen) return;
         if (editingArticle) {
-            if (editingArticle.source_type === "web") setActiveTab("web");
+            if (editingArticle.source_type === "web" && canUseWebImport) setActiveTab("web");
             else if (editingArticle.book_path) setActiveTab("book");
-            else if (editingArticle.media_path?.includes("http")) setActiveTab("youtube"); // Simple heuristic
+            else if (editingArticle.media_path?.includes("http") && canUseYouTubeImport) setActiveTab("youtube"); // Simple heuristic
             else if (editingArticle.media_path && isAudioFile(editingArticle.media_path)) setActiveTab("audio");
             else if (editingArticle.media_path) setActiveTab("local");
             else setActiveTab("article");
@@ -90,20 +93,22 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                         {t("newArticle.title")}
                     </button>
 
-                    <button
-                        className={cn(
-                            "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left",
-                            activeTab === "web"
-                                ? activeTabClassName
-                                : inactiveTabClassName,
-                            isEditing && activeTab !== "web" && "opacity-50 cursor-not-allowed"
-                        )}
-                        onClick={() => !isEditing && setActiveTab("web")}
-                        disabled={isEditing}
-                    >
-                        <Globe size={18} />
-                        {t("webImport.title", "网页导入")}
-                    </button>
+                    {canUseWebImport && (
+                        <button
+                            className={cn(
+                                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left",
+                                activeTab === "web"
+                                    ? activeTabClassName
+                                    : inactiveTabClassName,
+                                isEditing && activeTab !== "web" && "opacity-50 cursor-not-allowed"
+                            )}
+                            onClick={() => !isEditing && setActiveTab("web")}
+                            disabled={isEditing}
+                        >
+                            <Globe size={18} />
+                            {t("webImport.title", "网页导入")}
+                        </button>
+                    )}
 
                     <button
                         className={cn(
@@ -120,20 +125,22 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                         {t("bookImport.title", "导入书籍")}
                     </button>
 
-                    <button
-                        className={cn(
-                            "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left",
-                            activeTab === "youtube"
-                                ? activeTabClassName
-                                : inactiveTabClassName,
-                            isEditing && activeTab !== "youtube" && "opacity-50 cursor-not-allowed"
-                        )}
-                        onClick={() => !isEditing && setActiveTab("youtube")}
-                        disabled={isEditing}
-                    >
-                        <Youtube size={18} />
-                        {t("youtubeImport.title")}
-                    </button>
+                    {canUseYouTubeImport && (
+                        <button
+                            className={cn(
+                                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left",
+                                activeTab === "youtube"
+                                    ? activeTabClassName
+                                    : inactiveTabClassName,
+                                isEditing && activeTab !== "youtube" && "opacity-50 cursor-not-allowed"
+                            )}
+                            onClick={() => !isEditing && setActiveTab("youtube")}
+                            disabled={isEditing}
+                        >
+                            <Youtube size={18} />
+                            {t("youtubeImport.title")}
+                        </button>
+                    )}
 
                     <button
                         className={cn(
@@ -202,8 +209,8 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                         ) : (
                             <>
                                 {activeTab === "book" && <BookImportForm onSave={handleSave} onCancel={handleClose} />}
-                                {activeTab === "web" && <WebImportForm onSave={handleSave} onCancel={handleClose} />}
-                                {activeTab === "youtube" && <YouTubeImportForm onSave={handleSave} onCancel={handleClose} />}
+                                {activeTab === "web" && canUseWebImport && <WebImportForm onSave={handleSave} onCancel={handleClose} />}
+                                {activeTab === "youtube" && canUseYouTubeImport && <YouTubeImportForm onSave={handleSave} onCancel={handleClose} />}
                                 {activeTab === "local" && <LocalVideoImportForm onSave={handleSave} onCancel={handleClose} />}
                                 {activeTab === "audio" && <LocalAudioImportForm onSave={handleSave} onCancel={handleClose} />}
                                 {activeTab === "subtitle" && <LocalSubtitleImportForm onSave={handleSave} onCancel={handleClose} />}

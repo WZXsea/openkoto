@@ -3,6 +3,7 @@ use crate::agent_worker::{
     AgentWorkerStatusSnapshot,
 };
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
+use crate::feature_gate::require_external_tools_enabled;
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
 use crate::moonshot::is_moonshot_provider;
 use crate::platform::safe_file_io;
@@ -1811,6 +1812,8 @@ pub struct FetchedContent {
 // Fetch content from a URL
 #[tauri::command]
 pub async fn fetch_url_content(url: String) -> Result<FetchedContent, String> {
+    require_external_tools_enabled("fetch_url_content")?;
+
     // Validate URL
     let parsed_url = url::Url::parse(&url).map_err(|_| "Invalid URL format".to_string())?;
 
@@ -2642,6 +2645,8 @@ pub async fn import_youtube_video_cmd(
     app_handle: AppHandle,
     url: String,
 ) -> Result<Article, String> {
+    require_external_tools_enabled("import_youtube_video_cmd")?;
+
     let article = crate::youtube::import_youtube_video(app_handle.clone(), url).await?;
 
     let article_json = serde_json::to_string(&article)
@@ -2794,6 +2799,8 @@ pub async fn export_ktv_video_cmd(
     output_path: String,
     config: KtvExportConfig,
 ) -> Result<KtvExportResult, String> {
+    require_external_tools_enabled("export_ktv_video_cmd")?;
+
     let article_json = load_article(&app_handle, &article_id)?;
     let article: Article = serde_json::from_str(&article_json)
         .map_err(|e| format!("Failed to parse article: {}", e))?;
@@ -2816,6 +2823,8 @@ pub async fn extract_subtitles_cmd(
     article_id: String,
     transcription_config_id: Option<String>,
 ) -> Result<Article, String> {
+    require_external_tools_enabled("extract_subtitles_cmd")?;
+
     println!(
         "[ExtractSubtitles] 开始提取字幕: {} (transcription_config_id={:?})",
         article_id, transcription_config_id
@@ -3074,6 +3083,8 @@ pub async fn import_web_material_cmd(
     title: Option<String>,
     content: String,
 ) -> Result<Article, String> {
+    require_external_tools_enabled("import_web_material_cmd")?;
+
     let parsed_url = url::Url::parse(&url).map_err(|_| "Invalid URL format".to_string())?;
     if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
         return Err("Only HTTP and HTTPS URLs are supported".to_string());
@@ -3169,6 +3180,8 @@ pub async fn translate_pdf_document(
     model: String,
     base_url: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    require_external_tools_enabled("translate_pdf_document")?;
+
     use crate::logging::{self, LogLevel};
     use crate::pdf_sidecar;
     use std::io::{BufRead, BufReader};

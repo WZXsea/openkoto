@@ -88,7 +88,15 @@ describe("KtvExportPage", () => {
     });
     invokeMock.mockReset();
     saveMock.mockReset();
-    invokeMock.mockResolvedValue(undefined);
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_resource_server_info_cmd") {
+        return Promise.resolve({
+          base_url: "http://127.0.0.1:19420",
+          token: "test-token",
+        });
+      }
+      return Promise.resolve(undefined);
+    });
     saveMock.mockResolvedValue(undefined);
   });
 
@@ -183,7 +191,7 @@ describe("KtvExportPage", () => {
     expect(screen.queryByLabelText("Show readings")).not.toBeInTheDocument();
   });
 
-  it("reuses the resource server playback url and restores saved position", () => {
+  it("reuses the tokenized resource server playback url and restores saved position", async () => {
     const article = {
       id: "video-1",
       title: "Sample Video",
@@ -223,8 +231,10 @@ describe("KtvExportPage", () => {
 
     render(<KtvExportPage article={article} onBack={() => {}} />);
 
-    const video = screen.getByLabelText("KTV video preview") as HTMLVideoElement;
-    expect(video.getAttribute("src")).toBe("http://127.0.0.1:19420/video/sample%20video.mp4");
+    const video = await screen.findByLabelText("KTV video preview") as HTMLVideoElement;
+    await waitFor(() => {
+      expect(video.getAttribute("src")).toBe("http://127.0.0.1:19420/resource/test-token/video/sample%20video.mp4");
+    });
 
     fireEvent.loadedMetadata(video);
     expect(video.currentTime).toBe(12.5);
@@ -483,7 +493,7 @@ describe("KtvExportPage", () => {
 
     render(<KtvExportPage article={article} onBack={() => {}} />);
 
-    const video = screen.getByLabelText("KTV video preview") as HTMLVideoElement;
+    const video = await screen.findByLabelText("KTV video preview") as HTMLVideoElement;
     Object.defineProperty(video, "videoWidth", {
       configurable: true,
       value: 640,

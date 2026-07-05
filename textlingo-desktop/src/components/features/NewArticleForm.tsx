@@ -7,6 +7,7 @@ import { Textarea } from "../ui/textarea";
 import { FileText, Loader2, Link, Clipboard, Cloud, Info } from "lucide-react";
 import { getApiClient } from "../../lib/api";
 import { Article } from "../../types";
+import { isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
 
 interface NewArticleFormProps {
     onSave?: (article: Article) => void;
@@ -23,9 +24,16 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
     const [isFetching, setIsFetching] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [useBackend, setUseBackend] = useState(false);
+    const canFetchRemoteContent = isPhase1CapabilityEnabled("webImport");
+    const remoteFetchDisabledMessage = t("common.phase1Disabled", "第一阶段保留本地阅读核心能力，此增强功能暂不启用。");
 
     // Load config and check if backend is available
     useEffect(() => {
+        if (!canFetchRemoteContent) {
+            setUseBackend(false);
+            return;
+        }
+
         const checkBackend = async () => {
             try {
                 const config = await invoke("get_config") as any;
@@ -36,7 +44,7 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
             }
         };
         checkBackend();
-    }, []);
+    }, [canFetchRemoteContent]);
 
     const handleSave = async () => {
         if (!content.trim()) {
@@ -86,6 +94,10 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
      * Matches Flutter behavior using Dify workflow when available
      */
     const fetchFromUrl = async (url: string): Promise<{ title: string; content: string }> => {
+        if (!canFetchRemoteContent) {
+            throw new Error(remoteFetchDisabledMessage);
+        }
+
         const config = await invoke("get_config") as any;
         const apiClient = getApiClient(config);
 
@@ -104,6 +116,11 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
     };
 
     const handleFetchFromUrl = async () => {
+        if (!canFetchRemoteContent) {
+            setError(remoteFetchDisabledMessage);
+            return;
+        }
+
         if (!sourceUrl.trim()) {
             setError(t("newArticle.errors.urlRequired"));
             return;
@@ -139,6 +156,11 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
     };
 
     const handlePasteUrlAndFetch = async () => {
+        if (!canFetchRemoteContent) {
+            setError(remoteFetchDisabledMessage);
+            return;
+        }
+
         try {
             const url = await navigator.clipboard.readText();
             // Check if it looks like a URL
@@ -214,9 +236,9 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
                             variant="secondary"
                             size="sm"
                             onClick={handleFetchFromUrl}
-                            disabled={isFetching || !sourceUrl.trim()}
+                            disabled={!canFetchRemoteContent || isFetching || !sourceUrl.trim()}
                             className="gap-1"
-                            title={useBackend ? "Fetch using backend API" : "Fetch using local parser"}
+                            title={!canFetchRemoteContent ? remoteFetchDisabledMessage : useBackend ? "Fetch using backend API" : "Fetch using local parser"}
                         >
                             {isFetching ? (
                                 <Loader2 size={16} className="animate-spin" />
@@ -231,8 +253,8 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
                             variant="ghost"
                             size="sm"
                             onClick={handlePasteUrlAndFetch}
-                            disabled={isFetching}
-                            title={t("newArticle.pasteUrlAndFetch")}
+                            disabled={!canFetchRemoteContent || isFetching}
+                            title={!canFetchRemoteContent ? remoteFetchDisabledMessage : t("newArticle.pasteUrlAndFetch")}
                             className="gap-1"
                         >
                             <Clipboard size={16} />

@@ -154,7 +154,7 @@ describe("App onboarding", () => {
     });
   });
 
-  it("switches from reader to ktv export screen for the selected video article", async () => {
+  it("keeps ktv export unavailable during phase 1", async () => {
     const sampleVideoArticle = {
       id: "video-1",
       title: "Sample Video",
@@ -220,6 +220,7 @@ describe("App onboarding", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Open KTV Export" }));
 
-    expect(await screen.findByText("KtvExportPage")).toBeInTheDocument();
+    expect(screen.queryByText("KtvExportPage")).not.toBeInTheDocument();
+    expect(screen.getByText("ArticleReader")).toBeInTheDocument();
   });
 });

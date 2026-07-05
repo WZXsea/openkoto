@@ -19,6 +19,7 @@ import { importDroppedPath, isSupportedDropPath, getFileName } from "./lib/dropI
 import type { Article, AppConfig } from "./lib/tauri";
 import { getApiClient } from "./lib/api";
 import { useAgentOpenMaterialListener } from "./lib/hooks/useAgentOpenMaterialListener";
+import { isPhase1CapabilityEnabled } from "./lib/phase1Capabilities";
 
 function App() {
   const { t } = useTranslation();
@@ -259,6 +260,8 @@ function App() {
 
 
   const hasConfig = config?.model_configs && config.model_configs.length > 0 && config.active_model_id;
+  const canUseKtvExport = isPhase1CapabilityEnabled("ktvExport");
+  const canCheckForUpdates = isPhase1CapabilityEnabled("updateCheck");
   const selectedId: string | undefined = selectedArticle?.id;
 
   if (isLoading) {
@@ -296,7 +299,7 @@ function App() {
           <div className="flex items-center gap-3">
             {!hasConfig && (
               <div className="px-3 py-1.5 bg-yellow-500/10 border border-yellow-500/50 rounded-lg text-yellow-600 dark:text-yellow-400 text-sm">
-                {t("header.configureApiKey")}
+                {t("header.localReadingReady")}
               </div>
             )}
 
@@ -334,9 +337,9 @@ function App() {
             loadData();
           }}
         />
-        <UpdateChecker />
+        {canCheckForUpdates && <UpdateChecker />}
         {selectedArticle ? (
-          activeScreen === "ktv-export" ? (
+          activeScreen === "ktv-export" && canUseKtvExport ? (
             <KtvExportPage
               article={selectedArticle}
               onBack={() => setActiveScreen("reader")}
@@ -356,7 +359,7 @@ function App() {
               hasNext={selectedIndex < articles.length - 1}
               hasPrev={selectedIndex > 0}
               onUpdate={handleArticleUpdate}
-              onOpenKtvExport={() => setActiveScreen("ktv-export")}
+              onOpenKtvExport={canUseKtvExport ? () => setActiveScreen("ktv-export") : undefined}
             />
           )
         ) : showFavorites || activeScreen === "favorites" ? (

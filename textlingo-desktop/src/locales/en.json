@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "OpenKoto",
-    "subtitle": "Cross-Language Reading, Playback & Learning Tool",
+    "subtitle": "Local reading workspace. AI translation and explanations are enhancements.",
     "loading": "Loading OpenKoto...",
     "notConfigured": "Not configured"
   },
@@ -9,10 +9,13 @@
     "refresh": "Refresh",
     "close": "Close",
     "cancel": "Cancel",
-    "fast": "Fast Translate"
+    "fast": "Fast Translate",
+    "aiUnavailable": "Core reading is available. Configure an AI model to enable translation, explanations, and analysis.",
+    "phase1Disabled": "Phase 1 keeps the local reading core enabled. This enhanced feature is not enabled yet."
   },
   "header": {
-    "configureApiKey": "Configure your API key to get started",
+    "configureApiKey": "Core reading is available; configure AI for translation, explanations, and analysis",
+    "localReadingReady": "Local reading is available; AI is optional",
     "newArticle": "New Article",
     "settings": "Settings",
     "favorites": "Favorites",
@@ -662,7 +665,7 @@
   },
   "onboarding": {
     "title": "Welcome to OpenKoto",
-    "subtitle": "Let's get you set up in a few simple steps to start your cross-language learning journey.",
+    "subtitle": "Set up the local reading basics first. AI models are optional enhancements you can configure now or later.",
     "steps": {
       "style": "Core Settings",
       "model": "AI Model Setup",
@@ -676,7 +679,7 @@
     },
     "model": {
       "title": "Configure AI Model",
-      "desc": "Connect an AI service to enable translation and analysis. You can do this now or later in Settings.",
+      "desc": "Core reading does not require AI. Connect an AI service to enable translation, explanations, analysis, and chat.",
       "regionTitle": "Select Your Region",
       "globalUser": "Global User",
       "chinaUser": "China User",
@@ -721,7 +724,7 @@
     },
     "welcome": {
       "title": "Congratulations!",
-      "desc": "You're all set up. Welcome to the world of OpenKoto!",
+      "desc": "Core reading is ready. Configure an AI model later to enable translation, explanations, and analysis.",
       "celebration": "🎉 Congratulations on completing the setup!",
       "ready": "Ready to explore",
       "startButton": "Start Your Journey"
