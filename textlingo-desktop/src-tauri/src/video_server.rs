@@ -12,6 +12,8 @@ use warp::http::{Response, StatusCode};
 use warp::hyper::Body;
 use warp::Filter;
 
+use crate::platform::safe_paths::{resolve_existing_child_path, SafePathError};
+
 /// 视频服务器端口（固定使用一个不太常用的端口）
 pub const VIDEO_SERVER_PORT: u16 = 19420;
 
@@ -35,6 +37,7 @@ pub async fn start_resource_server(app_data_dir: PathBuf) -> Result<(), String> 
     // GET /video/{filename}
     let video_route = warp::path("video")
         .and(warp::path::param::<String>())
+        .and(warp::path::end())
         .and(warp::header::optional::<String>("range"))
         .and(videos_dir_filter)
         .and_then(serve_file);
@@ -42,6 +45,7 @@ pub async fn start_resource_server(app_data_dir: PathBuf) -> Result<(), String> 
     // GET /book/{filename}
     let book_route = warp::path("book")
         .and(warp::path::param::<String>())
+        .and(warp::path::end())
         .and(warp::header::optional::<String>("range"))
         .and(books_dir_filter)
         .and_then(serve_file);
@@ -77,16 +81,24 @@ async fn serve_file(
         .map(|s| s.to_string())
         .unwrap_or(filename);
 
-    let file_path = base_dir.join(&decoded_filename);
-
-    // 安全检查：确保文件在指定目录内
-    if !file_path.starts_with(base_dir.as_ref()) {
-        println!("[ResourceServer] Forbidden access: {:?}", file_path);
-        return Ok(Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(Body::empty())
-            .unwrap());
-    }
+    let file_path = match resolve_resource_file_path(base_dir.as_ref(), &decoded_filename) {
+        Ok(path) => path,
+        Err(error) => {
+            let status = if error.is_not_found() {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            println!(
+                "[ResourceServer] Rejected resource path {:?}: {}",
+                decoded_filename, error
+            );
+            return Ok(Response::builder()
+                .status(status)
+                .body(Body::empty())
+                .unwrap());
+        }
+    };
 
     // 打开文件
     let mut file = match File::open(&file_path).await {
@@ -146,6 +158,17 @@ async fn serve_file(
     // 判断是否为流媒体类型（视频/音频）
     let is_streaming_media =
         content_type.starts_with("video/") || content_type.starts_with("audio/");
+
+    if file_size == 0 {
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .header("Content-Length", "0")
+            .header("Accept-Ranges", "bytes")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(Body::empty())
+            .unwrap());
+    }
 
     // 解析 Range 请求，确定读取范围
     // 规则：
@@ -237,5 +260,54 @@ fn parse_range_header(range: Option<&str>, file_size: u64) -> Option<(u64, u64)>
             Some((s, file_size - 1))
         }
         _ => None,
+    }
+}
+
+pub(crate) fn resolve_resource_file_path(
+    base_dir: &std::path::Path,
+    filename: &str,
+) -> Result<PathBuf, SafePathError> {
+    resolve_existing_child_path(base_dir, filename)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "openkoto-resource-server-{}-{}",
+            name,
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resource_path_rejects_encoded_traversal() {
+        let root = temp_dir("traversal");
+        let videos = root.join("videos");
+        fs::create_dir_all(&videos).unwrap();
+        fs::write(root.join("secret.txt"), b"secret").unwrap();
+
+        let error = resolve_resource_file_path(&videos, "../secret.txt").unwrap_err();
+
+        assert_eq!(error, SafePathError::PathTraversal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resource_path_resolves_existing_file_inside_base() {
+        let root = temp_dir("inside");
+        let books = root.join("books");
+        fs::create_dir_all(&books).unwrap();
+        fs::write(books.join("book.pdf"), b"pdf").unwrap();
+
+        let resolved = resolve_resource_file_path(&books, "book.pdf").unwrap();
+
+        assert_eq!(resolved, books.join("book.pdf").canonicalize().unwrap());
+        fs::remove_dir_all(root).unwrap();
     }
 }

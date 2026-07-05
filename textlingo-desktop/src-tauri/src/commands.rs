@@ -5,6 +5,7 @@ use crate::agent_worker::{
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
 use crate::moonshot::is_moonshot_provider;
+use crate::platform::safe_file_io;
 use crate::storage::{
     delete_article,
     delete_bookmark,
@@ -3114,14 +3115,12 @@ pub async fn import_web_material_cmd(
 // File System Commands
 #[tauri::command]
 pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
-    use std::fs;
-    fs::write(path, content).map_err(|e| format!("Failed to write file: {}", e))
+    safe_file_io::write_text_export(&path, &content)
 }
 
 #[tauri::command]
 pub async fn write_binary_file(path: String, content: Vec<u8>) -> Result<(), String> {
-    use std::fs;
-    fs::write(path, content).map_err(|e| format!("Failed to write file: {}", e))
+    safe_file_io::write_binary_export(&path, &content)
 }
 
 #[tauri::command]
@@ -3528,9 +3527,12 @@ pub async fn check_pdf_translation_files(pdf_path: String) -> Result<Translation
 }
 
 #[tauri::command]
-pub async fn export_file_cmd(src_path: String, dest_path: String) -> Result<(), String> {
-    std::fs::copy(&src_path, &dest_path).map_err(|e| format!("Failed to export file: {}", e))?;
-    Ok(())
+pub async fn export_file_cmd(
+    app_handle: AppHandle,
+    src_path: String,
+    dest_path: String,
+) -> Result<(), String> {
+    safe_file_io::copy_app_data_file_to_export(&app_handle, &src_path, &dest_path)
 }
 
 // ============================================================================

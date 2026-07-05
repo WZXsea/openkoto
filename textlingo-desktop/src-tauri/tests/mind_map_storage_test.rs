@@ -2,20 +2,16 @@ use std::{fs, path::PathBuf};
 
 use openkoto_desktop_lib::{
     storage::{
-        load_agent_task_in_dir, load_artifact_in_dir, save_agent_task_in_dir,
-        save_artifact_in_dir, update_article_active_mind_map_artifact_in_dir,
+        load_agent_task_in_dir, load_artifact_in_dir, save_agent_task_in_dir, save_artifact_in_dir,
+        update_article_active_mind_map_artifact_in_dir,
     },
     types::{
-        AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Artifact, ArtifactType, Article,
+        AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Article, Artifact, ArtifactType,
     },
 };
 
 fn temp_data_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "openkoto-{}-{}",
-        name,
-        uuid::Uuid::new_v4()
-    ));
+    let dir = std::env::temp_dir().join(format!("openkoto-{}-{}", name, uuid::Uuid::new_v4()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -126,10 +122,8 @@ fn updates_article_active_mind_map_artifact_id_without_touching_other_fields() {
     )
     .unwrap();
 
-    let updated: Article = serde_json::from_str(
-        &fs::read_to_string(articles_dir.join(&article.id)).unwrap(),
-    )
-    .unwrap();
+    let updated: Article =
+        serde_json::from_str(&fs::read_to_string(articles_dir.join(&article.id)).unwrap()).unwrap();
 
     assert_eq!(
         updated.active_mind_map_artifact_id.as_deref(),
@@ -139,4 +133,43 @@ fn updates_article_active_mind_map_artifact_id_without_touching_other_fields() {
     assert_eq!(updated.content, article.content);
     assert_eq!(updated.source_type, article.source_type);
     assert_eq!(updated.translated, article.translated);
+}
+
+#[test]
+fn storage_rejects_agent_task_path_traversal() {
+    let data_dir = temp_data_dir("agent-task-traversal");
+    fs::write(data_dir.join("config.json"), "{}").unwrap();
+
+    let error = load_agent_task_in_dir(&data_dir, "../config").unwrap_err();
+
+    assert!(error.contains("Invalid agent task id"));
+    assert!(data_dir.join("config.json").exists());
+}
+
+#[test]
+fn storage_rejects_artifact_article_id_path_traversal() {
+    let data_dir = temp_data_dir("artifact-traversal");
+    let mut artifact = sample_artifact();
+    artifact.article_id = "../outside".to_string();
+
+    let error = save_artifact_in_dir(&data_dir, &artifact).unwrap_err();
+
+    assert!(error.contains("Invalid artifact article id"));
+    assert!(!data_dir.join("artifacts/outside").exists());
+}
+
+#[test]
+fn storage_rejects_article_update_path_traversal() {
+    let data_dir = temp_data_dir("article-update-traversal");
+    fs::write(data_dir.join("config.json"), "{}").unwrap();
+
+    let error = update_article_active_mind_map_artifact_in_dir(
+        &data_dir,
+        "../config.json",
+        Some("artifact-1".to_string()),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("Invalid article id"));
+    assert!(data_dir.join("config.json").exists());
 }

@@ -7,6 +7,7 @@ pub mod ktv_export;
 pub mod logging;
 pub mod moonshot;
 pub mod pdf_sidecar;
+pub mod platform;
 pub mod storage;
 mod subtitle_extraction;
 pub mod subtitle_import;
@@ -132,9 +133,15 @@ pub fn run() {
                 }
 
                 // 启动资源服务器 (视频 + 书籍)
-                let app_data_dir = app_handle.path().app_data_dir().unwrap();
-                if let Err(e) = video_server::start_resource_server(app_data_dir).await {
-                    eprintln!("[ResourceServer] Failed to start: {}", e);
+                match app_handle.path().app_data_dir() {
+                    Ok(app_data_dir) => {
+                        if let Err(e) = video_server::start_resource_server(app_data_dir).await {
+                            eprintln!("[ResourceServer] Failed to start: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[ResourceServer] Failed to resolve app data dir: {}", e);
+                    }
                 }
             });
             Ok(())
