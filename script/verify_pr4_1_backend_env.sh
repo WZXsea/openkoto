@@ -88,6 +88,9 @@ if [ "$START_DB" -eq 1 ]; then
   if ! command -v docker >/dev/null 2>&1; then
     fail "Docker is required for --start-db"
   fi
+  if ! docker info >/dev/null 2>&1; then
+    fail "Docker daemon is not running or is not reachable"
+  fi
 
   info "Starting PostgreSQL development container"
   compose -f docker-compose.dev.yml up -d openkoto-postgres

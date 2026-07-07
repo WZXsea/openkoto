@@ -1,13 +1,11 @@
 # Migrations
 
-该目录用于存放 PR-4.1 之后的 SQLx migration 文件。
+This directory stores SQLx migrations for `openkoto-backend`.
 
-命名建议：
+Naming convention:
 
 ```text
-0001_init.sql
-0002_auth.sql
-0003_materials.sql
+YYYYMMDDHHMMSS_short_description.sql
 ```
 
-PR-4.1 的后端 skeleton 应在启动时执行 migration，并在测试中覆盖重复执行。
+PR-4.1 contains only the backend bootstrap migration. PR-4.2 and later stages add the authenticated user model and business tables.

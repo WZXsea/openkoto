@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *$py.class 
 *.env
+target/
 !api/config.example.yml
 api/data/*
 .DS_Store
