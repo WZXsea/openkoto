@@ -82,6 +82,22 @@ export function AppShell() {
     }
   }, [hasDismissedOnboarding, setArticles, setConfig, setIsLoading, setShowOnboarding]);
 
+  const dropActionsRef = useRef({
+    loadData,
+    openArticle,
+    scheduleStatusClear,
+    t,
+  });
+
+  useEffect(() => {
+    dropActionsRef.current = {
+      loadData,
+      openArticle,
+      scheduleStatusClear,
+      t,
+    };
+  }, [loadData, openArticle, scheduleStatusClear, t]);
+
   useEffect(() => {
     void loadData();
   }, [loadData]);
@@ -93,6 +109,7 @@ export function AppShell() {
     try {
       void getCurrentWebview()
         .onDragDropEvent(async (event) => {
+          const dropActions = dropActionsRef.current;
           const payload = event.payload;
           if (payload.type === "enter" || payload.type === "over") {
             if (!isImportingRef.current) setIsDragging(true);
@@ -114,11 +131,11 @@ export function AppShell() {
           if (paths.length === 0) {
             setDropStatus({
               ok: 0,
-              errors: [t("dropImport.unsupported", "不支持的文件类型: {{name}}", {
+              errors: [dropActions.t("dropImport.unsupported", "不支持的文件类型: {{name}}", {
                 name: unsupported.map(getFileName).join(", ") || "?",
               })],
             });
-            scheduleStatusClear();
+            dropActions.scheduleStatusClear();
             return;
           }
 
@@ -134,8 +151,8 @@ export function AppShell() {
               const msg = err instanceof Error ? err.message : String(err);
               errors.push(
                 msg.startsWith("unsupported:")
-                  ? t("dropImport.unsupported", "不支持的文件类型: {{name}}", { name: msg.slice("unsupported:".length) })
-                  : t("dropImport.failed", "导入失败: {{error}}", { error: msg }),
+                  ? dropActions.t("dropImport.unsupported", "不支持的文件类型: {{name}}", { name: msg.slice("unsupported:".length) })
+                  : dropActions.t("dropImport.failed", "导入失败: {{error}}", { error: msg }),
               );
             }
           }
@@ -143,13 +160,13 @@ export function AppShell() {
           setIsImporting(false);
           isImportingRef.current = false;
 
-          const freshArticles = await loadData();
+          const freshArticles = await dropActions.loadData();
           if (imported.length === 1 && errors.length === 0) {
             const article = freshArticles.find((item) => item.id === imported[0].id) ?? imported[0];
-            openArticle(article, { returnScreen: "home" });
+            dropActions.openArticle(article, { returnScreen: "home" });
           }
           setDropStatus({ ok: imported.length, errors });
-          scheduleStatusClear();
+          dropActions.scheduleStatusClear();
         })
         .then((fn) => {
           if (isCancelled) {
@@ -167,7 +184,7 @@ export function AppShell() {
       isCancelled = true;
       unlisten?.();
     };
-  }, [loadData, openArticle, scheduleStatusClear, t]);
+  }, []);
 
   const handleAgentOpenMaterial = useCallback((materialId: string) => {
     const existingArticle = openArticleById(materialId, { returnScreen: "home" });

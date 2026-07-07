@@ -139,6 +139,9 @@ describe("SettingsDialog", () => {
   });
 
   it("saves the batch explanation concurrency setting", async () => {
+    const onClose = vi.fn();
+    const onSave = vi.fn();
+
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_config") {
         return Promise.resolve({
@@ -153,7 +156,7 @@ describe("SettingsDialog", () => {
       return Promise.resolve("ok");
     });
 
-    render(<SettingsDialog isOpen onClose={vi.fn()} onSave={vi.fn()} />);
+    render(<SettingsDialog isOpen onClose={onClose} onSave={onSave} />);
 
     await userEvent.click(await screen.findByRole("button", { name: "settings.nav.advanced" }));
     const concurrencyInput = await screen.findByLabelText("Batch explanation concurrency");
@@ -170,5 +173,7 @@ describe("SettingsDialog", () => {
         }),
       );
     });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

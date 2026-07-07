@@ -1,14 +1,33 @@
 import type { ButtonHTMLAttributes } from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 
 const invokeMock = vi.fn();
 const getApiClientMock = vi.fn();
+const appShellMocks = vi.hoisted(() => ({
+  capturedAgentOpenMaterial: null as null | ((materialId: string) => void),
+  capturedDragDropHandler: null as null | ((event: { payload: { type: string; paths?: string[] } }) => unknown),
+  onDragDropEvent: vi.fn(),
+  dragDropUnlisten: vi.fn(),
+}));
 
 vi.stubGlobal("__APP_VERSION__", "test");
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  getApiClientMock.mockReset();
+  appShellMocks.capturedAgentOpenMaterial = null;
+  appShellMocks.capturedDragDropHandler = null;
+  appShellMocks.dragDropUnlisten.mockReset();
+  appShellMocks.onDragDropEvent.mockReset();
+  appShellMocks.onDragDropEvent.mockImplementation(async (handler) => {
+    appShellMocks.capturedDragDropHandler = handler;
+    return appShellMocks.dragDropUnlisten;
+  });
+});
 
 afterEach(() => {
   cleanup();
@@ -17,6 +36,12 @@ afterEach(() => {
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: (...args: unknown[]) => appShellMocks.onDragDropEvent(...args),
+  }),
 }));
 
 vi.mock("./components/features/ArticleList", () => ({
@@ -145,7 +170,9 @@ vi.mock("./lib/api", () => ({
 }));
 
 vi.mock("./lib/hooks/useAgentOpenMaterialListener", () => ({
-  useAgentOpenMaterialListener: () => undefined,
+  useAgentOpenMaterialListener: (handler: (materialId: string) => void) => {
+    appShellMocks.capturedAgentOpenMaterial = handler;
+  },
 }));
 
 describe("App onboarding", () => {
@@ -338,5 +365,180 @@ describe("App onboarding", () => {
     await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
     expect(await screen.findByText("FavoritesPage")).toBeInTheDocument();
     expect(screen.queryByText("ArticleList")).not.toBeInTheDocument();
+  });
+
+  it("opens an existing material from the agent event without fetching it again", async () => {
+    const sampleArticles = [
+      {
+        id: "article-1",
+        title: "Article One",
+        content: "one",
+        source_type: "article",
+        source_url: null,
+        media_path: null,
+        book_path: null,
+        book_type: null,
+        created_at: "2026-03-30T00:00:00Z",
+        translated: false,
+        active_mind_map_artifact_id: null,
+        segments: [],
+      },
+    ];
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve(sampleArticles);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedAgentOpenMaterial).toEqual(expect.any(Function));
+    });
+
+    act(() => {
+      appShellMocks.capturedAgentOpenMaterial?.("article-1");
+    });
+
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("get_article", expect.anything());
+  });
+
+  it("fetches and opens a missing material from the agent event", async () => {
+    const fetchedArticle = {
+      id: "article-remote",
+      title: "Fetched Article",
+      content: "remote",
+      source_type: "article",
+      source_url: null,
+      media_path: null,
+      book_path: null,
+      book_type: null,
+      created_at: "2026-03-30T00:00:00Z",
+      translated: false,
+      active_mind_map_artifact_id: null,
+      segments: [],
+    };
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve([]);
+      }
+
+      if (command === "get_article") {
+        return Promise.resolve(fetchedArticle);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedAgentOpenMaterial).toEqual(expect.any(Function));
+    });
+
+    act(() => {
+      appShellMocks.capturedAgentOpenMaterial?.("article-remote");
+    });
+
+    expect(await screen.findByText("Reading Fetched Article")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("get_article", { id: "article-remote" });
+  });
+
+  it("opens a single dropped file after import and cleans up the drag listener", async () => {
+    const importedArticle = {
+      id: "book-1",
+      title: "Dropped Book",
+      content: "book",
+      source_type: "book",
+      source_url: null,
+      media_path: null,
+      book_path: "/tmp/dropped.pdf",
+      book_type: "pdf",
+      created_at: "2026-03-30T00:00:00Z",
+      translated: false,
+      active_mind_map_artifact_id: null,
+      segments: [],
+    };
+    let listCalls = 0;
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "list_articles_cmd") {
+        listCalls += 1;
+        return Promise.resolve(listCalls > 1 ? [importedArticle] : []);
+      }
+
+      if (command === "import_book_cmd") {
+        return Promise.resolve(importedArticle);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const { unmount } = render(<App />);
+
+    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
+    });
+    const registrationsBeforeDrop = appShellMocks.onDragDropEvent.mock.calls.length;
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "drop", paths: ["/tmp/dropped.pdf"] },
+      });
+    });
+
+    expect(await screen.findByText("BookReader")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("import_book_cmd", {
+      filePath: "/tmp/dropped.pdf",
+      title: null,
+    });
+    expect(appShellMocks.onDragDropEvent).toHaveBeenCalledTimes(registrationsBeforeDrop);
+
+    unmount();
+
+    expect(appShellMocks.dragDropUnlisten).toHaveBeenCalledTimes(
+      appShellMocks.onDragDropEvent.mock.calls.length,
+    );
   });
 });

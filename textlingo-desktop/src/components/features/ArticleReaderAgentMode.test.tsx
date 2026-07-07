@@ -161,6 +161,7 @@ describe("ArticleReader agent mode", () => {
   });
 
   it("lets media articles import subtitles from a local srt file", async () => {
+    const onUpdate = vi.fn();
     openMock.mockResolvedValue("/tmp/sample.srt");
     const importedArticle = {
       ...createArticle({
@@ -199,6 +200,7 @@ describe("ArticleReader agent mode", () => {
           media_path: "/tmp/sample.mp4",
           segments: [],
         })}
+        onUpdate={onUpdate}
       />
     );
 
@@ -209,6 +211,7 @@ describe("ArticleReader agent mode", () => {
       articleId: "article-1",
       subtitlePath: "/tmp/sample.srt",
     });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("moves the view mode control into the player area for media articles", () => {
