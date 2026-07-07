@@ -6,6 +6,7 @@ on:
       - main
       - "feature/**"
       - "codex/**"
+      - "wzx/**"
   pull_request:
 
 jobs:
@@ -40,6 +41,7 @@ jobs:
         run: cargo test --manifest-path openkoto-backend/Cargo.toml
         env:
           DATABASE_URL: postgres://openkoto:openkoto_dev_password@127.0.0.1:5433/openkoto_dev
+          OPENKOTO_TEST_DATABASE_URL: postgres://openkoto:openkoto_dev_password@127.0.0.1:5433/openkoto_dev
 
   backend:
     runs-on: ubuntu-latest

@@ -25,9 +25,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embeds_bootstrap_migration() {
+    fn embeds_current_migrations() {
         let migration_count = MIGRATOR.iter().count();
 
-        assert!(migration_count >= 1);
+        assert!(migration_count >= 2);
     }
 }

@@ -1,11 +1,15 @@
 use std::{sync::Arc, time::Instant};
 
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::{config::AppConfig, error::AppError};
+use crate::{auth, config::AppConfig, error::AppError};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -44,6 +48,9 @@ pub struct AuthHealth {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/auth/register", post(auth::register))
+        .route("/auth/login", post(auth::login))
+        .route("/auth/me", get(auth::me))
         .with_state(state)
 }
 
@@ -65,7 +72,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
             ready: state.config.file_storage_dir.exists(),
         },
         auth: AuthHealth {
-            configured: !state.config.jwt_secret.trim().is_empty(),
+            configured: state.config.auth_is_configured(),
         },
         started_at: state.started_at,
     }))

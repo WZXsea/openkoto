@@ -5,11 +5,16 @@ description = "OpenKoto Backend - PostgreSQL-backed API service"
 edition = "2021"
 
 [dependencies]
+argon2 = { version = "0.5", features = ["std"] }
 axum = { version = "0.8", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dotenvy = "0.15"
+hex = "0.4"
+jsonwebtoken = "9"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "chrono", "uuid", "json"] }
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal"] }

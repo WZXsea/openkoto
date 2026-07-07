@@ -50,6 +50,12 @@ impl AppConfig {
             file_storage_dir,
         })
     }
+
+    pub fn auth_is_configured(&self) -> bool {
+        let secret = self.jwt_secret.trim();
+
+        !secret.is_empty() && secret != DEFAULT_JWT_SECRET && secret.as_bytes().len() >= 32
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +73,7 @@ mod tests {
             config.file_storage_dir,
             PathBuf::from(DEFAULT_FILE_STORAGE_DIR)
         );
+        assert!(!config.auth_is_configured());
     }
 
     #[test]
@@ -90,5 +97,17 @@ mod tests {
             config.file_storage_dir,
             PathBuf::from("/tmp/openkoto-files")
         );
+        assert!(!config.auth_is_configured());
+    }
+
+    #[test]
+    fn auth_requires_non_default_secret_with_minimum_length() {
+        let config = AppConfig::from_lookup(|key| match key {
+            "OPENKOTO_JWT_SECRET" => Some("0123456789abcdef0123456789abcdef".to_string()),
+            _ => None,
+        })
+        .unwrap();
+
+        assert!(config.auth_is_configured());
     }
 }

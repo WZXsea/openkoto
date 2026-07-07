@@ -10,6 +10,14 @@ use crate::config::ConfigError;
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    #[error("{message}")]
+    BadRequest { code: &'static str, message: String },
+    #[error("{message}")]
+    Unauthorized { code: &'static str, message: String },
+    #[error("{message}")]
+    Conflict { code: &'static str, message: String },
+    #[error("{message}")]
+    Internal { code: &'static str, message: String },
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error(transparent)]
@@ -32,8 +40,40 @@ pub struct ErrorDetail {
 }
 
 impl AppError {
+    pub fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
+        Self::BadRequest {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn unauthorized(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Unauthorized {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn conflict(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Conflict {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn internal(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Internal {
+            code,
+            message: message.into(),
+        }
+    }
+
     fn status_code(&self) -> StatusCode {
         match self {
+            AppError::BadRequest { .. } => StatusCode::BAD_REQUEST,
+            AppError::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
+            AppError::Conflict { .. } => StatusCode::CONFLICT,
+            AppError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Database(_) | AppError::Migration(_) | AppError::Io(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -43,10 +83,27 @@ impl AppError {
 
     fn code(&self) -> &'static str {
         match self {
+            AppError::BadRequest { code, .. }
+            | AppError::Unauthorized { code, .. }
+            | AppError::Conflict { code, .. }
+            | AppError::Internal { code, .. } => code,
             AppError::Config(_) => "config_error",
             AppError::Database(_) => "database_error",
             AppError::Migration(_) => "migration_error",
             AppError::Io(_) => "io_error",
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            AppError::BadRequest { message, .. }
+            | AppError::Unauthorized { message, .. }
+            | AppError::Conflict { message, .. }
+            | AppError::Internal { message, .. } => message.clone(),
+            AppError::Config(_) => "backend configuration error".to_string(),
+            AppError::Database(_) => "database error".to_string(),
+            AppError::Migration(_) => "database migration error".to_string(),
+            AppError::Io(_) => "io error".to_string(),
         }
     }
 }
@@ -57,7 +114,7 @@ impl IntoResponse for AppError {
         let body = Json(ErrorBody {
             error: ErrorDetail {
                 code: self.code(),
-                message: self.to_string(),
+                message: self.public_message(),
             },
         });
 
