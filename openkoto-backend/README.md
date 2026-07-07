@@ -16,6 +16,9 @@ PR-4.2 提供：
 - `POST /auth/register`。
 - `POST /auth/login`。
 - `GET /auth/me`。
+- PostgreSQL `materials` / `material_segments` / `files` 表。
+- `GET /materials`、`POST /materials`、`GET /materials/{id}`、`PATCH /materials/{id}`、`DELETE /materials/{id}`。
+- `POST /files`、`GET /files/{id}`。
 - 统一错误响应格式。
 - `OPENKOTO_TEST_DATABASE_URL` 控制的可选数据库集成测试。
 
@@ -48,6 +51,36 @@ cargo run --manifest-path openkoto-backend/Cargo.toml
 | `OPENKOTO_JWT_SECRET` | `openkoto-dev-insecure-change-me` | JWT 签名密钥。认证接口要求该值不是默认值，且长度至少 32 bytes。 |
 | `OPENKOTO_FILE_STORAGE_DIR` | `.data/files` | 后续文件存储目录。 |
 | `OPENKOTO_POSTGRES_PORT` | `5433` | `docker-compose.dev.yml` 暴露 PostgreSQL 的宿主机端口；仅用于 dev compose 和验证脚本。 |
+
+## 素材接口
+
+所有素材接口都需要 `Authorization: Bearer <jwt>`。
+
+```bash
+curl -i -X POST http://127.0.0.1:4000/materials \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Academic Reading",
+    "content": "Dr. Smith reviewed it. It worked.",
+    "source_type": "article"
+  }'
+```
+
+响应保持现有 Desktop `Article` 兼容形状，`segments` 始终返回数组。
+
+## 文件接口
+
+文件上传使用 `multipart/form-data`，文件下载使用同一个 Bearer token 保护。
+
+```bash
+curl -i -X POST http://127.0.0.1:4000/files \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -F 'metadata={"purpose":"source"}' \
+  -F 'file=@paper.pdf'
+```
+
+上传响应包含 `download_url`，例如 `/files/{id}`。后端文件库默认位于 `OPENKOTO_FILE_STORAGE_DIR`，数据库只保存受控 storage path，不使用用户提交的文件名作为磁盘路径。
 
 ## 健康检查
 
@@ -173,7 +206,7 @@ curl -i http://127.0.0.1:4000/auth/me \
 ## 验证
 
 ```bash
-bash script/verify_pr4_2_backend_auth.sh
+bash script/verify_pr4_3_materials_db.sh
 cargo check --manifest-path openkoto-backend/Cargo.toml
 cargo test --manifest-path openkoto-backend/Cargo.toml
 ```
@@ -189,11 +222,11 @@ OPENKOTO_TEST_DATABASE_URL=postgres://openkoto:openkoto_dev_password@127.0.0.1:5
 当本机 `5433` 已被其他项目占用时，可以指定开发数据库端口：
 
 ```bash
-OPENKOTO_POSTGRES_PORT=55433 bash script/verify_pr4_2_backend_auth.sh --start-db
+OPENKOTO_POSTGRES_PORT=55433 bash script/verify_pr4_3_materials_db.sh --start-db
 ```
 
 需要 verification script 代为启动开发数据库时使用 `--start-db`：
 
 ```bash
-bash script/verify_pr4_2_backend_auth.sh --start-db
+bash script/verify_pr4_3_materials_db.sh --start-db
 ```

@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     routing::{get, post},
     Json, Router,
 };
@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::{auth, config::AppConfig, error::AppError};
+use crate::{auth, config::AppConfig, error::AppError, files, materials};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -51,6 +51,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))
         .route("/auth/me", get(auth::me))
+        .route(
+            "/materials",
+            get(materials::list_materials).post(materials::create_material),
+        )
+        .route(
+            "/materials/{id}",
+            get(materials::get_material)
+                .patch(materials::patch_material)
+                .delete(materials::delete_material),
+        )
+        .route("/files", post(files::upload_file))
+        .route("/files/{id}", get(files::download_file))
+        .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
         .with_state(state)
 }
 

@@ -1,12 +1,14 @@
-# PR-4.2 Backend 用户账户和认证验收说明
+# PR-4.3 Backend 核心素材数据库验收说明
 
 ## 目标
 
-PR-4.2 确认 OpenKoto Backend 可以在 PR-4.1 骨架基础上创建 PostgreSQL 用户账户和登录会话，并通过 Bearer JWT 暴露最小认证闭环：
+PR-4.3 确认 OpenKoto Backend 可以在 PR-4.2 认证基础上持久化核心素材、段落和文件，并保持 Desktop `Article` / `ArticleSegment` 返回结构兼容。
 
 1. 用户注册：`POST /auth/register`。
 2. 用户登录：`POST /auth/login`。
 3. 当前用户查询：`GET /auth/me`。
+4. 素材 CRUD：`GET /materials`、`POST /materials`、`GET /materials/{id}`、`PATCH /materials/{id}`、`DELETE /materials/{id}`。
+5. 文件上传和下载：`POST /files`、`GET /files/{id}`。
 
 ## 已实现范围
 
@@ -23,6 +25,9 @@ PR-4.2 确认 OpenKoto Backend 可以在 PR-4.1 骨架基础上创建 PostgreSQL
 | 认证 | 登录和注册返回 Bearer JWT；`GET /auth/me` 从 `Authorization` header 读取 token |
 | API | `GET /health` 返回 2xx JSON |
 | API | `POST /auth/register`、`POST /auth/login`、`GET /auth/me` 返回稳定 JSON |
+| 素材表 | migration 创建 `materials` 和 `material_segments`，所有业务查询按 `user_id` 隔离 |
+| 文件表 | migration 创建 `files`，文件落盘到 `OPENKOTO_FILE_STORAGE_DIR`，下载通过 Bearer token 保护 |
+| Desktop client | 新增 Rust `backend_client` 基础能力，暂不切换现有本地 JSON Tauri commands |
 | 错误格式 | 后端错误统一返回 `{ "error": { "code", "message" } }` |
 | 测试 | `cargo check`、`cargo test` 通过；无本地 PostgreSQL 时普通测试不失败 |
 
@@ -31,7 +36,7 @@ PR-4.2 确认 OpenKoto Backend 可以在 PR-4.1 骨架基础上创建 PostgreSQL
 从仓库根目录执行：
 
 ```bash
-bash script/verify_pr4_2_backend_auth.sh --start-db
+bash script/verify_pr4_3_materials_db.sh --start-db
 ```
 
 或手动分步执行静态检查和普通测试：
@@ -55,7 +60,7 @@ OPENKOTO_TEST_DATABASE_URL=postgres://openkoto:openkoto_dev_password@127.0.0.1:5
 若本机 `5433` 已被其他容器或本地 PostgreSQL 占用，可改用其他宿主机端口：
 
 ```bash
-OPENKOTO_POSTGRES_PORT=55433 bash script/verify_pr4_2_backend_auth.sh --start-db
+OPENKOTO_POSTGRES_PORT=55433 bash script/verify_pr4_3_materials_db.sh --start-db
 ```
 
 另开终端检查健康状态和认证接口：
@@ -144,20 +149,23 @@ curl -i http://127.0.0.1:4000/auth/me \
 
 ## Migration 验收
 
-PR-4.1 migration 创建 `backend_metadata` 表并写入 schema 标记。PR-4.2 migration 增加认证业务表：
+PR-4.1 migration 创建 `backend_metadata` 表并写入 schema 标记。PR-4.2 migration 增加认证业务表。PR-4.3 migration 增加核心素材表：
 
 1. `users` 保存用户主记录、唯一 normalized email、可选显示名、Argon2id password hash 和时间戳。
 2. `sessions` 保存登录会话、`token_hash`、过期时间、撤销状态，外键关联 `users`。
-3. SQLx 自身维护 `_sqlx_migrations` 表。
-4. 重复启动后端或重复运行 migration 不应破坏 schema。
+3. `materials` 保存 Article-like 素材元数据和正文。
+4. `material_segments` 保存段落、翻译、解释 JSON 和时间轴字段。
+5. `files` 保存上传文件 metadata 和受控 storage path。
+6. SQLx 自身维护 `_sqlx_migrations` 表。
+7. 重复启动后端或重复运行 migration 不应破坏 schema。
 
 ## Desktop 边界
 
-PR-4.2 不改 Desktop 读写路径，不改现有 Tauri command，不切换前端数据源。Desktop 仍按 PR-3 的本地模式工作。
+PR-4.3 不改 Desktop 读写路径，不改现有 Tauri command，不切换前端数据源。Desktop 仍按 PR-3 的本地模式工作，只新增 backend client 基础模块供 PR-4.4 使用。
 
 ## 外部依赖边界
 
-PR-4.2 新增的唯一外部运行依赖仍是 PostgreSQL。不得在此阶段引入：
+PR-4.3 新增的唯一外部运行依赖仍是 PostgreSQL。不得在此阶段引入：
 
 1. Anki / AnkiConnect。
 2. Zotero。

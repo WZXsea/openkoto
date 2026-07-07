@@ -17,6 +17,8 @@ pub enum AppError {
     #[error("{message}")]
     Conflict { code: &'static str, message: String },
     #[error("{message}")]
+    NotFound { code: &'static str, message: String },
+    #[error("{message}")]
     Internal { code: &'static str, message: String },
     #[error(transparent)]
     Config(#[from] ConfigError),
@@ -61,6 +63,13 @@ impl AppError {
         }
     }
 
+    pub fn not_found(code: &'static str, message: impl Into<String>) -> Self {
+        Self::NotFound {
+            code,
+            message: message.into(),
+        }
+    }
+
     pub fn internal(code: &'static str, message: impl Into<String>) -> Self {
         Self::Internal {
             code,
@@ -73,6 +82,7 @@ impl AppError {
             AppError::BadRequest { .. } => StatusCode::BAD_REQUEST,
             AppError::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             AppError::Conflict { .. } => StatusCode::CONFLICT,
+            AppError::NotFound { .. } => StatusCode::NOT_FOUND,
             AppError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Database(_) | AppError::Migration(_) | AppError::Io(_) => {
@@ -86,6 +96,7 @@ impl AppError {
             AppError::BadRequest { code, .. }
             | AppError::Unauthorized { code, .. }
             | AppError::Conflict { code, .. }
+            | AppError::NotFound { code, .. }
             | AppError::Internal { code, .. } => code,
             AppError::Config(_) => "config_error",
             AppError::Database(_) => "database_error",
@@ -99,6 +110,7 @@ impl AppError {
             AppError::BadRequest { message, .. }
             | AppError::Unauthorized { message, .. }
             | AppError::Conflict { message, .. }
+            | AppError::NotFound { message, .. }
             | AppError::Internal { message, .. } => message.clone(),
             AppError::Config(_) => "backend configuration error".to_string(),
             AppError::Database(_) => "database error".to_string(),
