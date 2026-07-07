@@ -44,41 +44,54 @@ export function AppShell() {
   const [dropStatus, setDropStatus] = useState<DropImportStatus | null>(null);
   const dropStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isImportingRef = useRef(false);
+  const isMountedRef = useRef(true);
 
   const hasConfig = Boolean(store.config?.model_configs?.length && store.config.active_model_id);
   const canUseKtvExport = isPhase1CapabilityEnabled("ktvExport");
   const canCheckForUpdates = isPhase1CapabilityEnabled("updateCheck");
   const isFavoritesActive = store.activeScreen === "favorites";
 
-  const scheduleStatusClear = useCallback(() => {
-    if (dropStatusTimer.current) clearTimeout(dropStatusTimer.current);
-    dropStatusTimer.current = setTimeout(() => setDropStatus(null), 3500);
+  const clearDropStatusTimer = useCallback(() => {
+    if (dropStatusTimer.current) {
+      clearTimeout(dropStatusTimer.current);
+      dropStatusTimer.current = null;
+    }
   }, []);
 
+  const scheduleStatusClear = useCallback(() => {
+    clearDropStatusTimer();
+    dropStatusTimer.current = setTimeout(() => {
+      if (isMountedRef.current) setDropStatus(null);
+      dropStatusTimer.current = null;
+    }, 3500);
+  }, [clearDropStatusTimer]);
+
   const loadData = useCallback(async (): Promise<Article[]> => {
-    setIsLoading(true);
+    if (isMountedRef.current) setIsLoading(true);
     try {
       const [configResult, articlesResult] = await Promise.all([
         invoke<AppConfig | null>("get_config"),
         invoke<Article[]>("list_articles_cmd"),
       ]);
-      setConfig(configResult);
-      const hasSavedModelConfigs = Boolean(configResult?.model_configs?.length);
-      const shouldShowOnboarding =
-        !hasDismissedOnboarding() &&
-        (!configResult || (!configResult.onboarding_completed && !hasSavedModelConfigs));
+      if (isMountedRef.current) {
+        setConfig(configResult);
+        const hasSavedModelConfigs = Boolean(configResult?.model_configs?.length);
+        const shouldShowOnboarding =
+          !hasDismissedOnboarding() &&
+          (!configResult || (!configResult.onboarding_completed && !hasSavedModelConfigs));
 
-      if (configResult) {
-        getApiClient(configResult);
+        if (configResult) {
+          getApiClient(configResult);
+        }
+        setShowOnboarding(shouldShowOnboarding);
+        setArticles(articlesResult);
       }
-      setShowOnboarding(shouldShowOnboarding);
-      setArticles(articlesResult);
       return articlesResult;
     } catch (err) {
       console.error("Failed to load data:", err);
       return [];
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current) setIsLoading(false);
     }
   }, [hasDismissedOnboarding, setArticles, setConfig, setIsLoading, setShowOnboarding]);
 
@@ -99,6 +112,15 @@ export function AppShell() {
   }, [loadData, openArticle, scheduleStatusClear, t]);
 
   useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      isImportingRef.current = false;
+      clearDropStatusTimer();
+    };
+  }, [clearDropStatusTimer]);
+
+  useEffect(() => {
     void loadData();
   }, [loadData]);
 
@@ -109,6 +131,9 @@ export function AppShell() {
     try {
       void getCurrentWebview()
         .onDragDropEvent(async (event) => {
+          const isDropActive = () => !isCancelled && isMountedRef.current;
+          if (!isDropActive()) return;
+
           const dropActions = dropActionsRef.current;
           const payload = event.payload;
           if (payload.type === "enter" || payload.type === "over") {
@@ -146,8 +171,17 @@ export function AppShell() {
           const errors: string[] = [];
           for (const path of paths) {
             try {
-              imported.push(await importDroppedPath(path));
+              const article = await importDroppedPath(path);
+              if (!isDropActive()) {
+                isImportingRef.current = false;
+                return;
+              }
+              imported.push(article);
             } catch (err) {
+              if (!isDropActive()) {
+                isImportingRef.current = false;
+                return;
+              }
               const msg = err instanceof Error ? err.message : String(err);
               errors.push(
                 msg.startsWith("unsupported:")
@@ -157,10 +191,15 @@ export function AppShell() {
             }
           }
 
+          if (!isDropActive()) {
+            isImportingRef.current = false;
+            return;
+          }
           setIsImporting(false);
           isImportingRef.current = false;
 
           const freshArticles = await dropActions.loadData();
+          if (!isDropActive()) return;
           if (imported.length === 1 && errors.length === 0) {
             const article = freshArticles.find((item) => item.id === imported[0].id) ?? imported[0];
             dropActions.openArticle(article, { returnScreen: "home" });

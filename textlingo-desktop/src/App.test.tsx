@@ -541,4 +541,82 @@ describe("App onboarding", () => {
       appShellMocks.onDragDropEvent.mock.calls.length,
     );
   });
+
+  it("does not continue an in-flight dropped-file import after unmount", async () => {
+    const importedArticle = {
+      id: "book-1",
+      title: "Dropped Book",
+      content: "book",
+      source_type: "book",
+      source_url: null,
+      media_path: null,
+      book_path: "/tmp/dropped.pdf",
+      book_type: "pdf",
+      created_at: "2026-03-30T00:00:00Z",
+      translated: false,
+      active_mind_map_artifact_id: null,
+      segments: [],
+    };
+    let listCalls = 0;
+    let resolveImport!: (article: typeof importedArticle) => void;
+    const importPromise = new Promise<typeof importedArticle>((resolve) => {
+      resolveImport = resolve;
+    });
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "list_articles_cmd") {
+        listCalls += 1;
+        return Promise.resolve([]);
+      }
+
+      if (command === "import_book_cmd") {
+        return importPromise;
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const { unmount } = render(<App />);
+
+    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
+    });
+
+    let dropPromise: Promise<unknown> | undefined;
+    await act(async () => {
+      dropPromise = appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "drop", paths: ["/tmp/dropped.pdf"] },
+      }) as Promise<unknown> | undefined;
+    });
+    expect(dropPromise).toEqual(expect.any(Promise));
+    expect(invokeMock).toHaveBeenCalledWith("import_book_cmd", {
+      filePath: "/tmp/dropped.pdf",
+      title: null,
+    });
+    expect(listCalls).toBe(1);
+
+    unmount();
+
+    await act(async () => {
+      resolveImport(importedArticle);
+      await dropPromise;
+    });
+
+    expect(listCalls).toBe(1);
+    expect(appShellMocks.dragDropUnlisten).toHaveBeenCalledTimes(
+      appShellMocks.onDragDropEvent.mock.calls.length,
+    );
+  });
 });

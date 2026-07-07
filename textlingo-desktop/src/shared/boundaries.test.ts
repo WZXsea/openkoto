@@ -8,7 +8,16 @@ import * as shared from ".";
 import { cn } from ".";
 
 const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const runtimeBoundaryRoots = ["app", "features", "shared"].map((dir) => path.join(srcRoot, dir));
+const phase1FrontendRuntimeRoots = ["app", "features", "shared"].map((dir) => path.join(srcRoot, dir));
+const phase1DirectExternalConnectorPatterns = [
+  /from\s+["']@tauri-apps\/plugin-shell["']/,
+  /import\(\s*["']@tauri-apps\/plugin-shell["']\s*\)/,
+  /require\(\s*["']@tauri-apps\/plugin-shell["']\s*\)/,
+  /shell:allow-execute|shell:default/,
+  /invoke(?:<[^>]+>)?\(\s*["'][^"']*(?:anki|zotero|mineru|language[_-]?tool|mcp)[^"']*["']/i,
+  /\b(?:fetch|EventSource|WebSocket)\(\s*["'][^"']*(?:127\.0\.0\.1:8765|localhost:8765|anki|zotero|mineru|languagetool|language-tool|mcp)[^"']*["']/i,
+  /\bAnkiConnect\b|\bLanguageTool\b|\bFastMCP\b/,
+];
 
 function collectRuntimeSourceFiles(directory: string): string[] {
   return readdirSync(directory).flatMap((entry) => {
@@ -57,15 +66,14 @@ describe("PR-3 directory boundaries", () => {
     expect("useAgentOpenMaterialListener" in shared).toBe(false);
   });
 
-  it("keeps app, feature, and shared runtime files free of external connector entrypoints", () => {
-    const runtimeSource = runtimeBoundaryRoots
+  it("keeps Phase 1 frontend runtime files free of direct external connector entrypoints", () => {
+    const runtimeSource = phase1FrontendRuntimeRoots
       .flatMap(collectRuntimeSourceFiles)
       .map((filePath) => readFileSync(filePath, "utf-8"))
       .join("\n");
 
-    expect(runtimeSource).not.toMatch(/from\s+["']@tauri-apps\/plugin-shell["']/);
-    expect(runtimeSource).not.toMatch(/shell:allow-execute|shell:default/);
-    expect(runtimeSource).not.toMatch(/invoke(?:<[^>]+>)?\(\s*["'](?:anki|zotero|mineru|language_tool|mcp)/i);
-    expect(runtimeSource).not.toMatch(/\bAnkiConnect\b|\bLanguageTool\b/);
+    for (const pattern of phase1DirectExternalConnectorPatterns) {
+      expect(runtimeSource).not.toMatch(pattern);
+    }
   });
 });
