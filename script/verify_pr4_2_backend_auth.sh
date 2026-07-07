@@ -15,6 +15,9 @@ Default mode:
 
 Options:
   --start-db   Start the PostgreSQL development container and use it as OPENKOTO_TEST_DATABASE_URL.
+
+Environment:
+  OPENKOTO_POSTGRES_PORT  Host port for the dev PostgreSQL container. Defaults to 5433.
 USAGE
 }
 
@@ -39,7 +42,8 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-DEFAULT_DATABASE_URL="postgres://openkoto:openkoto_dev_password@127.0.0.1:5433/openkoto_dev"
+POSTGRES_PORT="${OPENKOTO_POSTGRES_PORT:-5433}"
+DEFAULT_DATABASE_URL="postgres://openkoto:openkoto_dev_password@127.0.0.1:${POSTGRES_PORT}/openkoto_dev"
 
 info() {
   printf '[pr4.2] %s\n' "$1"

@@ -47,6 +47,7 @@ cargo run --manifest-path openkoto-backend/Cargo.toml
 | `OPENKOTO_BACKEND_BIND` | `127.0.0.1:4000` | Axum HTTP 监听地址。 |
 | `OPENKOTO_JWT_SECRET` | `openkoto-dev-insecure-change-me` | JWT 签名密钥。认证接口要求该值不是默认值，且长度至少 32 bytes。 |
 | `OPENKOTO_FILE_STORAGE_DIR` | `.data/files` | 后续文件存储目录。 |
+| `OPENKOTO_POSTGRES_PORT` | `5433` | `docker-compose.dev.yml` 暴露 PostgreSQL 的宿主机端口；仅用于 dev compose 和验证脚本。 |
 
 ## 健康检查
 
@@ -183,6 +184,12 @@ cargo test --manifest-path openkoto-backend/Cargo.toml
 docker compose -f docker-compose.dev.yml up -d openkoto-postgres
 OPENKOTO_TEST_DATABASE_URL=postgres://openkoto:openkoto_dev_password@127.0.0.1:5433/openkoto_dev \
   cargo test --manifest-path openkoto-backend/Cargo.toml
+```
+
+当本机 `5433` 已被其他项目占用时，可以指定开发数据库端口：
+
+```bash
+OPENKOTO_POSTGRES_PORT=55433 bash script/verify_pr4_2_backend_auth.sh --start-db
 ```
 
 需要 verification script 代为启动开发数据库时使用 `--start-db`：

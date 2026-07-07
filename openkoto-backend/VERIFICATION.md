@@ -52,6 +52,12 @@ OPENKOTO_TEST_DATABASE_URL=postgres://openkoto:openkoto_dev_password@127.0.0.1:5
   cargo test --manifest-path openkoto-backend/Cargo.toml
 ```
 
+若本机 `5433` 已被其他容器或本地 PostgreSQL 占用，可改用其他宿主机端口：
+
+```bash
+OPENKOTO_POSTGRES_PORT=55433 bash script/verify_pr4_2_backend_auth.sh --start-db
+```
+
 另开终端检查健康状态和认证接口：
 
 ```bash

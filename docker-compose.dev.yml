@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: openkoto
       POSTGRES_PASSWORD: openkoto_dev_password
     ports:
-      - "5433:5432"
+      - "${OPENKOTO_POSTGRES_PORT:-5433}:5432"
     volumes:
       - openkoto_postgres_data:/var/lib/postgresql/data
     healthcheck:
