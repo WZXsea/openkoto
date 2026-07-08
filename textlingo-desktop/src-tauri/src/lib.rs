@@ -6,6 +6,7 @@ pub mod commands;
 pub mod feature_gate;
 pub mod ffmpeg;
 pub mod ktv_export;
+pub mod legacy_import;
 pub mod logging;
 pub mod moonshot;
 pub mod pdf_sidecar;
@@ -41,6 +42,8 @@ pub fn run() {
             commands::backend_login_cmd,
             commands::backend_register_cmd,
             commands::backend_logout_cmd,
+            legacy_import::run_legacy_import_cmd,
+            legacy_import::get_legacy_import_cmd,
             commands::set_api_key,
             commands::save_model_config,
             commands::delete_model_config,

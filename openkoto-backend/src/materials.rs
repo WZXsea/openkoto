@@ -14,7 +14,7 @@ use crate::{
     routes::AppState,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateMaterialRequest {
     pub id: Option<Uuid>,
     pub title: String,
@@ -66,7 +66,7 @@ pub struct PatchMaterialRequest {
     pub segments: Option<Vec<MaterialSegmentInput>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MaterialSegmentInput {
     #[serde(default)]
     pub id: Option<String>,

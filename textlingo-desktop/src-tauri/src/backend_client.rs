@@ -96,6 +96,81 @@ pub struct CreateMaterialRequest {
     pub segments: Option<Vec<ArticleSegment>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyImportRequest {
+    pub client_import_id: String,
+    #[serde(default = "default_legacy_import_schema_version")]
+    pub schema_version: String,
+    #[serde(default)]
+    pub source_label: Option<String>,
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default)]
+    pub config: Option<Value>,
+    #[serde(default)]
+    pub failed_items: Vec<LegacyImportFailedItem>,
+    #[serde(default)]
+    pub materials: Vec<LegacyImportItem<CreateMaterialRequest>>,
+    #[serde(default)]
+    pub word_packs: Vec<LegacyImportItem<WordPack>>,
+    #[serde(default)]
+    pub favorite_vocabularies: Vec<LegacyImportItem<FavoriteVocabulary>>,
+    #[serde(default)]
+    pub favorite_grammars: Vec<LegacyImportItem<FavoriteGrammar>>,
+    #[serde(default)]
+    pub bookmarks: Vec<LegacyImportItem<Bookmark>>,
+    #[serde(default)]
+    pub agent_tasks: Vec<LegacyImportItem<Value>>,
+    #[serde(default)]
+    pub artifacts: Vec<LegacyImportItem<Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyImportItem<T> {
+    pub source_id: String,
+    pub payload: T,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyImportFailedItem {
+    pub source_kind: String,
+    pub source_id: String,
+    pub error: String,
+    #[serde(default)]
+    pub payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyImportBatch {
+    pub id: String,
+    pub client_import_id: String,
+    pub request_sha256: String,
+    pub schema_version: String,
+    pub source_label: Option<String>,
+    pub status: String,
+    pub total_items: i32,
+    pub imported_items: i32,
+    pub skipped_items: i32,
+    pub failed_items: i32,
+    pub metadata: Value,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+    pub items: Vec<LegacyImportItemResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyImportItemResult {
+    pub id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub target_kind: Option<String>,
+    pub target_id: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
+    pub payload: Value,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PatchMaterialRequest {
     #[serde(default)]
@@ -603,6 +678,33 @@ impl BackendClient {
         self.parse_response(response).await
     }
 
+    pub async fn create_legacy_import(
+        &self,
+        payload: &LegacyImportRequest,
+    ) -> Result<LegacyImportBatch, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/legacy-imports"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_legacy_import(
+        &self,
+        id: &str,
+    ) -> Result<LegacyImportBatch, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/legacy-imports/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
@@ -630,6 +732,10 @@ impl BackendClient {
 
         Err(parse_backend_error(status, response.text().await.ok()))
     }
+}
+
+fn default_legacy_import_schema_version() -> String {
+    "legacy-import-v1".to_string()
 }
 
 impl BackendClientConfig {

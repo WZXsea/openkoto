@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::{auth, config::AppConfig, error::AppError, files, learning, materials};
+use crate::{auth, config::AppConfig, error::AppError, files, learning, legacy_imports, materials};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -107,6 +107,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/artifacts/{id}", put(learning::upsert_artifact))
         .route("/artifacts/{article_id}/{id}", get(learning::get_artifact))
+        .route(
+            "/legacy-imports",
+            post(legacy_imports::create_legacy_import),
+        )
+        .route(
+            "/legacy-imports/{id}",
+            get(legacy_imports::get_legacy_import),
+        )
         .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
         .with_state(state)
 }

@@ -24,6 +24,8 @@ thiserror = "2"
 futures = "0.3"
 uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+sha2 = "0.10"
 keyring = { version = "3", features = ["sync-secret-service"] }
 url = "2.5"
 regex = "1.10"
