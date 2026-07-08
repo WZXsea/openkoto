@@ -1,8 +1,8 @@
+use crate::backend_client::{BackendClient, PatchMaterialRequest};
 use crate::commands::save_mind_map_artifact_in_dir;
 use crate::moonshot::moonshot_base_url;
 use crate::storage::{
-    list_agent_tasks_in_dir, load_agent_task_in_dir, save_agent_task_in_dir,
-    update_article_active_mind_map_artifact_in_dir,
+    list_agent_tasks_in_dir, load_agent_task_in_dir, load_config, save_agent_task_in_dir,
 };
 use crate::types::{
     AgentTask, AgentTaskStatus, Article, Artifact, AssistantConversationMessage, MaterialSummary,
@@ -813,11 +813,6 @@ pub fn apply_worker_event_in_dir(
                     &task.article_id,
                     payload.content,
                 )?;
-                update_article_active_mind_map_artifact_in_dir(
-                    data_dir,
-                    &task.article_id,
-                    Some(artifact.id.clone()),
-                )?;
                 if !task.artifact_ids.iter().any(|id| id == &artifact.id) {
                     task.artifact_ids.push(artifact.id.clone());
                 }
@@ -1160,6 +1155,15 @@ fn spawn_stdout_listener(
                 }
             };
 
+            if let Some(saved_artifact) = artifact.clone() {
+                schedule_backend_artifact_link(
+                    &app_handle,
+                    saved_artifact,
+                    logs.clone(),
+                    runtime_state.clone(),
+                );
+            }
+
             emit_worker_event(
                 &app_handle,
                 &data_dir,
@@ -1170,6 +1174,67 @@ fn spawn_stdout_listener(
             );
         }
     });
+}
+
+fn schedule_backend_artifact_link(
+    app_handle: &AppHandle,
+    artifact: Artifact,
+    logs: Arc<Mutex<Vec<WorkerLogEntry>>>,
+    runtime_state: Arc<Mutex<WorkerRuntimeState>>,
+) {
+    let app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = sync_backend_active_mind_map_artifact(&app_handle, &artifact).await {
+            {
+                let mut guard = logs.lock().unwrap();
+                push_worker_log(
+                    &mut guard,
+                    WorkerLogLevel::Warn,
+                    "backend",
+                    format!("failed to sync mind map artifact link: {}", error),
+                );
+            }
+            emit_status_snapshot(&app_handle, &runtime_state, &logs);
+            eprintln!(
+                "[AgentWorker] Failed to sync mind map artifact link: {}",
+                error
+            );
+        }
+    });
+}
+
+async fn sync_backend_active_mind_map_artifact(
+    app_handle: &AppHandle,
+    artifact: &Artifact,
+) -> Result<(), String> {
+    let config = load_config(app_handle)?.unwrap_or_default();
+    let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
+    let mut article = client
+        .get_material(&artifact.article_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    article.active_mind_map_artifact_id = Some(artifact.id.clone());
+
+    client
+        .patch_material(
+            &article.id,
+            &PatchMaterialRequest {
+                title: Some(article.title.clone()),
+                content: Some(article.content.clone()),
+                source_type: article.source_type.clone(),
+                source_url: article.source_url.clone(),
+                media_path: article.media_path.clone(),
+                book_path: article.book_path.clone(),
+                book_type: article.book_type.clone(),
+                translated: Some(article.translated),
+                active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
+                metadata: None,
+                segments: Some(article.segments.clone()),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn spawn_stderr_listener(

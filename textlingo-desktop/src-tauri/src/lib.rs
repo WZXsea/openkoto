@@ -36,6 +36,11 @@ pub fn run() {
             // Configuration
             commands::get_config,
             commands::save_config_cmd,
+            commands::backend_check_session_cmd,
+            commands::backend_health_cmd,
+            commands::backend_login_cmd,
+            commands::backend_register_cmd,
+            commands::backend_logout_cmd,
             commands::set_api_key,
             commands::save_model_config,
             commands::delete_model_config,

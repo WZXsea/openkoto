@@ -33,6 +33,28 @@ pub struct BackendAuthHealth {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendUser {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendAuthResponse {
+    pub token_type: String,
+    pub token: String,
+    pub expires_at: String,
+    pub user: BackendUser,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendCurrentUserResponse {
+    pub user: BackendUser,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendFile {
     pub id: String,
     pub original_name: String,
@@ -46,6 +68,8 @@ pub struct BackendFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMaterialRequest {
+    #[serde(default)]
+    pub id: Option<String>,
     pub title: String,
     #[serde(default)]
     pub content: String,
@@ -106,6 +130,14 @@ struct BackendErrorDetail {
     message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AuthRequest<'a> {
+    email: &'a str,
+    password: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<&'a str>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BackendClientError {
     #[error("backend is not configured")]
@@ -130,6 +162,18 @@ impl BackendClient {
         Ok(Self::new(config))
     }
 
+    pub fn for_base_url(base_url: &str) -> Result<Self, BackendClientError> {
+        let base_url = base_url.trim();
+        if base_url.is_empty() {
+            return Err(BackendClientError::NotConfigured);
+        }
+
+        Ok(Self::new(BackendClientConfig {
+            base_url: normalize_base_url(base_url),
+            auth_token: String::new(),
+        }))
+    }
+
     pub fn new(config: BackendClientConfig) -> Self {
         Self {
             client: Client::new(),
@@ -140,6 +184,53 @@ impl BackendClient {
 
     pub async fn health(&self) -> Result<BackendHealthResponse, BackendClientError> {
         let response = self.client.get(self.url("/health")).send().await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn register(
+        &self,
+        email: &str,
+        password: &str,
+        display_name: Option<&str>,
+    ) -> Result<BackendAuthResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/auth/register"))
+            .json(&AuthRequest {
+                email,
+                password,
+                display_name,
+            })
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn login(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<BackendAuthResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/auth/login"))
+            .json(&AuthRequest {
+                email,
+                password,
+                display_name: None,
+            })
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn me(&self) -> Result<BackendCurrentUserResponse, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url("/auth/me"))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
         self.parse_response(response).await
     }
 
@@ -214,10 +305,11 @@ impl BackendClient {
             .to_string();
         let bytes = tokio::fs::read(path).await?;
         let file_part = multipart::Part::bytes(bytes).file_name(file_name);
-        let mut form = multipart::Form::new().part("file", file_part);
+        let mut form = multipart::Form::new();
         if let Some(metadata) = metadata {
             form = form.text("metadata", metadata.to_string());
         }
+        form = form.part("file", file_part);
 
         let response = self
             .client

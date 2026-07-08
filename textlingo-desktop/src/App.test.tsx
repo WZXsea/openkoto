@@ -16,6 +16,21 @@ const appShellMocks = vi.hoisted(() => ({
 
 vi.stubGlobal("__APP_VERSION__", "test");
 
+const authenticatedBackendSession = {
+  configured: true,
+  connected: true,
+  authenticated: true,
+  backend_url: "http://127.0.0.1:4000",
+  user: {
+    id: "user-1",
+    email: "reader@example.com",
+    display_name: "Reader",
+    created_at: "2026-03-30T00:00:00Z",
+    updated_at: "2026-03-30T00:00:00Z",
+  },
+  error: null,
+};
+
 beforeEach(() => {
   invokeMock.mockReset();
   getApiClientMock.mockReset();
@@ -176,6 +191,57 @@ vi.mock("./lib/hooks/useAgentOpenMaterialListener", () => ({
 }));
 
 describe("App onboarding", () => {
+  it("blocks material loading until backend is configured and authenticated", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve(null);
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve({
+          configured: false,
+          connected: false,
+          authenticated: false,
+          backend_url: null,
+          user: null,
+          error: null,
+        });
+      }
+
+      if (command === "list_articles_cmd") {
+        throw new Error("list_articles_cmd should not run before backend auth");
+      }
+
+      if (command === "import_book_cmd" || command === "get_article") {
+        throw new Error(`${command} should not run before backend auth`);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("OpenKoto Backend")).toBeInTheDocument();
+    expect(screen.getByText("需要配置 Backend 地址")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
+      expect(appShellMocks.capturedAgentOpenMaterial).toEqual(expect.any(Function));
+    });
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "drop", paths: ["/tmp/dropped.pdf"] },
+      });
+    });
+    act(() => {
+      appShellMocks.capturedAgentOpenMaterial?.("article-remote");
+    });
+
+    expect(invokeMock).not.toHaveBeenCalledWith("list_articles_cmd");
+    expect(invokeMock).not.toHaveBeenCalledWith("import_book_cmd", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("get_article", expect.anything());
+  });
+
   it("does not reopen onboarding in the same session after the user finishes it", async () => {
     const completedConfig = {
       onboarding_completed: true,
@@ -191,6 +257,10 @@ describe("App onboarding", () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_config") {
         return Promise.resolve(configState === "completed" ? completedConfig : null);
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
       }
 
       if (command === "list_articles_cmd") {
@@ -270,6 +340,10 @@ describe("App onboarding", () => {
         return Promise.resolve(validConfig);
       }
 
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
       if (command === "list_articles_cmd") {
         return Promise.resolve([sampleVideoArticle]);
       }
@@ -344,6 +418,10 @@ describe("App onboarding", () => {
         return Promise.resolve(validConfig);
       }
 
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
       if (command === "list_articles_cmd") {
         return Promise.resolve(sampleArticles);
       }
@@ -397,6 +475,10 @@ describe("App onboarding", () => {
         });
       }
 
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
       if (command === "list_articles_cmd") {
         return Promise.resolve(sampleArticles);
       }
@@ -445,6 +527,10 @@ describe("App onboarding", () => {
           interface_language: "en",
           prompt_features: [],
         });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
       }
 
       if (command === "list_articles_cmd") {
@@ -500,6 +586,10 @@ describe("App onboarding", () => {
           interface_language: "en",
           prompt_features: [],
         });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
       }
 
       if (command === "list_articles_cmd") {
@@ -573,6 +663,10 @@ describe("App onboarding", () => {
           interface_language: "en",
           prompt_features: [],
         });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
       }
 
       if (command === "list_articles_cmd") {

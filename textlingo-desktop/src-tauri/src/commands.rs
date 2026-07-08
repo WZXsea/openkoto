@@ -3,26 +3,27 @@ use crate::agent_worker::{
     AgentWorkerStatusSnapshot,
 };
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
+use crate::backend_client::{
+    BackendClient, BackendClientError, BackendHealthResponse, BackendUser, CreateMaterialRequest,
+    PatchMaterialRequest,
+};
 use crate::feature_gate::require_external_tools_enabled;
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
 use crate::moonshot::is_moonshot_provider;
 use crate::platform::safe_file_io;
 use crate::storage::{
-    delete_article,
     delete_bookmark,
     delete_favorite_grammar,
     delete_favorite_vocabulary,
     delete_word_pack,
     ensure_app_dirs,
     ensure_favorites_dirs,
-    list_articles,
     list_bookmarks,
     list_bookmarks_for_book,
     list_favorite_grammars,
     list_favorite_vocabularies,
     list_word_packs,
     load_agent_task,
-    load_article,
     load_artifact,
     load_bookmark,
     load_config,
@@ -30,7 +31,6 @@ use crate::storage::{
     load_favorite_vocabulary,
     load_word_pack,
     save_agent_task,
-    save_article,
     save_artifact,
     // 书签存储函数
     save_bookmark,
@@ -39,7 +39,6 @@ use crate::storage::{
     // 收藏夹存储函数
     save_favorite_vocabulary,
     save_word_pack,
-    update_article_active_mind_map_artifact,
 };
 use crate::subtitle_import::{create_article_from_srt, import_subtitles_into_article};
 use crate::types::{
@@ -53,7 +52,7 @@ use crate::types::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -61,6 +60,97 @@ use uuid::Uuid;
 pub type AppState<'a> = State<'a, AIServiceCache>;
 
 pub use crate::types::MaterialSummary;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendSessionCheck {
+    pub configured: bool,
+    pub connected: bool,
+    pub authenticated: bool,
+    pub backend_url: Option<String>,
+    pub user: Option<BackendUser>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendAuthResult {
+    pub config: crate::types::AppConfig,
+    pub user: BackendUser,
+    pub expires_at: String,
+}
+
+fn backend_client_for_app(app_handle: &AppHandle) -> Result<BackendClient, String> {
+    let config = load_config(app_handle)?.unwrap_or_default();
+    BackendClient::from_app_config(&config).map_err(backend_error_to_string)
+}
+
+fn backend_error_to_string(error: BackendClientError) -> String {
+    match error {
+        BackendClientError::NotConfigured => {
+            "Backend is required. Configure backend URL and sign in before using materials."
+                .to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+fn create_material_payload_from_article(
+    article: &Article,
+    metadata: Option<serde_json::Value>,
+) -> CreateMaterialRequest {
+    CreateMaterialRequest {
+        id: Some(article.id.clone()),
+        title: article.title.clone(),
+        content: article.content.clone(),
+        source_type: article.source_type.clone(),
+        source_url: article.source_url.clone(),
+        media_path: article.media_path.clone(),
+        book_path: article.book_path.clone(),
+        book_type: article.book_type.clone(),
+        translated: Some(article.translated),
+        active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
+        metadata,
+        segments: Some(article.segments.clone()),
+    }
+}
+
+fn patch_material_payload_from_article(article: &Article) -> PatchMaterialRequest {
+    PatchMaterialRequest {
+        title: Some(article.title.clone()),
+        content: Some(article.content.clone()),
+        source_type: article.source_type.clone(),
+        source_url: article.source_url.clone(),
+        media_path: article.media_path.clone(),
+        book_path: article.book_path.clone(),
+        book_type: article.book_type.clone(),
+        translated: Some(article.translated),
+        active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
+        metadata: None,
+        segments: Some(article.segments.clone()),
+    }
+}
+
+async fn create_backend_material_from_article(
+    app_handle: &AppHandle,
+    article: &Article,
+    metadata: Option<serde_json::Value>,
+) -> Result<Article, String> {
+    let client = backend_client_for_app(app_handle)?;
+    client
+        .create_material(&create_material_payload_from_article(article, metadata))
+        .await
+        .map_err(backend_error_to_string)
+}
+
+async fn replace_backend_article(
+    app_handle: &AppHandle,
+    article: &Article,
+) -> Result<Article, String> {
+    let client = backend_client_for_app(app_handle)?;
+    client
+        .patch_material(&article.id, &patch_material_payload_from_article(article))
+        .await
+        .map_err(backend_error_to_string)
+}
 
 // Helper function to create segments from content
 // 按句子分隔内容（使用.或。作为分隔符），并标记是否需要换行
@@ -636,11 +726,9 @@ pub async fn artifact_save_cmd(
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let artifact = save_mind_map_artifact_in_dir(&data_dir, &task_id, &article_id, content)?;
     save_artifact(&app_handle, &artifact)?;
-    let _ = update_article_active_mind_map_artifact(
-        &app_handle,
-        &article_id,
-        Some(artifact.id.clone()),
-    )?;
+    let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
+    article.active_mind_map_artifact_id = Some(artifact.id.clone());
+    let _ = replace_backend_article(&app_handle, &article).await?;
     Ok(artifact)
 }
 
@@ -1285,6 +1373,174 @@ pub async fn save_config_cmd(
     Ok("Configuration saved".to_string())
 }
 
+#[tauri::command]
+pub async fn backend_check_session_cmd(
+    app_handle: AppHandle,
+) -> Result<BackendSessionCheck, String> {
+    let config = load_config(&app_handle)?.unwrap_or_default();
+    let backend_url = config
+        .backend_url
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let Some(backend_url) = backend_url else {
+        return Ok(BackendSessionCheck {
+            configured: false,
+            connected: false,
+            authenticated: false,
+            backend_url: None,
+            user: None,
+            error: None,
+        });
+    };
+
+    let health_client =
+        BackendClient::for_base_url(&backend_url).map_err(backend_error_to_string)?;
+    let health = match health_client.health().await {
+        Ok(health) => health,
+        Err(error) => {
+            return Ok(BackendSessionCheck {
+                configured: true,
+                connected: false,
+                authenticated: false,
+                backend_url: Some(backend_url),
+                user: None,
+                error: Some(backend_error_to_string(error)),
+            });
+        }
+    };
+
+    if !health.auth.configured {
+        return Ok(BackendSessionCheck {
+            configured: true,
+            connected: true,
+            authenticated: false,
+            backend_url: Some(backend_url),
+            user: None,
+            error: Some("Backend authentication is not configured. Set OPENKOTO_JWT_SECRET and restart the backend.".to_string()),
+        });
+    }
+
+    if config
+        .auth_token
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return Ok(BackendSessionCheck {
+            configured: true,
+            connected: true,
+            authenticated: false,
+            backend_url: Some(backend_url),
+            user: None,
+            error: None,
+        });
+    }
+
+    match BackendClient::from_app_config(&config)
+        .map_err(backend_error_to_string)?
+        .me()
+        .await
+    {
+        Ok(current) => Ok(BackendSessionCheck {
+            configured: true,
+            connected: true,
+            authenticated: true,
+            backend_url: Some(backend_url),
+            user: Some(current.user),
+            error: None,
+        }),
+        Err(error) => Ok(BackendSessionCheck {
+            configured: true,
+            connected: true,
+            authenticated: false,
+            backend_url: Some(backend_url),
+            user: None,
+            error: Some(backend_error_to_string(error)),
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn backend_health_cmd(backend_url: String) -> Result<BackendHealthResponse, String> {
+    BackendClient::for_base_url(&backend_url)
+        .map_err(backend_error_to_string)?
+        .health()
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn backend_login_cmd(
+    app_handle: AppHandle,
+    backend_url: String,
+    email: String,
+    password: String,
+) -> Result<BackendAuthResult, String> {
+    let client = BackendClient::for_base_url(&backend_url).map_err(backend_error_to_string)?;
+    let health = client.health().await.map_err(backend_error_to_string)?;
+    if !health.auth.configured {
+        return Err("Backend authentication is not configured. Set OPENKOTO_JWT_SECRET and restart the backend.".to_string());
+    }
+
+    let auth = client
+        .login(email.trim(), &password)
+        .await
+        .map_err(backend_error_to_string)?;
+    save_backend_auth_result(&app_handle, backend_url, auth).await
+}
+
+#[tauri::command]
+pub async fn backend_register_cmd(
+    app_handle: AppHandle,
+    backend_url: String,
+    email: String,
+    password: String,
+    display_name: Option<String>,
+) -> Result<BackendAuthResult, String> {
+    let client = BackendClient::for_base_url(&backend_url).map_err(backend_error_to_string)?;
+    let health = client.health().await.map_err(backend_error_to_string)?;
+    if !health.auth.configured {
+        return Err("Backend authentication is not configured. Set OPENKOTO_JWT_SECRET and restart the backend.".to_string());
+    }
+
+    let display_name = display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let auth = client
+        .register(email.trim(), &password, display_name)
+        .await
+        .map_err(backend_error_to_string)?;
+    save_backend_auth_result(&app_handle, backend_url, auth).await
+}
+
+#[tauri::command]
+pub async fn backend_logout_cmd(app_handle: AppHandle) -> Result<crate::types::AppConfig, String> {
+    let mut config = load_config(&app_handle)?.unwrap_or_default();
+    config.auth_token = None;
+    save_config(&app_handle, &config)?;
+    Ok(config)
+}
+
+async fn save_backend_auth_result(
+    app_handle: &AppHandle,
+    backend_url: String,
+    auth: crate::backend_client::BackendAuthResponse,
+) -> Result<BackendAuthResult, String> {
+    let mut config = load_config(app_handle)?.unwrap_or_default();
+    config.backend_url = Some(backend_url.trim().trim_end_matches('/').to_string());
+    config.auth_token = Some(auth.token);
+    save_config(app_handle, &config)?;
+
+    Ok(BackendAuthResult {
+        config,
+        user: auth.user,
+        expires_at: auth.expires_at,
+    })
+}
+
 /// Add or update a model configuration
 #[tauri::command]
 pub async fn save_model_config(
@@ -1486,11 +1742,7 @@ pub async fn create_article(
         segments,
     };
 
-    // Save article metadata and content
-    let article_json = serde_json::to_string(&article).unwrap();
-    save_article(&app_handle, &id, &article_json)?;
-
-    Ok(article)
+    create_backend_material_from_article(&app_handle, &article, None).await
 }
 
 #[tauri::command]
@@ -1498,43 +1750,28 @@ pub async fn resegment_article(
     app_handle: AppHandle,
     article_id: String,
 ) -> Result<Article, String> {
-    let article_json = load_article(&app_handle, &article_id)?;
-    let mut article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let mut article = get_article(app_handle.clone(), article_id).await?;
 
     article.segments = create_segments_from_content(&article.id, &article.content);
-
-    let updated_json = serde_json::to_string(&article).unwrap();
-    save_article(&app_handle, &article.id, &updated_json)?;
-
-    Ok(article)
+    replace_backend_article(&app_handle, &article).await
 }
 
 #[tauri::command]
 pub async fn get_article(app_handle: AppHandle, id: String) -> Result<Article, String> {
-    let article_json = load_article(&app_handle, &id)?;
-    let article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
-    Ok(article)
+    let client = backend_client_for_app(&app_handle)?;
+    client
+        .get_material(&id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[tauri::command]
 pub async fn list_articles_cmd(app_handle: AppHandle) -> Result<Vec<Article>, String> {
-    let article_ids = list_articles(&app_handle)?;
-
-    let mut articles = Vec::new();
-    for id in article_ids {
-        if let Ok(article_json) = load_article(&app_handle, &id) {
-            if let Ok(article) = serde_json::from_str::<Article>(&article_json) {
-                articles.push(article);
-            }
-        }
-    }
-
-    // Sort by created_at (newest first)
-    articles.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-    Ok(articles)
+    let client = backend_client_for_app(&app_handle)?;
+    client
+        .list_materials()
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[tauri::command]
@@ -1546,9 +1783,7 @@ pub async fn update_article(
     source_url: Option<String>,
     translated: Option<bool>,
 ) -> Result<Article, String> {
-    let article_json = load_article(&app_handle, &id)?;
-    let mut article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let mut article = get_article(app_handle.clone(), id.clone()).await?;
 
     if let Some(t) = title {
         article.title = t;
@@ -1563,16 +1798,16 @@ pub async fn update_article(
         article.translated = t;
     }
 
-    let updated_json = serde_json::to_string(&article).unwrap();
-    save_article(&app_handle, &id, &updated_json)?;
-
-    Ok(article)
+    replace_backend_article(&app_handle, &article).await
 }
 
 #[tauri::command]
 pub async fn delete_article_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
-    delete_article(&app_handle, &id)?;
-    Ok(())
+    let client = backend_client_for_app(&app_handle)?;
+    client
+        .delete_material(&id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[tauri::command]
@@ -1584,9 +1819,7 @@ pub async fn update_article_segment(
     reading: Option<String>,
     translation: Option<String>,
 ) -> Result<Article, String> {
-    let article_json = load_article(&app_handle, &article_id)?;
-    let mut article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
 
     if let Some(segment) = article.segments.iter_mut().find(|s| s.id == segment_id) {
         if let Some(exp) = explanation {
@@ -1602,10 +1835,7 @@ pub async fn update_article_segment(
         return Err("Segment not found".to_string());
     }
 
-    let updated_json = serde_json::to_string(&article).unwrap();
-    save_article(&app_handle, &article_id, &updated_json)?;
-
-    Ok(article)
+    replace_backend_article(&app_handle, &article).await
 }
 
 // AI commands
@@ -1769,10 +1999,7 @@ pub async fn translate_article(
     );
     article.translated = true;
 
-    let article_json = serde_json::to_string(&article).unwrap();
-    save_article(&app_handle, &article_id, &article_json)?;
-
-    Ok(article)
+    replace_backend_article(&app_handle, &article).await
 }
 
 #[tauri::command]
@@ -2649,11 +2876,7 @@ pub async fn import_youtube_video_cmd(
 
     let article = crate::youtube::import_youtube_video(app_handle.clone(), url).await?;
 
-    let article_json = serde_json::to_string(&article)
-        .map_err(|e| format!("Failed to serialize article: {}", e))?;
-    save_article(&app_handle, &article.id, &article_json)?;
-
-    Ok(article)
+    create_backend_material_from_article(&app_handle, &article, None).await
 }
 
 #[tauri::command]
@@ -2662,6 +2885,7 @@ pub async fn import_local_video_cmd(
     file_path: String,
     subtitle_path: Option<String>,
 ) -> Result<Article, String> {
+    let backend_client = backend_client_for_app(&app_handle)?;
     let app_data_dir = app_handle
         .path()
         .app_data_dir()
@@ -2693,12 +2917,20 @@ pub async fn import_local_video_cmd(
     let dest_path = videos_dir.join(&dest_name);
 
     std::fs::copy(src_path, &dest_path).map_err(|e| format!("Failed to copy file: {}", e))?;
+    let uploaded_file = backend_client
+        .upload_file_path(
+            src_path,
+            Some(serde_json::json!({
+                "kind": if is_audio_file_extension(&ext) { "audio" } else { "video" },
+                "source": "desktop_import",
+                "cached_path": dest_path.to_string_lossy(),
+            })),
+        )
+        .await
+        .map_err(backend_error_to_string)?;
 
     let created_at = chrono::Utc::now().to_rfc3339();
-    let is_audio = matches!(
-        ext.to_lowercase().as_str(),
-        "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "wma"
-    );
+    let is_audio = is_audio_file_extension(&ext);
 
     // Initial content placeholder
     let content = if is_audio {
@@ -2727,14 +2959,32 @@ pub async fn import_local_video_cmd(
     };
 
     if let Some(subtitle_path) = subtitle_path {
-        import_subtitles_into_article(&mut article, std::path::Path::new(&subtitle_path))?;
+        let subtitle_path = Path::new(&subtitle_path);
+        import_subtitles_into_article(&mut article, subtitle_path)?;
+        let _ = backend_client
+            .upload_file_path(
+                subtitle_path,
+                Some(serde_json::json!({
+                    "kind": "subtitle",
+                    "source": "desktop_import",
+                    "material_id": article.id,
+                })),
+            )
+            .await
+            .map_err(backend_error_to_string)?;
     }
 
-    let article_json = serde_json::to_string(&article)
-        .map_err(|e| format!("Failed to serialize article: {}", e))?;
-    save_article(&app_handle, &id, &article_json)?;
-
-    Ok(article)
+    create_backend_material_from_article(
+        &app_handle,
+        &article,
+        Some(serde_json::json!({
+            "backend_file_id": uploaded_file.id,
+            "backend_download_url": uploaded_file.download_url,
+            "original_name": uploaded_file.original_name,
+            "cached_path": dest_path.to_string_lossy(),
+        })),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2743,21 +2993,28 @@ pub async fn import_article_subtitles_cmd(
     article_id: String,
     subtitle_path: String,
 ) -> Result<Article, String> {
-    let article_json = load_article(&app_handle, &article_id)?;
-    let mut article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let backend_client = backend_client_for_app(&app_handle)?;
+    let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
 
     if article.media_path.is_none() {
         return Err("仅媒体素材支持导入字幕".to_string());
     }
 
-    import_subtitles_into_article(&mut article, std::path::Path::new(&subtitle_path))?;
+    let subtitle_path = Path::new(&subtitle_path);
+    import_subtitles_into_article(&mut article, subtitle_path)?;
+    let _uploaded_file = backend_client
+        .upload_file_path(
+            subtitle_path,
+            Some(serde_json::json!({
+                "kind": "subtitle",
+                "source": "desktop_import",
+                "material_id": article_id,
+            })),
+        )
+        .await
+        .map_err(backend_error_to_string)?;
 
-    let article_json = serde_json::to_string(&article)
-        .map_err(|e| format!("Failed to serialize article: {}", e))?;
-    save_article(&app_handle, &article_id, &article_json)?;
-
-    Ok(article)
+    replace_backend_article(&app_handle, &article).await
 }
 
 #[tauri::command]
@@ -2766,11 +3023,29 @@ pub async fn import_srt_file_cmd(
     file_path: String,
     title: Option<String>,
 ) -> Result<Article, String> {
+    let backend_client = backend_client_for_app(&app_handle)?;
     let article = create_article_from_srt(std::path::Path::new(&file_path), title)?;
-    let article_json = serde_json::to_string(&article)
-        .map_err(|e| format!("Failed to serialize article: {}", e))?;
-    save_article(&app_handle, &article.id, &article_json)?;
-    Ok(article)
+    let uploaded_file = backend_client
+        .upload_file_path(
+            Path::new(&file_path),
+            Some(serde_json::json!({
+                "kind": "subtitle",
+                "source": "desktop_import",
+                "material_id": article.id,
+            })),
+        )
+        .await
+        .map_err(backend_error_to_string)?;
+    create_backend_material_from_article(
+        &app_handle,
+        &article,
+        Some(serde_json::json!({
+            "backend_file_id": uploaded_file.id,
+            "backend_download_url": uploaded_file.download_url,
+            "original_name": uploaded_file.original_name,
+        })),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2779,17 +3054,10 @@ pub async fn prepare_ktv_segments_cmd(
     article_id: String,
     language_hint: Option<String>,
 ) -> Result<Article, String> {
-    let article_json = load_article(&app_handle, &article_id)?;
-    let article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let article = get_article(app_handle.clone(), article_id.clone()).await?;
 
     let prepared = prepare_ktv_segments(article, language_hint.as_deref())?;
-    let prepared_json = serde_json::to_string(&prepared)
-        .map_err(|e| format!("Failed to serialize article: {}", e))?;
-
-    save_article(&app_handle, &article_id, &prepared_json)?;
-
-    Ok(prepared)
+    replace_backend_article(&app_handle, &prepared).await
 }
 
 #[tauri::command]
@@ -2801,9 +3069,7 @@ pub async fn export_ktv_video_cmd(
 ) -> Result<KtvExportResult, String> {
     require_external_tools_enabled("export_ktv_video_cmd")?;
 
-    let article_json = load_article(&app_handle, &article_id)?;
-    let article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let article = get_article(app_handle.clone(), article_id).await?;
 
     export_ktv_video(
         &app_handle,
@@ -2831,9 +3097,7 @@ pub async fn extract_subtitles_cmd(
     );
 
     // 1. 加载文章
-    let article_json = load_article(&app_handle, &article_id)?;
-    let mut article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
 
     // 2. 验证是视频并获取视频路径
     let video_path = article
@@ -2886,42 +3150,47 @@ pub async fn extract_subtitles_cmd(
         Some(id) => Some(id.to_string()),
     };
 
-    let (provider, api_key, model, base_url, use_asr): (String, String, String, Option<String>, bool) =
-        if let Some(id) = explicit_asr_id {
-            // 菜单显式选了某个转写模型
-            let asr = config
-                .asr_configs
-                .iter()
-                .find(|c| c.id == id)
-                .ok_or("所选转写模型不存在，请在 设置 → 字幕转写 重新选择。")?;
-            let picked = (
-                asr.api_provider.clone(),
-                asr.api_key.clone(),
-                asr.model.clone(),
-                asr.base_url.clone(),
-                true,
-            );
-            // 记为默认（设为激活）并落盘
-            if config.active_asr_model_id.as_deref() != Some(id.as_str()) {
-                config.active_asr_model_id = Some(id.clone());
-                if let Err(e) = save_config(&app_handle, &config) {
-                    println!("[ExtractSubtitles] 保存激活转写配置失败: {}", e);
-                }
+    let (provider, api_key, model, base_url, use_asr): (
+        String,
+        String,
+        String,
+        Option<String>,
+        bool,
+    ) = if let Some(id) = explicit_asr_id {
+        // 菜单显式选了某个转写模型
+        let asr = config
+            .asr_configs
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or("所选转写模型不存在，请在 设置 → 字幕转写 重新选择。")?;
+        let picked = (
+            asr.api_provider.clone(),
+            asr.api_key.clone(),
+            asr.model.clone(),
+            asr.base_url.clone(),
+            true,
+        );
+        // 记为默认（设为激活）并落盘
+        if config.active_asr_model_id.as_deref() != Some(id.as_str()) {
+            config.active_asr_model_id = Some(id.clone());
+            if let Err(e) = save_config(&app_handle, &config) {
+                println!("[ExtractSubtitles] 保存激活转写配置失败: {}", e);
             }
-            picked
-        } else if force_llm {
-            resolve_llm(&config)?
-        } else if let Some(asr) = config.get_active_asr_config() {
-            (
-                asr.api_provider.clone(),
-                asr.api_key.clone(),
-                asr.model.clone(),
-                asr.base_url.clone(),
-                true,
-            )
-        } else {
-            resolve_llm(&config)?
-        };
+        }
+        picked
+    } else if force_llm {
+        resolve_llm(&config)?
+    } else if let Some(asr) = config.get_active_asr_config() {
+        (
+            asr.api_provider.clone(),
+            asr.api_key.clone(),
+            asr.model.clone(),
+            asr.base_url.clone(),
+            true,
+        )
+    } else {
+        resolve_llm(&config)?
+    };
 
     // 4. 调用字幕提取模块 (使用 article_id 作为 event_id)
     let segments = crate::subtitle_extraction::extract_subtitles(
@@ -2952,14 +3221,11 @@ pub async fn extract_subtitles_cmd(
         .collect::<Vec<_>>()
         .join(" ");
 
-    // 6. 保存文章
-    let updated_json = serde_json::to_string(&article)
-        .map_err(|e| format!("Failed to serialize article: {}", e))?;
-    save_article(&app_handle, &article_id, &updated_json)?;
+    let updated = replace_backend_article(&app_handle, &article).await?;
 
     println!("[ExtractSubtitles] 字幕提取完成并保存");
 
-    Ok(article)
+    Ok(updated)
 }
 
 // ============================================================================
@@ -2967,6 +3233,13 @@ pub async fn extract_subtitles_cmd(
 // ============================================================================
 
 const BOOKS_DIR: &str = "books";
+
+fn is_audio_file_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "wma"
+    )
+}
 
 /// 确保书籍存储目录存在
 fn ensure_books_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
@@ -2993,6 +3266,7 @@ pub async fn import_book_cmd(
 ) -> Result<Article, String> {
     use std::path::Path;
 
+    let backend_client = backend_client_for_app(&app_handle)?;
     let src_path = Path::new(&file_path);
 
     // 验证文件存在
@@ -3032,6 +3306,18 @@ pub async fn import_book_cmd(
 
     // 复制文件到应用数据目录
     std::fs::copy(src_path, &dest_path).map_err(|e| format!("复制文件失败: {}", e))?;
+    let uploaded_file = backend_client
+        .upload_file_path(
+            src_path,
+            Some(serde_json::json!({
+                "kind": "book",
+                "book_type": book_type,
+                "source": "desktop_import",
+                "cached_path": dest_path.to_string_lossy(),
+            })),
+        )
+        .await
+        .map_err(backend_error_to_string)?;
 
     let created_at = chrono::Utc::now().to_rfc3339();
 
@@ -3063,17 +3349,23 @@ pub async fn import_book_cmd(
         segments: Vec::new(), // 书籍不预分段，由阅读器处理
     };
 
-    // 保存文章记录
-    let article_json =
-        serde_json::to_string(&article).map_err(|e| format!("序列化文章失败: {}", e))?;
-    save_article(&app_handle, &id, &article_json)?;
-
     println!(
         "[ImportBook] 书籍导入成功: {} ({})",
         article.title, book_type
     );
 
-    Ok(article)
+    create_backend_material_from_article(
+        &app_handle,
+        &article,
+        Some(serde_json::json!({
+            "backend_file_id": uploaded_file.id,
+            "backend_download_url": uploaded_file.download_url,
+            "original_name": uploaded_file.original_name,
+            "book_type": book_type,
+            "cached_path": dest_path.to_string_lossy(),
+        })),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3116,11 +3408,7 @@ pub async fn import_web_material_cmd(
         segments,
     };
 
-    let article_json = serde_json::to_string(&article)
-        .map_err(|e| format!("Failed to serialize article: {}", e))?;
-    save_article(&app_handle, &id, &article_json)?;
-
-    Ok(article)
+    create_backend_material_from_article(&app_handle, &article, None).await
 }
 
 // File System Commands
@@ -3136,24 +3424,18 @@ pub async fn write_binary_file(path: String, content: Vec<u8>) -> Result<(), Str
 
 #[tauri::command]
 pub async fn delete_article_subtitles_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
-    let article_json = load_article(&app_handle, &id)?;
-    let mut article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let mut article = get_article(app_handle.clone(), id.clone()).await?;
 
     article.segments = Vec::new();
     article.translated = false;
 
-    let updated_json = serde_json::to_string(&article).unwrap();
-    save_article(&app_handle, &id, &updated_json)?;
-
+    let _ = replace_backend_article(&app_handle, &article).await?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_article_analysis_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
-    let article_json = load_article(&app_handle, &id)?;
-    let mut article: Article = serde_json::from_str(&article_json)
-        .map_err(|e| format!("Failed to parse article: {}", e))?;
+    let mut article = get_article(app_handle.clone(), id.clone()).await?;
 
     for segment in &mut article.segments {
         segment.translation = None;
@@ -3161,9 +3443,7 @@ pub async fn delete_article_analysis_cmd(app_handle: AppHandle, id: String) -> R
     }
     article.translated = false;
 
-    let updated_json = serde_json::to_string(&article).unwrap();
-    save_article(&app_handle, &id, &updated_json)?;
-
+    let _ = replace_backend_article(&app_handle, &article).await?;
     Ok(())
 }
 
@@ -3191,7 +3471,11 @@ pub async fn translate_pdf_document(
     use std::time::Instant;
 
     let started_at = Instant::now();
-    logging::log(LogLevel::Info, "pdf", "==================== PDF translation started ====================");
+    logging::log(
+        LogLevel::Info,
+        "pdf",
+        "==================== PDF translation started ====================",
+    );
     logging::log(
         LogLevel::Info,
         "pdf",

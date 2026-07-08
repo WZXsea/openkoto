@@ -151,6 +151,7 @@ async fn materials_and_files_are_user_isolated_when_database_is_configured() {
     assert_eq!(uploaded["content_type"], "text/plain");
     assert_eq!(uploaded["byte_size"], 19);
     assert_eq!(uploaded["sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(uploaded["metadata"]["purpose"], "test");
     let file_id = uploaded["id"].as_str().unwrap().to_string();
 
     let (status, bytes) = raw_request(
@@ -263,18 +264,18 @@ async fn multipart_file_request(
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
-        b"Content-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n",
-    );
-    body.extend_from_slice(br#"{"purpose":"test"}"#);
-    body.extend_from_slice(b"\r\n");
-    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    body.extend_from_slice(
         format!(
             "Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: {content_type}\r\n\r\n"
         )
         .as_bytes(),
     );
     body.extend_from_slice(file_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n",
+    );
+    body.extend_from_slice(br#"{"purpose":"test"}"#);
     body.extend_from_slice(b"\r\n");
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 

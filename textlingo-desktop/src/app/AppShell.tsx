@@ -5,6 +5,7 @@ import { BookOpen, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ApiQuickSwitcher } from "../components/features/ApiQuickSwitcher";
+import { BackendConnectionGate } from "../components/features/BackendConnectionGate";
 import { DropImportOverlay, type DropImportStatus } from "../components/features/DropImportOverlay";
 import { NewMaterialDialog } from "../components/features/NewMaterialDialog";
 import { OnboardingDialog } from "../components/features/OnboardingDialog";
@@ -15,7 +16,7 @@ import { getApiClient } from "../lib/api";
 import { importDroppedPath, isSupportedDropPath, getFileName } from "../lib/dropImport";
 import { useAgentOpenMaterialListener } from "../lib/hooks/useAgentOpenMaterialListener";
 import { isPhase1CapabilityEnabled } from "../lib/phase1Capabilities";
-import type { Article, AppConfig } from "../lib/tauri";
+import type { Article, AppConfig, BackendSessionCheck } from "../lib/tauri";
 import { useAppStore } from "./appStore";
 import { getAppNavigationItem } from "./navigation";
 import { AppRoutes } from "./routes";
@@ -42,11 +43,15 @@ export function AppShell() {
   const [isImporting, setIsImporting] = useState(false);
   const [importingCount, setImportingCount] = useState(0);
   const [dropStatus, setDropStatus] = useState<DropImportStatus | null>(null);
+  const [backendStatus, setBackendStatus] = useState<BackendSessionCheck | null>(null);
+  const [isCheckingBackend, setIsCheckingBackend] = useState(true);
   const dropStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isImportingRef = useRef(false);
   const isMountedRef = useRef(true);
+  const backendAuthenticatedRef = useRef(false);
 
   const hasConfig = Boolean(store.config?.model_configs?.length && store.config.active_model_id);
+  const isBackendAuthenticated = Boolean(backendStatus?.authenticated);
   const canUseKtvExport = isPhase1CapabilityEnabled("ktvExport");
   const canCheckForUpdates = isPhase1CapabilityEnabled("updateCheck");
   const isFavoritesActive = store.activeScreen === "favorites";
@@ -69,14 +74,14 @@ export function AppShell() {
   const loadData = useCallback(async (): Promise<Article[]> => {
     if (isMountedRef.current) setIsLoading(true);
     try {
-      const [configResult, articlesResult] = await Promise.all([
-        invoke<AppConfig | null>("get_config"),
-        invoke<Article[]>("list_articles_cmd"),
-      ]);
+      const configResult = await invoke<AppConfig | null>("get_config");
+      const sessionResult = await invoke<BackendSessionCheck>("backend_check_session_cmd");
       if (isMountedRef.current) {
         setConfig(configResult);
+        setBackendStatus(sessionResult);
         const hasSavedModelConfigs = Boolean(configResult?.model_configs?.length);
         const shouldShowOnboarding =
+          sessionResult.authenticated &&
           !hasDismissedOnboarding() &&
           (!configResult || (!configResult.onboarding_completed && !hasSavedModelConfigs));
 
@@ -84,6 +89,15 @@ export function AppShell() {
           getApiClient(configResult);
         }
         setShowOnboarding(shouldShowOnboarding);
+      }
+
+      if (!sessionResult.authenticated) {
+        if (isMountedRef.current) setArticles([]);
+        return [];
+      }
+
+      const articlesResult = await invoke<Article[]>("list_articles_cmd");
+      if (isMountedRef.current) {
         setArticles(articlesResult);
       }
       return articlesResult;
@@ -91,9 +105,21 @@ export function AppShell() {
       console.error("Failed to load data:", err);
       return [];
     } finally {
-      if (isMountedRef.current) setIsLoading(false);
+      if (isMountedRef.current) {
+        setIsLoading(false);
+        setIsCheckingBackend(false);
+      }
     }
   }, [hasDismissedOnboarding, setArticles, setConfig, setIsLoading, setShowOnboarding]);
+
+  const handleBackendAuthenticated = useCallback(async (config: AppConfig) => {
+    if (isMountedRef.current) {
+      setConfig(config);
+      getApiClient(config);
+      setIsCheckingBackend(true);
+    }
+    await loadData();
+  }, [loadData, setConfig]);
 
   const dropActionsRef = useRef({
     loadData,
@@ -125,6 +151,10 @@ export function AppShell() {
   }, [loadData]);
 
   useEffect(() => {
+    backendAuthenticatedRef.current = isBackendAuthenticated;
+  }, [isBackendAuthenticated]);
+
+  useEffect(() => {
     let isCancelled = false;
     let unlisten: (() => void) | undefined;
 
@@ -136,6 +166,13 @@ export function AppShell() {
 
           const dropActions = dropActionsRef.current;
           const payload = event.payload;
+          if (!backendAuthenticatedRef.current) {
+            if (payload.type === "drop" || payload.type === "leave") {
+              setIsDragging(false);
+            }
+            return;
+          }
+
           if (payload.type === "enter" || payload.type === "over") {
             if (!isImportingRef.current) setIsDragging(true);
             return;
@@ -226,6 +263,8 @@ export function AppShell() {
   }, []);
 
   const handleAgentOpenMaterial = useCallback((materialId: string) => {
+    if (!isBackendAuthenticated) return;
+
     const existingArticle = openArticleById(materialId, { returnScreen: "home" });
     if (existingArticle) return;
 
@@ -237,7 +276,7 @@ export function AppShell() {
       .catch((error) => {
         console.error("Failed to open material from agent event:", error);
       });
-  }, [openArticle, openArticleById, prependArticleIfMissing]);
+  }, [isBackendAuthenticated, openArticle, openArticleById, prependArticleIfMissing]);
 
   useAgentOpenMaterialListener(handleAgentOpenMaterial);
 
@@ -274,6 +313,18 @@ export function AppShell() {
           <p className="text-muted-foreground">{t("app.loading")}</p>
         </div>
       </div>
+    );
+  }
+
+  if (!backendStatus?.authenticated) {
+    return (
+      <BackendConnectionGate
+        config={store.config}
+        status={backendStatus}
+        isChecking={isCheckingBackend}
+        onRetry={loadData}
+        onAuthenticated={handleBackendAuthenticated}
+      />
     );
   }
 

@@ -69,7 +69,7 @@ pub fn build_router(state: AppState) -> Router {
 
 pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, AppError> {
     let started = Instant::now();
-    sqlx::query_scalar::<_, i64>("SELECT 1")
+    sqlx::query_scalar::<_, i64>("SELECT 1::BIGINT")
         .fetch_one(&state.pool)
         .await?;
 

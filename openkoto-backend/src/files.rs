@@ -100,7 +100,9 @@ pub async fn upload_file(
         }
     }
 
-    let upload = upload.ok_or_else(|| AppError::bad_request("missing_file", "file is required"))?;
+    let mut upload =
+        upload.ok_or_else(|| AppError::bad_request("missing_file", "file is required"))?;
+    upload.metadata = metadata;
     let file_id = Uuid::new_v4();
     let storage_path = format!("{}/{}", user.id, file_id);
     let absolute_path = state.config.file_storage_dir.join(&storage_path);

@@ -54,6 +54,29 @@ export interface AppConfig {
   active_asr_model_id?: string;
 }
 
+export interface BackendUser {
+  id: string;
+  email: string;
+  display_name?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BackendSessionCheck {
+  configured: boolean;
+  connected: boolean;
+  authenticated: boolean;
+  backend_url?: string | null;
+  user?: BackendUser | null;
+  error?: string | null;
+}
+
+export interface BackendAuthResult {
+  config: AppConfig;
+  user: BackendUser;
+  expires_at: string;
+}
+
 import { AgentTask, AgentWorkerStatusSnapshot, Artifact, Article, MindMapResult } from "../types";
 
 export { type AgentTask, type AgentWorkerStatusSnapshot, type Artifact, type Article, type MindMapResult };
@@ -144,6 +167,20 @@ export type TauriCommand = {
   init_app: () => Promise<string>;
   get_config: () => Promise<AppConfig | null>;
   save_config_cmd: (config: AppConfig) => Promise<string>;
+  backend_check_session_cmd: () => Promise<BackendSessionCheck>;
+  backend_health_cmd: (backendUrl: string) => Promise<unknown>;
+  backend_login_cmd: (
+    backendUrl: string,
+    email: string,
+    password: string
+  ) => Promise<BackendAuthResult>;
+  backend_register_cmd: (
+    backendUrl: string,
+    email: string,
+    password: string,
+    displayName?: string
+  ) => Promise<BackendAuthResult>;
+  backend_logout_cmd: () => Promise<AppConfig>;
   set_api_key: (apiKey: string, provider: string, model: string) => Promise<string>;
   create_article: (
     title: string,
