@@ -1155,10 +1155,21 @@ fn spawn_stdout_listener(
                 }
             };
 
+            let task_snapshot = worker_event_task_id(&event)
+                .and_then(|task_id| load_agent_task_in_dir(&data_dir, task_id).ok());
+            if let Some(task) = task_snapshot.clone() {
+                schedule_backend_task_snapshot(
+                    &app_handle,
+                    task,
+                    logs.clone(),
+                    runtime_state.clone(),
+                );
+            }
             if let Some(saved_artifact) = artifact.clone() {
                 schedule_backend_artifact_link(
                     &app_handle,
                     saved_artifact,
+                    task_snapshot,
                     logs.clone(),
                     runtime_state.clone(),
                 );
@@ -1176,15 +1187,53 @@ fn spawn_stdout_listener(
     });
 }
 
-fn schedule_backend_artifact_link(
+fn worker_event_task_id(event: &WorkerEvent) -> Option<&str> {
+    match event {
+        WorkerEvent::TaskStarted { payload } => Some(&payload.task_id),
+        WorkerEvent::TaskProgress { payload } => Some(&payload.task_id),
+        WorkerEvent::TaskResult { payload } => Some(&payload.task_id),
+        WorkerEvent::TaskError { payload } => Some(&payload.task_id),
+        WorkerEvent::TaskLog { .. }
+        | WorkerEvent::WorkerReady { .. }
+        | WorkerEvent::WorkerHeartbeat { .. } => None,
+    }
+}
+
+fn schedule_backend_task_snapshot(
     app_handle: &AppHandle,
-    artifact: Artifact,
+    task: AgentTask,
     logs: Arc<Mutex<Vec<WorkerLogEntry>>>,
     runtime_state: Arc<Mutex<WorkerRuntimeState>>,
 ) {
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = sync_backend_active_mind_map_artifact(&app_handle, &artifact).await {
+        if let Err(error) = sync_backend_agent_task(&app_handle, &task).await {
+            {
+                let mut guard = logs.lock().unwrap();
+                push_worker_log(
+                    &mut guard,
+                    WorkerLogLevel::Warn,
+                    "backend",
+                    format!("failed to sync agent task: {}", error),
+                );
+            }
+            emit_status_snapshot(&app_handle, &runtime_state, &logs);
+            eprintln!("[AgentWorker] Failed to sync agent task: {}", error);
+        }
+    });
+}
+
+fn schedule_backend_artifact_link(
+    app_handle: &AppHandle,
+    artifact: Artifact,
+    task: Option<AgentTask>,
+    logs: Arc<Mutex<Vec<WorkerLogEntry>>>,
+    runtime_state: Arc<Mutex<WorkerRuntimeState>>,
+) {
+    let app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = sync_backend_active_mind_map_artifact(&app_handle, &artifact, task).await
+        {
             {
                 let mut guard = logs.lock().unwrap();
                 push_worker_log(
@@ -1203,12 +1252,33 @@ fn schedule_backend_artifact_link(
     });
 }
 
+async fn sync_backend_agent_task(app_handle: &AppHandle, task: &AgentTask) -> Result<(), String> {
+    let config = load_config(app_handle)?.unwrap_or_default();
+    let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
+    client
+        .save_agent_task(task)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 async fn sync_backend_active_mind_map_artifact(
     app_handle: &AppHandle,
     artifact: &Artifact,
+    task: Option<AgentTask>,
 ) -> Result<(), String> {
     let config = load_config(app_handle)?.unwrap_or_default();
     let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
+    if let Some(task) = task {
+        client
+            .save_agent_task(&task)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    client
+        .save_artifact(artifact)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut article = client
         .get_material(&artifact.article_id)
         .await

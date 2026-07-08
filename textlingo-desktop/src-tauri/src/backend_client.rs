@@ -4,7 +4,10 @@ use reqwest::{multipart, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::{AppConfig, Article, ArticleSegment};
+use crate::types::{
+    AgentTask, AppConfig, Article, ArticleSegment, Artifact, Bookmark, FavoriteGrammar,
+    FavoriteVocabulary, WordPack,
+};
 
 #[derive(Debug, Clone)]
 pub struct BackendClient {
@@ -291,6 +294,285 @@ impl BackendClient {
             .send()
             .await?;
         self.parse_empty_response(response).await
+    }
+
+    pub async fn list_word_packs(&self) -> Result<Vec<WordPack>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url("/word-packs"))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_word_pack(&self, id: &str) -> Result<WordPack, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/word-packs/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn upsert_word_pack(
+        &self,
+        payload: &WordPack,
+    ) -> Result<WordPack, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/word-packs"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn patch_word_pack(
+        &self,
+        id: &str,
+        payload: &WordPack,
+    ) -> Result<WordPack, BackendClientError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/word-packs/{id}")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn delete_word_pack(&self, id: &str) -> Result<(), BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/word-packs/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_empty_response(response).await
+    }
+
+    pub async fn list_favorite_vocabularies(
+        &self,
+    ) -> Result<Vec<FavoriteVocabulary>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url("/favorite-vocabularies"))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_favorite_vocabulary(
+        &self,
+        id: &str,
+    ) -> Result<FavoriteVocabulary, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/favorite-vocabularies/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn upsert_favorite_vocabulary(
+        &self,
+        payload: &FavoriteVocabulary,
+    ) -> Result<FavoriteVocabulary, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/favorite-vocabularies"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn patch_favorite_vocabulary(
+        &self,
+        id: &str,
+        payload: &FavoriteVocabulary,
+    ) -> Result<FavoriteVocabulary, BackendClientError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/favorite-vocabularies/{id}")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn delete_favorite_vocabulary(&self, id: &str) -> Result<(), BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/favorite-vocabularies/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_empty_response(response).await
+    }
+
+    pub async fn list_favorite_grammars(&self) -> Result<Vec<FavoriteGrammar>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url("/favorite-grammars"))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn upsert_favorite_grammar(
+        &self,
+        payload: &FavoriteGrammar,
+    ) -> Result<FavoriteGrammar, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/favorite-grammars"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn delete_favorite_grammar(&self, id: &str) -> Result<(), BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/favorite-grammars/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_empty_response(response).await
+    }
+
+    pub async fn list_bookmarks(&self) -> Result<Vec<Bookmark>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url("/bookmarks"))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn list_bookmarks_for_book(
+        &self,
+        book_path: &str,
+    ) -> Result<Vec<Bookmark>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url("/bookmarks"))
+            .bearer_auth(&self.auth_token)
+            .query(&[("book_path", book_path)])
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_bookmark(&self, id: &str) -> Result<Bookmark, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/bookmarks/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn upsert_bookmark(
+        &self,
+        payload: &Bookmark,
+    ) -> Result<Bookmark, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/bookmarks"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn patch_bookmark(
+        &self,
+        id: &str,
+        payload: &Bookmark,
+    ) -> Result<Bookmark, BackendClientError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/bookmarks/{id}")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn delete_bookmark(&self, id: &str) -> Result<(), BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/bookmarks/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_empty_response(response).await
+    }
+
+    pub async fn save_agent_task(
+        &self,
+        payload: &AgentTask,
+    ) -> Result<AgentTask, BackendClientError> {
+        let response = self
+            .client
+            .put(self.url(&format!("/agent-tasks/{}", payload.id)))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_agent_task(&self, id: &str) -> Result<AgentTask, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/agent-tasks/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn save_artifact(&self, payload: &Artifact) -> Result<Artifact, BackendClientError> {
+        let response = self
+            .client
+            .put(self.url(&format!("/artifacts/{}", payload.id)))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_artifact(
+        &self,
+        article_id: &str,
+        artifact_id: &str,
+    ) -> Result<Artifact, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/artifacts/{article_id}/{artifact_id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
     }
 
     pub async fn upload_file_path(

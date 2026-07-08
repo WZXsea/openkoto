@@ -2,14 +2,14 @@ use std::{sync::Arc, time::Instant};
 
 use axum::{
     extract::{DefaultBodyLimit, State},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::{auth, config::AppConfig, error::AppError, files, materials};
+use crate::{auth, config::AppConfig, error::AppError, files, learning, materials};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -63,6 +63,50 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/files", post(files::upload_file))
         .route("/files/{id}", get(files::download_file))
+        .route(
+            "/word-packs",
+            get(learning::list_word_packs).post(learning::upsert_word_pack),
+        )
+        .route(
+            "/word-packs/{id}",
+            get(learning::get_word_pack)
+                .patch(learning::patch_word_pack)
+                .delete(learning::delete_word_pack),
+        )
+        .route(
+            "/favorite-vocabularies",
+            get(learning::list_favorite_vocabularies).post(learning::upsert_favorite_vocabulary),
+        )
+        .route(
+            "/favorite-vocabularies/{id}",
+            get(learning::get_favorite_vocabulary)
+                .patch(learning::patch_favorite_vocabulary)
+                .delete(learning::delete_favorite_vocabulary),
+        )
+        .route(
+            "/favorite-grammars",
+            get(learning::list_favorite_grammars).post(learning::upsert_favorite_grammar),
+        )
+        .route(
+            "/favorite-grammars/{id}",
+            get(learning::get_favorite_grammar).delete(learning::delete_favorite_grammar),
+        )
+        .route(
+            "/bookmarks",
+            get(learning::list_bookmarks).post(learning::upsert_bookmark),
+        )
+        .route(
+            "/bookmarks/{id}",
+            get(learning::get_bookmark)
+                .patch(learning::patch_bookmark)
+                .delete(learning::delete_bookmark),
+        )
+        .route(
+            "/agent-tasks/{id}",
+            get(learning::get_agent_task).put(learning::upsert_agent_task),
+        )
+        .route("/artifacts/{id}", put(learning::upsert_artifact))
+        .route("/artifacts/{article_id}/{id}", get(learning::get_artifact))
         .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
         .with_state(state)
 }

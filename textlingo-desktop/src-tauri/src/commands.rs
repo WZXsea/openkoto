@@ -12,30 +12,16 @@ use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig,
 use crate::moonshot::is_moonshot_provider;
 use crate::platform::safe_file_io;
 use crate::storage::{
-    delete_bookmark,
-    delete_favorite_grammar,
-    delete_favorite_vocabulary,
-    delete_word_pack,
     ensure_app_dirs,
     ensure_favorites_dirs,
-    list_bookmarks,
-    list_bookmarks_for_book,
-    list_favorite_grammars,
     list_favorite_vocabularies,
-    list_word_packs,
     load_agent_task,
-    load_artifact,
-    load_bookmark,
     load_config,
-    load_favorite_grammar,
     load_favorite_vocabulary,
     load_word_pack,
     save_agent_task,
     save_artifact,
-    // 书签存储函数
-    save_bookmark,
     save_config,
-    save_favorite_grammar,
     // 收藏夹存储函数
     save_favorite_vocabulary,
     save_word_pack,
@@ -49,7 +35,7 @@ use crate::types::{
     FavoriteGrammar, FavoriteVocabulary, ModelConfig, TimeRange, TranslationRequest,
     TranslationResponse, WordPack,
 };
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -91,6 +77,91 @@ fn backend_error_to_string(error: BackendClientError) -> String {
         }
         other => other.to_string(),
     }
+}
+
+async fn persist_agent_task_backend_and_local(
+    app_handle: &AppHandle,
+    task: &AgentTask,
+) -> Result<AgentTask, String> {
+    save_agent_task(app_handle, task)?;
+    backend_client_for_app(app_handle)?
+        .save_agent_task(task)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+async fn persist_artifact_backend_and_local(
+    app_handle: &AppHandle,
+    artifact: &Artifact,
+) -> Result<Artifact, String> {
+    save_artifact(app_handle, artifact)?;
+    backend_client_for_app(app_handle)?
+        .save_artifact(artifact)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+async fn ensure_backend_task_references_artifact(
+    app_handle: &AppHandle,
+    task_id: &str,
+    article_id: &str,
+    artifact_id: &str,
+) -> Result<(), String> {
+    let client = backend_client_for_app(app_handle)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut task = match client.get_agent_task(task_id).await {
+        Ok(task) => task,
+        Err(BackendClientError::Backend { status, .. }) if status == StatusCode::NOT_FOUND => {
+            AgentTask {
+                id: task_id.to_string(),
+                task_type: AgentTaskType::MindMapGenerate,
+                status: AgentTaskStatus::Succeeded,
+                article_id: article_id.to_string(),
+                input: AgentTaskInput {
+                    article_id: article_id.to_string(),
+                    display_language: "zh-CN".to_string(),
+                    max_depth: 0,
+                    evidence_mode: "manual".to_string(),
+                    prefer_structure: "manual".to_string(),
+                },
+                progress: 1.0,
+                stage: Some("manual_artifact".to_string()),
+                message: Some("Manual mind map artifact saved".to_string()),
+                error: None,
+                worker_session_id: None,
+                artifact_ids: Vec::new(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                started_at: Some(now.clone()),
+                finished_at: Some(now.clone()),
+            }
+        }
+        Err(error) => return Err(backend_error_to_string(error)),
+    };
+
+    if task.article_id != article_id {
+        return Err("Artifact task does not belong to the target article".to_string());
+    }
+    if !task.artifact_ids.iter().any(|id| id == artifact_id) {
+        task.artifact_ids.push(artifact_id.to_string());
+    }
+    task.updated_at = now.clone();
+    if matches!(
+        task.status,
+        AgentTaskStatus::Queued | AgentTaskStatus::Running
+    ) {
+        task.status = AgentTaskStatus::Succeeded;
+        task.progress = 1.0;
+        task.stage = Some("manual_artifact".to_string());
+        task.finished_at = Some(now);
+    }
+
+    save_agent_task(app_handle, &task)?;
+    client
+        .save_agent_task(&task)
+        .await
+        .map(|_| ())
+        .map_err(backend_error_to_string)
 }
 
 fn create_material_payload_from_article(
@@ -468,7 +539,7 @@ fn builtin_agent_turn_payload(
     None
 }
 
-fn complete_builtin_agent_turn(
+async fn complete_builtin_agent_turn(
     app_handle: &AppHandle,
     mut task: AgentTask,
     payload: serde_json::Value,
@@ -483,7 +554,7 @@ fn complete_builtin_agent_turn(
     task.updated_at = now.clone();
     task.started_at = Some(task.started_at.unwrap_or_else(|| now.clone()));
     task.finished_at = Some(now);
-    save_agent_task(app_handle, &task)?;
+    let task = persist_agent_task_backend_and_local(app_handle, &task).await?;
 
     let _ = app_handle.emit(&format!("assistant-agent-progress://{}", task.id), &task);
     let _ = app_handle.emit(&format!("assistant-agent-result://{}", task.id), &payload);
@@ -709,8 +780,7 @@ pub async fn task_report_progress_cmd(
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let task = update_agent_task_progress_in_dir(&data_dir, &task_id, stage, progress, message)?;
-    save_agent_task(&app_handle, &task)?;
-    Ok(task)
+    persist_agent_task_backend_and_local(&app_handle, &task).await
 }
 
 #[tauri::command]
@@ -725,7 +795,9 @@ pub async fn artifact_save_cmd(
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let artifact = save_mind_map_artifact_in_dir(&data_dir, &task_id, &article_id, content)?;
-    save_artifact(&app_handle, &artifact)?;
+    ensure_backend_task_references_artifact(&app_handle, &task_id, &article_id, &artifact.id)
+        .await?;
+    let artifact = persist_artifact_backend_and_local(&app_handle, &artifact).await?;
     let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
     article.active_mind_map_artifact_id = Some(artifact.id.clone());
     let _ = replace_backend_article(&app_handle, &article).await?;
@@ -767,7 +839,7 @@ pub async fn create_mind_map_task_cmd(
         started_at: None,
         finished_at: None,
     };
-    save_agent_task(&app_handle, &task)?;
+    persist_agent_task_backend_and_local(&app_handle, &task).await?;
     if let Err(error) =
         worker_manager.submit_mind_map_task(&app_handle, &task, &article, &provider_config)
     {
@@ -777,10 +849,13 @@ pub async fn create_mind_map_task_cmd(
         failed_task.stage = Some("failed_to_start".to_string());
         failed_task.updated_at = chrono::Utc::now().to_rfc3339();
         failed_task.finished_at = Some(failed_task.updated_at.clone());
-        save_agent_task(&app_handle, &failed_task)?;
+        persist_agent_task_backend_and_local(&app_handle, &failed_task).await?;
         return Err(error);
     }
-    load_agent_task(&app_handle, &task.id)
+    backend_client_for_app(&app_handle)?
+        .get_agent_task(&task.id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[tauri::command]
@@ -819,7 +894,7 @@ pub async fn run_agent_turn_cmd(
         started_at: None,
         finished_at: None,
     };
-    save_agent_task(&app_handle, &task)?;
+    persist_agent_task_backend_and_local(&app_handle, &task).await?;
 
     let current_material = material_summary_from_article(&article);
     let available_materials = articles
@@ -830,7 +905,7 @@ pub async fn run_agent_turn_cmd(
     if let Some((payload, open_material_id)) =
         builtin_agent_turn_payload(&user_message, &current_material, &available_materials)
     {
-        return complete_builtin_agent_turn(&app_handle, task, payload, open_material_id);
+        return complete_builtin_agent_turn(&app_handle, task, payload, open_material_id).await;
     }
 
     let active_model = require_active_agent_model_config(load_config(&app_handle)?)?;
@@ -851,11 +926,14 @@ pub async fn run_agent_turn_cmd(
         failed_task.stage = Some("failed_to_start".to_string());
         failed_task.updated_at = chrono::Utc::now().to_rfc3339();
         failed_task.finished_at = Some(failed_task.updated_at.clone());
-        save_agent_task(&app_handle, &failed_task)?;
+        persist_agent_task_backend_and_local(&app_handle, &failed_task).await?;
         return Err(error);
     }
 
-    load_agent_task(&app_handle, &task.id)
+    backend_client_for_app(&app_handle)?
+        .get_agent_task(&task.id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 pub fn require_active_agent_model_config(
@@ -873,7 +951,10 @@ pub async fn get_agent_task_cmd(
     app_handle: AppHandle,
     task_id: String,
 ) -> Result<AgentTask, String> {
-    load_agent_task(&app_handle, &task_id)
+    backend_client_for_app(&app_handle)?
+        .get_agent_task(&task_id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[tauri::command]
@@ -882,7 +963,10 @@ pub async fn get_artifact_cmd(
     article_id: String,
     artifact_id: String,
 ) -> Result<Artifact, String> {
-    load_artifact(&app_handle, &article_id, &artifact_id)
+    backend_client_for_app(&app_handle)?
+        .get_artifact(&article_id, &artifact_id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[tauri::command]
@@ -1070,39 +1154,6 @@ fn ensure_default_word_pack(app_handle: &AppHandle) -> Result<WordPack, String> 
     Ok(default_pack)
 }
 
-fn load_all_word_packs(app_handle: &AppHandle) -> Result<Vec<WordPack>, String> {
-    let ids = list_word_packs(app_handle)?;
-    let mut packs = Vec::new();
-
-    for id in ids {
-        if let Ok(json) = load_word_pack(app_handle, &id) {
-            if let Ok(pack) = serde_json::from_str::<WordPack>(&json) {
-                packs.push(pack);
-            }
-        }
-    }
-
-    packs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-    Ok(packs)
-}
-
-fn load_all_favorite_vocabularies_internal(
-    app_handle: &AppHandle,
-) -> Result<Vec<FavoriteVocabulary>, String> {
-    let ids = list_favorite_vocabularies(app_handle)?;
-    let mut favorites = Vec::new();
-
-    for id in ids {
-        if let Ok(json) = load_favorite_vocabulary(app_handle, &id) {
-            if let Ok(favorite) = serde_json::from_str::<FavoriteVocabulary>(&json) {
-                favorites.push(favorite);
-            }
-        }
-    }
-
-    Ok(favorites)
-}
-
 fn persist_favorite_vocabulary(
     app_handle: &AppHandle,
     favorite: &FavoriteVocabulary,
@@ -1110,6 +1161,30 @@ fn persist_favorite_vocabulary(
     let json = serde_json::to_string(favorite)
         .map_err(|e| format!("Failed to serialize favorite vocabulary: {}", e))?;
     save_favorite_vocabulary(app_handle, &favorite.id, &json)
+}
+
+fn default_word_pack_from_packs(packs: &[WordPack]) -> WordPack {
+    packs
+        .iter()
+        .find(|pack| pack.id == DEFAULT_UNGROUPED_PACK_ID)
+        .cloned()
+        .unwrap_or_else(|| {
+            let now = chrono::Utc::now().to_rfc3339();
+            WordPack {
+                id: DEFAULT_UNGROUPED_PACK_ID.to_string(),
+                name: DEFAULT_UNGROUPED_PACK_NAME.to_string(),
+                description: Some("系统默认合集".to_string()),
+                cover_url: None,
+                author: Some("OpenKoto".to_string()),
+                language_from: None,
+                language_to: None,
+                tags: vec!["system".to_string()],
+                version: Some("1.0.0".to_string()),
+                created_at: now.clone(),
+                updated_at: now,
+                is_system: true,
+            }
+        })
 }
 
 fn sanitize_pack_ids(pack_ids: Option<Vec<String>>) -> Vec<String> {
@@ -1252,6 +1327,7 @@ pub fn build_due_vocabulary_queue(
     Ok(queue)
 }
 
+#[allow(dead_code)]
 fn migrate_favorite_vocabularies(app_handle: &AppHandle) -> Result<(), String> {
     let default_pack = ensure_default_word_pack(app_handle)?;
     let ids = list_favorite_vocabularies(app_handle)?;
@@ -1329,9 +1405,6 @@ fn migrate_favorite_vocabularies(app_handle: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn init_app(app_handle: AppHandle) -> Result<String, String> {
     ensure_app_dirs(&app_handle)?;
-    ensure_favorites_dirs(&app_handle)?;
-    let _ = ensure_default_word_pack(&app_handle)?;
-    migrate_favorite_vocabularies(&app_handle)?;
     Ok("App initialized successfully".to_string())
 }
 
@@ -2280,8 +2353,6 @@ pub async fn create_word_pack_cmd(
     tags: Option<Vec<String>>,
     version: Option<String>,
 ) -> Result<WordPack, String> {
-    ensure_default_word_pack(&app_handle)?;
-
     let now = chrono::Utc::now().to_rfc3339();
     let pack = WordPack {
         id: Uuid::new_v4().to_string(),
@@ -2302,10 +2373,10 @@ pub async fn create_word_pack_cmd(
         return Err("Pack name is required".to_string());
     }
 
-    let json = serde_json::to_string(&pack)
-        .map_err(|e| format!("Failed to serialize word pack: {}", e))?;
-    save_word_pack(&app_handle, &pack.id, &json)?;
-    Ok(pack)
+    backend_client_for_app(&app_handle)?
+        .upsert_word_pack(&pack)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 更新单词包
@@ -2322,9 +2393,11 @@ pub async fn update_word_pack_cmd(
     tags: Option<Vec<String>>,
     version: Option<String>,
 ) -> Result<WordPack, String> {
-    let json = load_word_pack(&app_handle, &id)?;
-    let mut pack: WordPack =
-        serde_json::from_str(&json).map_err(|e| format!("Failed to parse word pack: {}", e))?;
+    let client = backend_client_for_app(&app_handle)?;
+    let mut pack = client
+        .get_word_pack(&id)
+        .await
+        .map_err(backend_error_to_string)?;
 
     if let Some(name) = name {
         let trimmed = name.trim();
@@ -2357,17 +2430,19 @@ pub async fn update_word_pack_cmd(
 
     pack.updated_at = chrono::Utc::now().to_rfc3339();
 
-    let updated_json = serde_json::to_string(&pack)
-        .map_err(|e| format!("Failed to serialize word pack: {}", e))?;
-    save_word_pack(&app_handle, &pack.id, &updated_json)?;
-    Ok(pack)
+    client
+        .patch_word_pack(&pack.id, &pack)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 列出所有单词包
 #[tauri::command]
 pub async fn list_word_packs_cmd(app_handle: AppHandle) -> Result<Vec<WordPack>, String> {
-    ensure_default_word_pack(&app_handle)?;
-    let mut packs = load_all_word_packs(&app_handle)?;
+    let mut packs = backend_client_for_app(&app_handle)?
+        .list_word_packs()
+        .await
+        .map_err(backend_error_to_string)?;
     packs.sort_by(|a, b| a.name.cmp(&b.name));
     packs.sort_by(|a, b| b.is_system.cmp(&a.is_system));
     Ok(packs)
@@ -2380,23 +2455,10 @@ pub async fn delete_word_pack_cmd(app_handle: AppHandle, id: String) -> Result<(
         return Err("System pack cannot be deleted".to_string());
     }
 
-    let default_pack = ensure_default_word_pack(&app_handle)?;
-    let _ = load_word_pack(&app_handle, &id)?;
-
-    delete_word_pack(&app_handle, &id)?;
-
-    let mut favorites = load_all_favorite_vocabularies_internal(&app_handle)?;
-    for favorite in &mut favorites {
-        if favorite.pack_ids.iter().any(|pack_id| pack_id == &id) {
-            favorite.pack_ids.retain(|pack_id| pack_id != &id);
-            if favorite.pack_ids.is_empty() {
-                favorite.pack_ids.push(default_pack.id.clone());
-            }
-            persist_favorite_vocabulary(&app_handle, favorite)?;
-        }
-    }
-
-    Ok(())
+    backend_client_for_app(&app_handle)?
+        .delete_word_pack(&id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 添加单词收藏
@@ -2413,8 +2475,12 @@ pub async fn add_favorite_vocabulary_cmd(
     source_article_title: Option<String>,
     pack_ids: Option<Vec<String>>,
 ) -> Result<FavoriteVocabulary, String> {
-    let default_pack = ensure_default_word_pack(&app_handle)?;
-    let packs = load_all_word_packs(&app_handle)?;
+    let client = backend_client_for_app(&app_handle)?;
+    let packs = client
+        .list_word_packs()
+        .await
+        .map_err(backend_error_to_string)?;
+    let default_pack = default_word_pack_from_packs(&packs);
     let existing_pack_ids: HashSet<String> = packs.into_iter().map(|p| p.id).collect();
 
     let normalized_input = normalize_word(&word);
@@ -2428,7 +2494,10 @@ pub async fn add_favorite_vocabulary_cmd(
         &default_pack.id,
     );
 
-    let mut favorites = load_all_favorite_vocabularies_internal(&app_handle)?;
+    let mut favorites = client
+        .list_favorite_vocabularies()
+        .await
+        .map_err(backend_error_to_string)?;
     if let Some(existing) = favorites
         .iter_mut()
         .find(|fav| normalize_word(&fav.word) == normalized_input)
@@ -2462,8 +2531,10 @@ pub async fn add_favorite_vocabulary_cmd(
             existing.source_article_title = source_article_title.clone();
         }
 
-        persist_favorite_vocabulary(&app_handle, existing)?;
-        return Ok(existing.clone());
+        return client
+            .patch_favorite_vocabulary(&existing.id, existing)
+            .await
+            .map_err(backend_error_to_string);
     }
 
     let favorite = FavoriteVocabulary {
@@ -2487,8 +2558,10 @@ pub async fn add_favorite_vocabulary_cmd(
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    persist_favorite_vocabulary(&app_handle, &favorite)?;
-    Ok(favorite)
+    client
+        .upsert_favorite_vocabulary(&favorite)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 列出所有单词收藏
@@ -2496,9 +2569,10 @@ pub async fn add_favorite_vocabulary_cmd(
 pub async fn list_favorite_vocabularies_cmd(
     app_handle: AppHandle,
 ) -> Result<Vec<FavoriteVocabulary>, String> {
-    ensure_default_word_pack(&app_handle)?;
-    migrate_favorite_vocabularies(&app_handle)?;
-    let mut favorites = load_all_favorite_vocabularies_internal(&app_handle)?;
+    let mut favorites = backend_client_for_app(&app_handle)?
+        .list_favorite_vocabularies()
+        .await
+        .map_err(backend_error_to_string)?;
 
     // 按创建时间降序排列
     favorites.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -2512,8 +2586,10 @@ pub async fn delete_favorite_vocabulary_cmd(
     app_handle: AppHandle,
     id: String,
 ) -> Result<(), String> {
-    delete_favorite_vocabulary(&app_handle, &id)?;
-    Ok(())
+    backend_client_for_app(&app_handle)?
+        .delete_favorite_vocabulary(&id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 设置单词收藏所属合集
@@ -2523,20 +2599,28 @@ pub async fn set_vocabulary_pack_ids_cmd(
     vocabulary_id: String,
     pack_ids: Vec<String>,
 ) -> Result<FavoriteVocabulary, String> {
-    let default_pack = ensure_default_word_pack(&app_handle)?;
-    let existing_pack_ids: HashSet<String> = list_word_packs(&app_handle)?.into_iter().collect();
-
-    let json = load_favorite_vocabulary(&app_handle, &vocabulary_id)?;
-    let mut favorite: FavoriteVocabulary = serde_json::from_str(&json)
-        .map_err(|e| format!("Failed to parse favorite vocabulary: {}", e))?;
+    let client = backend_client_for_app(&app_handle)?;
+    let packs = client
+        .list_word_packs()
+        .await
+        .map_err(backend_error_to_string)?;
+    let default_pack = default_word_pack_from_packs(&packs);
+    let existing_pack_ids: HashSet<String> = packs.into_iter().map(|pack| pack.id).collect();
+    let mut favorite = client
+        .get_favorite_vocabulary(&vocabulary_id)
+        .await
+        .map_err(backend_error_to_string)?;
 
     favorite.pack_ids = filter_existing_pack_ids(
         sanitize_pack_ids(Some(pack_ids)),
         &existing_pack_ids,
         &default_pack.id,
     );
-    persist_favorite_vocabulary(&app_handle, &favorite)?;
-    Ok(favorite)
+    let favorite_id = favorite.id.clone();
+    client
+        .patch_favorite_vocabulary(&favorite_id, &favorite)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 按合集列出单词收藏
@@ -2581,9 +2665,11 @@ pub async fn review_vocabulary_cmd(
 ) -> Result<FavoriteVocabulary, String> {
     let review_date = parse_local_date(&date_local)?;
 
-    let json = load_favorite_vocabulary(&app_handle, &vocabulary_id)?;
-    let mut favorite: FavoriteVocabulary = serde_json::from_str(&json)
-        .map_err(|e| format!("Failed to parse favorite vocabulary: {}", e))?;
+    let client = backend_client_for_app(&app_handle)?;
+    let mut favorite = client
+        .get_favorite_vocabulary(&vocabulary_id)
+        .await
+        .map_err(backend_error_to_string)?;
 
     let next = calculate_sm2_update(
         favorite.repetitions,
@@ -2601,8 +2687,11 @@ pub async fn review_vocabulary_cmd(
     favorite.last_reviewed_at = Some(chrono::Utc::now().to_rfc3339());
     favorite.review_count += 1;
 
-    persist_favorite_vocabulary(&app_handle, &favorite)?;
-    Ok(favorite)
+    let favorite_id = favorite.id.clone();
+    client
+        .patch_favorite_vocabulary(&favorite_id, &favorite)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 导出单词包为 OpenKoto JSON 包
@@ -2611,8 +2700,12 @@ pub async fn export_word_pack_cmd(
     app_handle: AppHandle,
     pack_id: String,
 ) -> Result<ExportWordPackResult, String> {
+    let client = backend_client_for_app(&app_handle)?;
     if pack_id == "all" {
-        let entries = load_all_favorite_vocabularies_internal(&app_handle)?
+        let entries = client
+            .list_favorite_vocabularies()
+            .await
+            .map_err(backend_error_to_string)?
             .into_iter()
             .map(favorite_to_word_pack_export_entry)
             .collect();
@@ -2632,9 +2725,10 @@ pub async fn export_word_pack_cmd(
         );
     }
 
-    let pack_json = load_word_pack(&app_handle, &pack_id)?;
-    let pack: WordPack = serde_json::from_str(&pack_json)
-        .map_err(|e| format!("Failed to parse word pack: {}", e))?;
+    let pack = client
+        .get_word_pack(&pack_id)
+        .await
+        .map_err(backend_error_to_string)?;
 
     let entries: Vec<WordPackExportEntry> =
         list_favorite_vocabularies_by_pack_cmd(app_handle.clone(), pack_id)
@@ -2664,7 +2758,12 @@ pub async fn import_word_pack_cmd(
     app_handle: AppHandle,
     json_content: String,
 ) -> Result<ImportWordPackResult, String> {
-    let default_pack = ensure_default_word_pack(&app_handle)?;
+    let client = backend_client_for_app(&app_handle)?;
+    let packs = client
+        .list_word_packs()
+        .await
+        .map_err(backend_error_to_string)?;
+    let default_pack = default_word_pack_from_packs(&packs);
     let parsed = parse_import_word_pack_json(&json_content)?;
 
     if parsed.entries.len() > 20000 {
@@ -2691,22 +2790,25 @@ pub async fn import_word_pack_cmd(
         is_system: false,
     };
 
-    let pack_json = serde_json::to_string(&pack)
-        .map_err(|e| format!("Failed to serialize word pack: {}", e))?;
-    save_word_pack(&app_handle, &pack.id, &pack_json)?;
+    let pack = client
+        .upsert_word_pack(&pack)
+        .await
+        .map_err(backend_error_to_string)?;
 
-    let mut existing_by_word: HashMap<String, FavoriteVocabulary> =
-        load_all_favorite_vocabularies_internal(&app_handle)?
-            .into_iter()
-            .filter_map(|fav| {
-                let normalized = normalize_word(&fav.word);
-                if normalized.is_empty() {
-                    None
-                } else {
-                    Some((normalized, fav))
-                }
-            })
-            .collect();
+    let mut existing_by_word: HashMap<String, FavoriteVocabulary> = client
+        .list_favorite_vocabularies()
+        .await
+        .map_err(backend_error_to_string)?
+        .into_iter()
+        .filter_map(|fav| {
+            let normalized = normalize_word(&fav.word);
+            if normalized.is_empty() {
+                None
+            } else {
+                Some((normalized, fav))
+            }
+        })
+        .collect();
     let mut file_seen_words = HashSet::new();
 
     let total = parsed.entries.len();
@@ -2760,7 +2862,11 @@ pub async fn import_word_pack_cmd(
                 existing.explanation = explanation;
             }
 
-            if let Err(e) = persist_favorite_vocabulary(&app_handle, existing) {
+            if let Err(e) = client
+                .patch_favorite_vocabulary(&existing.id, existing)
+                .await
+                .map_err(backend_error_to_string)
+            {
                 skipped += 1;
                 errors.push(format!("Entry {} failed to merge: {}", index + 1, e));
                 continue;
@@ -2791,7 +2897,11 @@ pub async fn import_word_pack_cmd(
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        if let Err(e) = persist_favorite_vocabulary(&app_handle, &favorite) {
+        if let Err(e) = client
+            .upsert_favorite_vocabulary(&favorite)
+            .await
+            .map_err(backend_error_to_string)
+        {
             skipped += 1;
             errors.push(format!("Entry {} failed to import: {}", index + 1, e));
             continue;
@@ -2830,11 +2940,10 @@ pub async fn add_favorite_grammar_cmd(
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    let json = serde_json::to_string(&favorite)
-        .map_err(|e| format!("Failed to serialize favorite: {}", e))?;
-    save_favorite_grammar(&app_handle, &favorite.id, &json)?;
-
-    Ok(favorite)
+    backend_client_for_app(&app_handle)?
+        .upsert_favorite_grammar(&favorite)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 列出所有语法收藏
@@ -2842,16 +2951,10 @@ pub async fn add_favorite_grammar_cmd(
 pub async fn list_favorite_grammars_cmd(
     app_handle: AppHandle,
 ) -> Result<Vec<FavoriteGrammar>, String> {
-    let ids = list_favorite_grammars(&app_handle)?;
-    let mut favorites = Vec::new();
-
-    for id in ids {
-        if let Ok(json) = load_favorite_grammar(&app_handle, &id) {
-            if let Ok(favorite) = serde_json::from_str::<FavoriteGrammar>(&json) {
-                favorites.push(favorite);
-            }
-        }
-    }
+    let mut favorites = backend_client_for_app(&app_handle)?
+        .list_favorite_grammars()
+        .await
+        .map_err(backend_error_to_string)?;
 
     // 按创建时间降序排列
     favorites.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -2862,8 +2965,10 @@ pub async fn list_favorite_grammars_cmd(
 /// 删除语法收藏
 #[tauri::command]
 pub async fn delete_favorite_grammar_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
-    delete_favorite_grammar(&app_handle, &id)?;
-    Ok(())
+    backend_client_for_app(&app_handle)?
+        .delete_favorite_grammar(&id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 // YouTube Import
@@ -3862,26 +3967,19 @@ pub async fn add_bookmark_cmd(
         color,
     };
 
-    let json = serde_json::to_string(&bookmark)
-        .map_err(|e| format!("Failed to serialize bookmark: {}", e))?;
-    save_bookmark(&app_handle, &bookmark.id, &json)?;
-
-    Ok(bookmark)
+    backend_client_for_app(&app_handle)?
+        .upsert_bookmark(&bookmark)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 列出所有书签
 #[tauri::command]
 pub async fn list_bookmarks_cmd(app_handle: AppHandle) -> Result<Vec<Bookmark>, String> {
-    let ids = list_bookmarks(&app_handle)?;
-    let mut bookmarks = Vec::new();
-
-    for id in ids {
-        if let Ok(json) = load_bookmark(&app_handle, &id) {
-            if let Ok(bookmark) = serde_json::from_str::<Bookmark>(&json) {
-                bookmarks.push(bookmark);
-            }
-        }
-    }
+    let mut bookmarks = backend_client_for_app(&app_handle)?
+        .list_bookmarks()
+        .await
+        .map_err(backend_error_to_string)?;
 
     // 按创建时间降序排列
     bookmarks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -3895,16 +3993,10 @@ pub async fn list_bookmarks_for_book_cmd(
     app_handle: AppHandle,
     book_path: String,
 ) -> Result<Vec<Bookmark>, String> {
-    let ids = list_bookmarks_for_book(&app_handle, &book_path)?;
-    let mut bookmarks = Vec::new();
-
-    for id in ids {
-        if let Ok(json) = load_bookmark(&app_handle, &id) {
-            if let Ok(bookmark) = serde_json::from_str::<Bookmark>(&json) {
-                bookmarks.push(bookmark);
-            }
-        }
-    }
+    let mut bookmarks = backend_client_for_app(&app_handle)?
+        .list_bookmarks_for_book(&book_path)
+        .await
+        .map_err(backend_error_to_string)?;
 
     // 按创建时间降序排列
     bookmarks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -3921,9 +4013,11 @@ pub async fn update_bookmark_cmd(
     note: Option<String>,
     color: Option<String>,
 ) -> Result<Bookmark, String> {
-    let json = load_bookmark(&app_handle, &id)?;
-    let mut bookmark: Bookmark =
-        serde_json::from_str(&json).map_err(|e| format!("Failed to parse bookmark: {}", e))?;
+    let client = backend_client_for_app(&app_handle)?;
+    let mut bookmark = client
+        .get_bookmark(&id)
+        .await
+        .map_err(backend_error_to_string)?;
 
     if let Some(t) = title {
         bookmark.title = t;
@@ -3935,18 +4029,19 @@ pub async fn update_bookmark_cmd(
         bookmark.color = Some(c);
     }
 
-    let updated_json = serde_json::to_string(&bookmark)
-        .map_err(|e| format!("Failed to serialize bookmark: {}", e))?;
-    save_bookmark(&app_handle, &id, &updated_json)?;
-
-    Ok(bookmark)
+    client
+        .patch_bookmark(&id, &bookmark)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 /// 删除书签
 #[tauri::command]
 pub async fn delete_bookmark_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
-    delete_bookmark(&app_handle, &id)?;
-    Ok(())
+    backend_client_for_app(&app_handle)?
+        .delete_bookmark(&id)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[cfg(test)]
