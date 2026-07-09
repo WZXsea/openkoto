@@ -9,7 +9,10 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::{auth, config::AppConfig, error::AppError, files, learning, legacy_imports, materials};
+use crate::{
+    auth, config::AppConfig, error::AppError, files, learning, learning_items, legacy_imports,
+    materials,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -100,6 +103,24 @@ pub fn build_router(state: AppState) -> Router {
             get(learning::get_bookmark)
                 .patch(learning::patch_bookmark)
                 .delete(learning::delete_bookmark),
+        )
+        .route(
+            "/learning-items",
+            get(learning_items::list_learning_items).post(learning_items::create_learning_item),
+        )
+        .route(
+            "/learning-items/from-selection",
+            post(learning_items::create_learning_item_from_selection),
+        )
+        .route(
+            "/learning-items/bulk-status",
+            post(learning_items::bulk_learning_item_status),
+        )
+        .route(
+            "/learning-items/{id}",
+            get(learning_items::get_learning_item)
+                .patch(learning_items::patch_learning_item)
+                .delete(learning_items::delete_learning_item),
         )
         .route(
             "/agent-tasks/{id}",

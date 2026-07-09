@@ -8,7 +8,7 @@ export type FeatureId =
   | "reader"
   | "settings";
 
-export type FeatureBoundaryStatus = "shell-only";
+export type FeatureBoundaryStatus = "shell-only" | "active";
 
 export interface FeatureBoundary {
   id: FeatureId;

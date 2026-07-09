@@ -1,10 +1,10 @@
 # OpenKoto Backend
 
-`openkoto-backend` 是 OpenKoto Desktop + Backend + PostgreSQL 架构中的 Axum 后端服务。PR-4.2 在 PR-4.1 后端骨架上补充 PostgreSQL 用户账户、登录会话和 Bearer JWT 认证。
+`openkoto-backend` 是 OpenKoto Desktop + Backend + PostgreSQL 架构中的 Axum 后端服务。当前后端覆盖认证、素材、文件、学习状态、旧 JSON 导入和 PR-5 本地学习条目候选箱。
 
 ## 范围
 
-PR-4.2 提供：
+当前后端提供：
 
 - Rust Axum HTTP service。
 - SQLx PostgreSQL connection pool。
@@ -19,10 +19,11 @@ PR-4.2 提供：
 - PostgreSQL `materials` / `material_segments` / `files` 表。
 - `GET /materials`、`POST /materials`、`GET /materials/{id}`、`PATCH /materials/{id}`、`DELETE /materials/{id}`。
 - `POST /files`、`GET /files/{id}`。
+- PR-5 本地学习条目候选箱：`GET /learning-items`、`POST /learning-items`、`POST /learning-items/from-selection`、`GET /learning-items/{id}`、`PATCH /learning-items/{id}`、`DELETE /learning-items/{id}`、`POST /learning-items/bulk-status`。
 - 统一错误响应格式。
 - `OPENKOTO_TEST_DATABASE_URL` 控制的可选数据库集成测试。
 
-PR-4.2 不切换 Desktop 数据读写路径。现有 Tauri commands 和本地 JSON storage 仍保留到后续 PR-4 阶段。
+Desktop 现在以 Backend-first 方式访问核心素材和学习状态；旧本地 JSON 只作为 legacy import 来源保留。
 
 ## 本地开发
 
@@ -81,6 +82,71 @@ curl -i -X POST http://127.0.0.1:4000/files \
 ```
 
 上传响应包含 `download_url`，例如 `/files/{id}`。后端文件库默认位于 `OPENKOTO_FILE_STORAGE_DIR`，数据库只保存受控 storage path，不使用用户提交的文件名作为磁盘路径。
+
+## 学习条目接口
+
+所有学习条目接口都需要 `Authorization: Bearer <jwt>`。学习条目用于保存本地 candidate inbox，不连接 Anki/FSRS；复习调度仍由后续 Anki 集成负责。
+
+### 从划词创建候选
+
+```bash
+curl -i -X POST http://127.0.0.1:4000/learning-items/from-selection \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "material_id": "00000000-0000-0000-0000-000000000000",
+    "segment_id": "00000000-0000-0000-0000-000000000001",
+    "selected_text": "mitigate",
+    "source_sentence": "Macrophages can mitigate inflammatory damage.",
+    "tags": ["immunology", "academic"]
+  }'
+```
+
+后端会校验 `material_id` / `segment_id` 属于当前用户。相同用户、来源、条目类型、文本和 source sentence 的重复提交会返回既有条目，不新增重复候选。
+
+### 直接创建或更新
+
+```bash
+curl -i -X POST http://127.0.0.1:4000/learning-items \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "item_type": "word",
+    "text": "attenuate",
+    "source_sentence": "The drug attenuated the inflammatory response.",
+    "meaning_in_context": "to reduce the strength of a response",
+    "definition_en": "to make something weaker",
+    "definition_zh": "减弱；缓和",
+    "collocations": [{"text": "attenuate the response"}],
+    "examples": [{"text": "The intervention attenuated the signal."}],
+    "tags": ["academic"],
+    "status": "candidate",
+    "priority": 10,
+    "difficulty": 3,
+    "review_state": {}
+  }'
+```
+
+`item_type` 当前允许 `word`、`phrase`、`sentence`、`grammar`。`status` 当前允许 `candidate`、`accepted`、`rejected`、`archived`。`collocations`、`examples`、`tags` 和 `review_state` 存入 PostgreSQL JSONB。
+
+### 查询和状态流转
+
+```bash
+curl -i 'http://127.0.0.1:4000/learning-items?status=candidate&limit=100' \
+  -H "Authorization: Bearer ${TOKEN}"
+
+curl -i -X PATCH http://127.0.0.1:4000/learning-items/${ITEM_ID} \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"accepted","review_state":{"local":"new"}}'
+
+curl -i -X POST http://127.0.0.1:4000/learning-items/bulk-status \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"ids":["00000000-0000-0000-0000-000000000000"],"status":"archived"}'
+```
+
+列表接口支持 `status`、`item_type`、`material_id`、`limit`、`offset` 查询参数。所有读取、更新、删除都按 `user_id` 隔离，其他用户访问返回 `404` 或空列表。
 
 ## 健康检查
 

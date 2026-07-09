@@ -77,9 +77,31 @@ export interface BackendAuthResult {
   expires_at: string;
 }
 
-import { AgentTask, AgentWorkerStatusSnapshot, Artifact, Article, MindMapResult } from "../types";
+import {
+  AgentTask,
+  AgentWorkerStatusSnapshot,
+  Artifact,
+  Article,
+  CreateLearningItemFromSelectionInput,
+  CreateLearningItemInput,
+  LearningItem,
+  ListLearningItemsQuery,
+  MindMapResult,
+  UpdateLearningItemInput,
+} from "../types";
 
-export { type AgentTask, type AgentWorkerStatusSnapshot, type Artifact, type Article, type MindMapResult };
+export {
+  type AgentTask,
+  type AgentWorkerStatusSnapshot,
+  type Artifact,
+  type Article,
+  type CreateLearningItemFromSelectionInput,
+  type CreateLearningItemInput,
+  type LearningItem,
+  type ListLearningItemsQuery,
+  type MindMapResult,
+  type UpdateLearningItemInput,
+};
 
 export type AnalysisType = "summary" | "key_points" | "vocabulary" | "grammar" | "full";
 
@@ -204,6 +226,16 @@ export type TauriCommand = {
     translation?: string
   ) => Promise<Article>;
   delete_article_cmd: (id: string) => Promise<void>;
+  list_learning_items_cmd: (query?: ListLearningItemsQuery) => Promise<LearningItem[]>;
+  create_learning_item_cmd: (payload: CreateLearningItemInput) => Promise<LearningItem>;
+  create_learning_item_from_selection_cmd: (
+    payload: CreateLearningItemFromSelectionInput
+  ) => Promise<LearningItem>;
+  update_learning_item_cmd: (
+    id: string,
+    payload: UpdateLearningItemInput
+  ) => Promise<LearningItem>;
+  delete_learning_item_cmd: (id: string) => Promise<void>;
   translate_text: (request: TranslationRequest) => Promise<TranslationResponse>;
   analyze_text: (request: AnalysisRequest) => Promise<AnalysisResponse>;
   chat_completion: (request: ChatRequest) => Promise<ChatResponse>;

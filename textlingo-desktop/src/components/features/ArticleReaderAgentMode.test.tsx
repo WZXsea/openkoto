@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -119,6 +119,9 @@ describe("ArticleReader agent mode", () => {
           token: "test-token",
         });
       }
+      if (command === "list_learning_items_cmd") {
+        return Promise.resolve([]);
+      }
       return Promise.resolve(undefined);
     });
     openMock.mockReset();
@@ -212,6 +215,73 @@ describe("ArticleReader agent mode", () => {
       subtitlePath: "/tmp/sample.srt",
     });
     expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates a learning candidate from scoped segment text selection", async () => {
+    invokeMock.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (command === "get_resource_server_info_cmd") {
+        return Promise.resolve({
+          base_url: "http://127.0.0.1:19420",
+          token: "test-token",
+        });
+      }
+      if (command === "list_learning_items_cmd") {
+        return Promise.resolve([]);
+      }
+      if (command === "create_learning_item_from_selection_cmd") {
+        return Promise.resolve({
+          id: "learning-item-1",
+          material_id: "article-1",
+          segment_id: "seg-1",
+          item_type: "word",
+          text: "beta",
+          source_sentence: "Alpha beta gamma.",
+          collocations: [],
+          examples: [],
+          tags: ["reader"],
+          status: "candidate",
+          priority: 0,
+          review_state: {},
+          created_at: "2026-03-08T00:00:00Z",
+          updated_at: "2026-03-08T00:00:00Z",
+        });
+      }
+      return Promise.resolve(payload);
+    });
+
+    render(<ArticleReader article={createArticle()} />);
+
+    const segment = await screen.findByText("Alpha beta gamma.");
+    const textNode = segment.firstChild;
+    expect(textNode).toBeTruthy();
+
+    const range = document.createRange();
+    range.setStart(textNode as ChildNode, 6);
+    range.setEnd(textNode as ChildNode, 10);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    fireEvent.mouseUp(segment);
+
+    expect(await screen.findByTestId("learning-candidate-box")).toBeInTheDocument();
+    expect(screen.getByText("beta")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "加入候选" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "create_learning_item_from_selection_cmd",
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            material_id: "article-1",
+            segment_id: "seg-1",
+            selected_text: "beta",
+            source_sentence: "Alpha beta gamma.",
+          }),
+        })
+      );
+    });
   });
 
   it("moves the view mode control into the player area for media articles", () => {

@@ -198,6 +198,169 @@ pub struct PatchMaterialRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningItem {
+    pub id: String,
+    #[serde(default)]
+    pub material_id: Option<String>,
+    #[serde(default)]
+    pub segment_id: Option<String>,
+    pub item_type: String,
+    pub text: String,
+    pub source_sentence: String,
+    #[serde(default)]
+    pub context_before: Option<String>,
+    #[serde(default)]
+    pub context_after: Option<String>,
+    #[serde(default)]
+    pub meaning_in_context: Option<String>,
+    #[serde(default)]
+    pub definition_en: Option<String>,
+    #[serde(default)]
+    pub definition_zh: Option<String>,
+    #[serde(default)]
+    pub collocations: Vec<Value>,
+    #[serde(default)]
+    pub examples: Vec<Value>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub status: String,
+    pub priority: i32,
+    #[serde(default)]
+    pub difficulty: Option<i32>,
+    #[serde(default)]
+    pub ai_explanation: Option<Value>,
+    #[serde(default)]
+    pub review_state: Value,
+    #[serde(default)]
+    pub source_material_title: Option<String>,
+    #[serde(default)]
+    pub source_segment_order: Option<i32>,
+    #[serde(default)]
+    pub accepted_at: Option<String>,
+    #[serde(default)]
+    pub rejected_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DeleteLearningItemResponse {
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListLearningItemsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateLearningItemRequest {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub material_id: Option<String>,
+    #[serde(default)]
+    pub segment_id: Option<String>,
+    #[serde(default)]
+    pub item_type: Option<String>,
+    pub text: String,
+    #[serde(default)]
+    pub source_sentence: Option<String>,
+    #[serde(default)]
+    pub context_before: Option<String>,
+    #[serde(default)]
+    pub context_after: Option<String>,
+    #[serde(default)]
+    pub meaning_in_context: Option<String>,
+    #[serde(default)]
+    pub definition_en: Option<String>,
+    #[serde(default)]
+    pub definition_zh: Option<String>,
+    #[serde(default)]
+    pub collocations: Vec<Value>,
+    #[serde(default)]
+    pub examples: Vec<Value>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default)]
+    pub difficulty: Option<i32>,
+    #[serde(default)]
+    pub ai_explanation: Option<Value>,
+    #[serde(default)]
+    pub review_state: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdateLearningItemRequest {
+    #[serde(default)]
+    pub material_id: Option<String>,
+    #[serde(default)]
+    pub segment_id: Option<String>,
+    #[serde(default)]
+    pub item_type: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub source_sentence: Option<String>,
+    #[serde(default)]
+    pub context_before: Option<String>,
+    #[serde(default)]
+    pub context_after: Option<String>,
+    #[serde(default)]
+    pub meaning_in_context: Option<String>,
+    #[serde(default)]
+    pub definition_en: Option<String>,
+    #[serde(default)]
+    pub definition_zh: Option<String>,
+    #[serde(default)]
+    pub collocations: Option<Vec<Value>>,
+    #[serde(default)]
+    pub examples: Option<Vec<Value>>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default)]
+    pub difficulty: Option<i32>,
+    #[serde(default)]
+    pub ai_explanation: Option<Value>,
+    #[serde(default)]
+    pub review_state: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateLearningItemFromSelectionRequest {
+    pub material_id: String,
+    #[serde(default)]
+    pub segment_id: Option<String>,
+    pub selected_text: String,
+    #[serde(default)]
+    pub item_type: Option<String>,
+    #[serde(default)]
+    pub source_sentence: Option<String>,
+    #[serde(default)]
+    pub context_before: Option<String>,
+    #[serde(default)]
+    pub context_after: Option<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BackendErrorBody {
     error: BackendErrorDetail,
 }
@@ -369,6 +532,77 @@ impl BackendClient {
             .send()
             .await?;
         self.parse_empty_response(response).await
+    }
+
+    pub async fn list_learning_items(
+        &self,
+        query: Option<&ListLearningItemsRequest>,
+    ) -> Result<Vec<LearningItem>, BackendClientError> {
+        let request = self
+            .client
+            .get(self.url("/learning-items"))
+            .bearer_auth(&self.auth_token);
+        let request = if let Some(query) = query {
+            request.query(query)
+        } else {
+            request
+        };
+        let response = request.send().await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn create_learning_item(
+        &self,
+        payload: &CreateLearningItemRequest,
+    ) -> Result<LearningItem, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/learning-items"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn create_learning_item_from_selection(
+        &self,
+        payload: &CreateLearningItemFromSelectionRequest,
+    ) -> Result<LearningItem, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/learning-items/from-selection"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn patch_learning_item(
+        &self,
+        id: &str,
+        payload: &UpdateLearningItemRequest,
+    ) -> Result<LearningItem, BackendClientError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/learning-items/{id}")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn delete_learning_item(&self, id: &str) -> Result<(), BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/learning-items/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        let _deleted: DeleteLearningItemResponse = self.parse_response(response).await?;
+        Ok(())
     }
 
     pub async fn list_word_packs(&self) -> Result<Vec<WordPack>, BackendClientError> {
@@ -822,5 +1056,40 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn learning_item_selection_payload_uses_snake_case_contract() {
+        let payload = CreateLearningItemFromSelectionRequest {
+            material_id: "3a8f4371-0f10-4d2a-8140-287f8c052441".to_string(),
+            segment_id: Some("4e79490f-17b2-42eb-86d4-97bf2548eff7".to_string()),
+            selected_text: "mitigate".to_string(),
+            item_type: Some("word".to_string()),
+            source_sentence: Some("This can mitigate risk.".to_string()),
+            context_before: Some("This can".to_string()),
+            context_after: Some("risk.".to_string()),
+            tags: vec!["academic".to_string()],
+        };
+
+        let serialized = serde_json::to_value(&payload).unwrap();
+
+        assert_eq!(
+            serialized["material_id"],
+            "3a8f4371-0f10-4d2a-8140-287f8c052441"
+        );
+        assert_eq!(serialized["selected_text"], "mitigate");
+        assert_eq!(
+            serialized["segment_id"],
+            "4e79490f-17b2-42eb-86d4-97bf2548eff7"
+        );
+        assert_eq!(serialized["source_sentence"], "This can mitigate risk.");
+    }
+
+    #[test]
+    fn learning_item_delete_response_accepts_backend_body() {
+        let response: DeleteLearningItemResponse =
+            serde_json::from_str(r#"{"deleted":true}"#).unwrap();
+
+        assert!(response.deleted);
     }
 }

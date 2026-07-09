@@ -4,8 +4,9 @@ use crate::agent_worker::{
 };
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
 use crate::backend_client::{
-    BackendClient, BackendClientError, BackendHealthResponse, BackendUser, CreateMaterialRequest,
-    PatchMaterialRequest,
+    BackendClient, BackendClientError, BackendHealthResponse, BackendUser,
+    CreateLearningItemFromSelectionRequest, CreateLearningItemRequest, CreateMaterialRequest,
+    LearningItem, ListLearningItemsRequest, PatchMaterialRequest, UpdateLearningItemRequest,
 };
 use crate::feature_gate::require_external_tools_enabled;
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
@@ -1879,6 +1880,59 @@ pub async fn delete_article_cmd(app_handle: AppHandle, id: String) -> Result<(),
     let client = backend_client_for_app(&app_handle)?;
     client
         .delete_material(&id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn list_learning_items_cmd(
+    app_handle: AppHandle,
+    query: Option<ListLearningItemsRequest>,
+) -> Result<Vec<LearningItem>, String> {
+    backend_client_for_app(&app_handle)?
+        .list_learning_items(query.as_ref())
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn create_learning_item_cmd(
+    app_handle: AppHandle,
+    payload: CreateLearningItemRequest,
+) -> Result<LearningItem, String> {
+    backend_client_for_app(&app_handle)?
+        .create_learning_item(&payload)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn create_learning_item_from_selection_cmd(
+    app_handle: AppHandle,
+    payload: CreateLearningItemFromSelectionRequest,
+) -> Result<LearningItem, String> {
+    backend_client_for_app(&app_handle)?
+        .create_learning_item_from_selection(&payload)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn update_learning_item_cmd(
+    app_handle: AppHandle,
+    id: String,
+    payload: UpdateLearningItemRequest,
+) -> Result<LearningItem, String> {
+    backend_client_for_app(&app_handle)?
+        .patch_learning_item(&id, &payload)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn delete_learning_item_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
+    backend_client_for_app(&app_handle)?
+        .delete_learning_item(&id)
         .await
         .map_err(backend_error_to_string)
 }

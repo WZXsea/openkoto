@@ -11,7 +11,7 @@ PR-2 establishes the App Shell directory boundary for `src/features` and `src/sh
 | Materials | `src/features/materials` | Material list, manual article creation, new material dialog, drop import overlay |
 | Reader | `src/features/reader` | Article reader shell, explanation panel, bookmark sidebar |
 | Notes | `src/features/notes` | Favorite vocabulary and grammar note surfaces |
-| Local Learning | `src/features/local-learning` | Word packs, recitation panel, pack selection |
+| Local Learning | `src/features/local-learning` | Reader learning candidates, candidate inbox, word packs, recitation panel, pack selection |
 | Assistant | `src/features/assistant` | Agent panel, chat assistant, sidebar shell, mind map, logs |
 | Settings | `src/features/settings` | Settings dialog, onboarding, quick switcher, update checker |
 | Media | `src/features/media` | Local audio/video/subtitle import, playback, export |
@@ -41,4 +41,5 @@ PR-2 establishes the App Shell directory boundary for `src/features` and `src/sh
 1. Migrate one feature at a time after tests identify current behavior.
 2. Move component implementation together with feature-local tests.
 3. Keep shared exports generic; feature-owned helpers should live under the corresponding feature directory.
-4. Update this checklist when a legacy component leaves `src/components/features`.
+4. PR-5 activates Local Learning through the reader candidate inbox while implementation remains under `src/components/features`.
+5. Update this checklist when a legacy component leaves `src/components/features`.

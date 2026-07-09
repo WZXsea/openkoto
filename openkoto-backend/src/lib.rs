@@ -4,6 +4,7 @@ pub mod database;
 pub mod error;
 pub mod files;
 pub mod learning;
+pub mod learning_items;
 pub mod legacy_imports;
 pub mod materials;
 pub mod routes;

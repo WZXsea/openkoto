@@ -32,6 +32,7 @@ import { Article, SegmentExplanation } from "../../types";
 import { AgentPanel } from "./AgentPanel";
 import { ArticleChatAssistant } from "./ArticleChatAssistant";
 import { ArticleExplanationPanel } from "./ArticleExplanationPanel";
+import { LearningCandidateBox, type ReaderSelectionContext } from "./LearningCandidateBox";
 import { ArticleMindMapPanel } from "./ArticleMindMapPanel";
 import { AssistantSidebarShell, type AssistantPanelMode } from "./AssistantSidebarShell";
 import { MarkdownContent } from "../ui/MarkdownContent";
@@ -97,6 +98,8 @@ export function ArticleReader({
   const [error, setError] = useState<string | null>(null);
   const [showAssistant, setShowAssistant] = useState(true);
   const [selectedText, setSelectedText] = useState<string>("");
+  const [readerSelection, setReaderSelection] = useState<ReaderSelectionContext | null>(null);
+  const [showCandidateBox, setShowCandidateBox] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("original");
   const [fontSize, setFontSize] = useState(18);
   const [mediaUrl, setMediaUrl] = useState("");
@@ -108,6 +111,7 @@ export function ArticleReader({
 
   // Video Sync State
   const activeSegmentRef = useRef<HTMLElement>(null);
+  const readerContentRef = useRef<HTMLDivElement>(null);
 
   // 本地段落状态 - 用于批量处理时的局部刷新
   const [localSegments, setLocalSegments] = useState(article.segments || []);
@@ -281,17 +285,6 @@ export function ArticleReader({
     // 同步外部 article.segments 到本地状态
     setLocalSegments(article.segments || []);
   }, [article]);
-
-  useEffect(() => {
-    const handleSelection = () => {
-      const selection = window.getSelection();
-      if (selection && selection.toString().trim().length > 0) {
-        setSelectedText(selection.toString().trim());
-      }
-    };
-    document.addEventListener("mouseup", handleSelection);
-    return () => document.removeEventListener("mouseup", handleSelection);
-  }, []);
 
   // 自动滚动到激活的段落（非视频模式）
   useEffect(() => {
@@ -532,7 +525,52 @@ export function ArticleReader({
 
   const selectedSegment = localSegments.find(s => s.id === selectedSegmentId) || null;
 
+  const handleReaderSelection = () => {
+    const selection = window.getSelection();
+    const selected = selection?.toString().trim() || "";
+    if (!selection || !selected) return;
+
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    const container = readerContentRef.current;
+    if (!anchorNode || !focusNode || !container) return;
+    if (!container.contains(anchorNode) || !container.contains(focusNode)) return;
+
+    const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    const commonNode = range?.commonAncestorContainer || anchorNode;
+    const commonElement = commonNode.nodeType === Node.ELEMENT_NODE
+      ? commonNode as Element
+      : commonNode.parentElement;
+    if (!commonElement) return;
+
+    const segmentElement = commonElement.closest<HTMLElement>("[data-reader-segment-id]");
+    const segmentId = segmentElement?.dataset.readerSegmentId;
+    const segment = segmentId ? localSegments.find(s => s.id === segmentId) : null;
+    const sourceSentence = segment?.text || selected;
+    const selectedIndex = sourceSentence.toLowerCase().indexOf(selected.toLowerCase());
+    const contextBefore = selectedIndex >= 0
+      ? sourceSentence.slice(Math.max(0, selectedIndex - 100), selectedIndex).trim()
+      : undefined;
+    const contextAfter = selectedIndex >= 0
+      ? sourceSentence.slice(selectedIndex + selected.length, selectedIndex + selected.length + 100).trim()
+      : undefined;
+
+    setSelectedText(selected);
+    setReaderSelection({
+      materialId: article.id,
+      segmentId,
+      selectedText: selected,
+      sourceSentence,
+      contextBefore,
+      contextAfter,
+    });
+    setShowCandidateBox(true);
+  };
+
   const handleSegmentClick = (id: string) => {
+    const selection = window.getSelection();
+    if (selection?.toString().trim()) return;
+
     setSelectedSegmentId(id);
     setActiveTab("explanation");
     setShowAssistant(true);
@@ -1166,6 +1204,19 @@ export function ArticleReader({
                   </Button>
                 )}
 
+                {!article.media_path && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setShowCandidateBox(true)}
+                    className="h-8 md:h-9"
+                    title="学习候选箱"
+                  >
+                    <Plus size={16} />
+                    <span className="ml-2 hidden xl:inline">候选箱</span>
+                  </Button>
+                )}
+
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -1312,7 +1363,12 @@ export function ArticleReader({
                   </div>
                 </div>
               ) : (
-                <div className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth">
+                <div
+                  ref={readerContentRef}
+                  onMouseUp={handleReaderSelection}
+                  onKeyUp={handleReaderSelection}
+                  className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth"
+                >
                   {/* 视频/音频模式：使用 VideoSubtitlePlayer 组件 */}
                   {article.media_path && (() => {
                     const filename = article.media_path.split('/').pop() || article.media_path.split('\\').pop() || '';
@@ -1383,6 +1439,8 @@ export function ArticleReader({
                                   <React.Fragment key={segment.id}>
                                     <span
                                       ref={isSelected ? activeSegmentRef : null}
+                                      data-reader-segment-id={segment.id}
+                                      data-reader-segment-order={segment.order}
                                       onClick={() => handleSegmentClick(segment.id)}
                                       className={`inline decoration-clone rounded-lg border-2 px-1 py-0.5 mx-0.5 transition-all duration-200 cursor-pointer ${isSelected
                                         ? "bg-primary/20 border-primary shadow-sm text-foreground ring-2 ring-primary/20"
@@ -1503,6 +1561,19 @@ export function ArticleReader({
               </div>
             </TabsContent>
           </Tabs>
+          <LearningCandidateBox
+            article={article}
+            selection={readerSelection}
+            open={showCandidateBox}
+            canUseAi={canUseAi}
+            targetLanguage={targetLanguage}
+            onOpenChange={setShowCandidateBox}
+            onError={setError}
+            onSuccess={(message) => {
+              setSuccessMessage(message);
+              setTimeout(() => setSuccessMessage(null), 2200);
+            }}
+          />
         </div>
     </>
   );

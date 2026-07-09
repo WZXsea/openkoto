@@ -16,6 +16,110 @@ export interface Article {
     segments?: ArticleSegment[];
 }
 
+export type LearningItemStatus =
+    | "candidate"
+    | "accepted"
+    | "rejected"
+    | "archived"
+    | (string & {});
+
+export type LearningItemType =
+    | "word"
+    | "phrase"
+    | "sentence"
+    | "grammar"
+    | (string & {});
+
+export interface LearningItem {
+    id: string;
+    material_id?: string | null;
+    segment_id?: string | null;
+    item_type: LearningItemType;
+    text: string;
+    source_sentence: string;
+    context_before?: string | null;
+    context_after?: string | null;
+    meaning_in_context?: string | null;
+    definition_en?: string | null;
+    definition_zh?: string | null;
+    collocations: unknown[];
+    examples: unknown[];
+    tags: string[];
+    status: LearningItemStatus;
+    priority: number;
+    difficulty?: number | null;
+    ai_explanation?: unknown | null;
+    review_state: unknown;
+    source_material_title?: string | null;
+    source_segment_order?: number | null;
+    accepted_at?: string | null;
+    rejected_at?: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ListLearningItemsQuery {
+    status?: LearningItemStatus;
+    item_type?: LearningItemType;
+    material_id?: string;
+    limit?: number;
+    offset?: number;
+}
+
+export interface CreateLearningItemInput {
+    id?: string;
+    material_id?: string | null;
+    segment_id?: string | null;
+    item_type?: LearningItemType;
+    text: string;
+    source_sentence?: string | null;
+    context_before?: string | null;
+    context_after?: string | null;
+    meaning_in_context?: string | null;
+    definition_en?: string | null;
+    definition_zh?: string | null;
+    collocations?: unknown[];
+    examples?: unknown[];
+    tags?: string[];
+    status?: LearningItemStatus;
+    priority?: number;
+    difficulty?: number | null;
+    ai_explanation?: unknown | null;
+    review_state?: unknown;
+}
+
+export interface UpdateLearningItemInput {
+    material_id?: string | null;
+    segment_id?: string | null;
+    item_type?: LearningItemType;
+    text?: string;
+    source_sentence?: string | null;
+    context_before?: string | null;
+    context_after?: string | null;
+    meaning_in_context?: string | null;
+    definition_en?: string | null;
+    definition_zh?: string | null;
+    collocations?: unknown[];
+    examples?: unknown[];
+    tags?: string[];
+    status?: LearningItemStatus;
+    priority?: number;
+    difficulty?: number | null;
+    ai_explanation?: unknown | null;
+    review_state?: unknown;
+}
+
+export interface CreateLearningItemFromSelectionInput {
+    material_id: string;
+    segment_id?: string | null;
+    selected_text: string;
+    item_type?: LearningItemType;
+    source_sentence?: string | null;
+    context_before?: string | null;
+    context_after?: string | null;
+    tags?: string[];
+}
+
 export type AgentTaskType =
     | "mind_map_generate"
     | "assistant_agent_turn"
