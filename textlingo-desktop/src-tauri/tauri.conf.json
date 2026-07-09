@@ -50,6 +50,9 @@
     "externalBin": [],
     "resources": {
       "resources/pdf-assets": "resources/pdf-assets",
+      "resources/backend": "backend",
+      "resources/postgres": "postgres",
+      "resources/node": "node",
       "../agent-worker/dist": "agent-worker/dist",
       "../agent-worker/package.json": "agent-worker/package.json",
       "../agent-worker/node_modules": "agent-worker/node_modules"

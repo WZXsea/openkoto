@@ -901,7 +901,7 @@ pub fn resolve_worker_launch_config(app_handle: &AppHandle) -> Result<WorkerLaun
         if worker_source_project_exists(&cwd) {
             ensure_worker_bundle(&cwd)?;
             return Ok(WorkerLaunchConfig {
-                program: resolve_node_program(),
+                program: resolve_node_program(app_handle),
                 args: vec![WORKER_ENTRYPOINT.to_string()],
                 cwd,
                 envs: default_worker_envs(app_handle)?,
@@ -912,7 +912,7 @@ pub fn resolve_worker_launch_config(app_handle: &AppHandle) -> Result<WorkerLaun
     if let Some(cwd) = bundled_worker_dir(app_handle) {
         if worker_bundle_outputs_exist(&cwd) {
             return Ok(WorkerLaunchConfig {
-                program: resolve_node_program(),
+                program: resolve_node_program(app_handle),
                 args: vec![WORKER_ENTRYPOINT.to_string()],
                 cwd,
                 envs: default_worker_envs(app_handle)?,
@@ -924,7 +924,7 @@ pub fn resolve_worker_launch_config(app_handle: &AppHandle) -> Result<WorkerLaun
     if worker_source_project_exists(&cwd) {
         ensure_worker_bundle(&cwd)?;
         return Ok(WorkerLaunchConfig {
-            program: resolve_node_program(),
+            program: resolve_node_program(app_handle),
             args: vec![WORKER_ENTRYPOINT.to_string()],
             cwd,
             envs: default_worker_envs(app_handle)?,
@@ -959,7 +959,11 @@ fn worker_bundle_outputs_exist(cwd: &Path) -> bool {
         .all(|file| cwd.join("dist").join(file).is_file())
 }
 
-fn resolve_node_program() -> String {
+fn resolve_node_program(app_handle: &AppHandle) -> String {
+    if let Some(program) = bundled_node_program(app_handle) {
+        return program.to_string_lossy().to_string();
+    }
+
     resolve_program_from_env_or_common_paths(
         "TEXTLINGO_AGENT_WORKER_NODE",
         &[
@@ -969,6 +973,20 @@ fn resolve_node_program() -> String {
         ],
         "node",
     )
+}
+
+fn bundled_node_program(app_handle: &AppHandle) -> Option<PathBuf> {
+    let binary_name = if cfg!(target_os = "windows") {
+        "node.exe"
+    } else {
+        "node"
+    };
+    app_handle
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|resource_dir| resource_dir.join("node").join("bin").join(binary_name))
+        .filter(|path| path.is_file())
 }
 
 fn resolve_npm_program() -> String {

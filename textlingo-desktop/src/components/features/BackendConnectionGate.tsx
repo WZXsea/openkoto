@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Lock, LogIn, RefreshCw, Server, UserPlus } from "lucide-react";
 
@@ -31,14 +31,20 @@ export function BackendConnectionGate({
   onAuthenticated,
 }: BackendConnectionGateProps) {
   const [mode, setMode] = useState<AuthMode>("login");
-  const [backendUrl, setBackendUrl] = useState(
-    status?.backend_url || config?.backend_url || "http://127.0.0.1:4000",
-  );
+  const detectedBackendUrl = status?.backend_url || config?.backend_url || null;
+  const [backendUrl, setBackendUrl] = useState(detectedBackendUrl || "http://127.0.0.1:4000");
+  const [hasEditedBackendUrl, setHasEditedBackendUrl] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!hasEditedBackendUrl && detectedBackendUrl && detectedBackendUrl !== backendUrl) {
+      setBackendUrl(detectedBackendUrl);
+    }
+  }, [backendUrl, detectedBackendUrl, hasEditedBackendUrl]);
 
   const statusText = useMemo(() => {
     if (isChecking) return "正在检查 Backend";
@@ -100,7 +106,10 @@ export function BackendConnectionGate({
             <Input
               id="backend-url"
               value={backendUrl}
-              onChange={(event) => setBackendUrl(event.target.value)}
+              onChange={(event) => {
+                setHasEditedBackendUrl(true);
+                setBackendUrl(event.target.value);
+              }}
               placeholder="http://127.0.0.1:4000"
               autoCapitalize="none"
               autoCorrect="off"

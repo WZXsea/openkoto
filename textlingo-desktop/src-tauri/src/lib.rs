@@ -9,6 +9,7 @@ pub mod ktv_export;
 pub mod legacy_import;
 pub mod logging;
 pub mod moonshot;
+pub mod packaged_backend;
 pub mod pdf_sidecar;
 pub mod platform;
 pub mod storage;
@@ -31,6 +32,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AIServiceCache::default())
         .manage(AgentWorkerManager::default())
+        .manage(packaged_backend::PackagedBackendManager::default())
         .invoke_handler(tauri::generate_handler![
             // App initialization
             commands::init_app,
@@ -42,6 +44,7 @@ pub fn run() {
             commands::backend_login_cmd,
             commands::backend_register_cmd,
             commands::backend_logout_cmd,
+            packaged_backend::packaged_backend_status_cmd,
             legacy_import::run_legacy_import_cmd,
             legacy_import::get_legacy_import_cmd,
             commands::set_api_key,
@@ -147,6 +150,8 @@ pub fn run() {
                     logging::LogStore::global().init_file(&app_data_dir);
                     let _ = mark_running_tasks_interrupted_in_dir(&app_data_dir);
                 }
+
+                packaged_backend::start_packaged_backend_if_enabled(app_handle.clone()).await;
 
                 // 启动资源服务器 (视频 + 书籍)
                 match app_handle.path().app_data_dir() {

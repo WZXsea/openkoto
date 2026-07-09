@@ -15,8 +15,12 @@
     "e2e": "playwright test",
     "preview": "vite preview",
     "tauri": "tauri",
+    "build:backend-sidecar": "bash ../script/build_pr6_backend_sidecar.sh",
+    "build:postgres-runtime": "bash ../script/build_pr6_postgres_runtime.sh",
+    "build:node-runtime": "bash ../script/build_pr6_node_runtime.sh",
     "tauri:dev:core": "TAURI_CONFIG='{\"bundle\":{\"externalBin\":[]}}' tauri dev",
-    "tauri:build:core": "TAURI_CONFIG='{\"bundle\":{\"externalBin\":[]}}' tauri build"
+    "tauri:build:core": "TAURI_CONFIG='{\"bundle\":{\"externalBin\":[]}}' tauri build",
+    "tauri:build:packaged": "npm run build:backend-sidecar && npm run build:postgres-runtime && npm run build:node-runtime && tauri build"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.7",
