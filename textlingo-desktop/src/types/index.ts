@@ -2,8 +2,8 @@ export interface Article {
     id: string;
     title: string;
     content: string;
-    /** 素材来源类型: web | article | youtube | local_video | audio | book */
-    source_type?: "web" | "article" | "youtube" | "local_video" | "audio" | "book";
+    /** 素材来源类型: web | article | text_file | youtube | local_video | audio | book */
+    source_type?: "web" | "article" | "text_file" | "youtube" | "local_video" | "audio" | "book";
     source_url?: string;
     media_path?: string;
     /** 书籍文件路径 (EPUB/TXT/PDF) */
@@ -14,6 +14,19 @@ export interface Article {
     translated: boolean;
     active_mind_map_artifact_id?: string;
     segments?: ArticleSegment[];
+    metadata?: Record<string, unknown>;
+    tags?: Array<string | { id?: string; name?: string; color?: string | null }>;
+    reading_progress?: {
+        material_id?: string;
+        reader_kind?: "article" | "pdf" | "epub" | "txt" | "media";
+        locator?: Record<string, unknown>;
+        progress_ratio?: number;
+        status?: "unread" | "reading" | "completed" | "archived";
+        last_opened_at?: string;
+        completed_at?: string | null;
+        updated_at?: string;
+    } | number | null;
+    archived_at?: string | null;
 }
 
 export type LearningItemStatus =

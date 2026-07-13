@@ -30,6 +30,7 @@ async fn legacy_imports_are_idempotent_and_user_isolated_when_database_is_config
         .await
         .unwrap();
     MIGRATOR.run(&pool).await.unwrap();
+    let inspection_pool = pool.clone();
 
     let storage_dir =
         std::env::temp_dir().join(format!("openkoto-legacy-import-test-{}", Uuid::new_v4()));
@@ -208,6 +209,82 @@ async fn legacy_imports_are_idempotent_and_user_isolated_when_database_is_config
     assert_eq!(artifact["article_id"], material_target_id);
     assert_eq!(artifact["artifact_type"], "mind_map");
     assert_eq!(artifact["version"], "1");
+
+    let overwritten_material_id = Uuid::new_v4();
+    for (suffix, title, content, source_url) in [
+        (
+            "old",
+            "Legacy overwrite old",
+            "legacy overwrite old content",
+            "https://example.test/legacy-overwrite-old",
+        ),
+        (
+            "new",
+            "Legacy overwrite new",
+            "legacy overwrite new content",
+            "https://example.test/legacy-overwrite-new",
+        ),
+    ] {
+        let (status, _) = json_request(
+            app.clone(),
+            Method::POST,
+            "/legacy-imports",
+            json!({
+                "client_import_id": format!("legacy-overwrite-{suffix}-{}", Uuid::new_v4()),
+                "materials": [{
+                    "source_id": overwritten_material_id.to_string(),
+                    "payload": {
+                        "id": overwritten_material_id.to_string(),
+                        "title": title,
+                        "content": content,
+                        "source_type": "web",
+                        "source_url": source_url
+                    }
+                }]
+            }),
+            Some(&token_a),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (normalized_url, content_hash): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT normalized_source_url,content_sha256 FROM materials WHERE id=$1")
+            .bind(overwritten_material_id)
+            .fetch_one(&inspection_pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        normalized_url.as_deref(),
+        Some("https://example.test/legacy-overwrite-new")
+    );
+    assert!(content_hash.is_some());
+
+    let (status, old_fingerprint) = json_request(
+        app.clone(),
+        Method::POST,
+        "/materials/duplicate-check",
+        json!({
+            "source_url": "https://example.test/legacy-overwrite-old",
+            "content": "legacy overwrite old content"
+        }),
+        Some(&token_a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(old_fingerprint["duplicate"], false);
+    let (status, new_fingerprint) = json_request(
+        app.clone(),
+        Method::POST,
+        "/materials/duplicate-check",
+        json!({
+            "source_url": "https://example.test/legacy-overwrite-new",
+            "content": "legacy overwrite new content"
+        }),
+        Some(&token_a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(new_fingerprint["duplicate"], true);
 
     let _ = tokio::fs::remove_dir_all(storage_dir).await;
 }

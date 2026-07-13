@@ -5,8 +5,7 @@ use openkoto_desktop_lib::{
         apply_worker_event_in_dir, build_assistant_worker_request, build_mind_map_worker_request,
         build_status_snapshot, mark_running_tasks_interrupted_in_dir, parse_worker_event_line,
         push_worker_log, resolve_runtime_provider_config, worker_bundle_is_fresh,
-        worker_event_log_entry, WorkerHealth, WorkerLogEntry, WorkerLogLevel,
-        WorkerRuntimeState,
+        worker_event_log_entry, WorkerHealth, WorkerLogEntry, WorkerLogLevel, WorkerRuntimeState,
     },
     storage::{load_agent_task_in_dir, load_artifact_in_dir, save_agent_task_in_dir},
     types::{
@@ -112,6 +111,10 @@ fn sample_article() -> Article {
         translated: false,
         active_mind_map_artifact_id: None,
         segments: Vec::new(),
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     }
 }
 
@@ -690,8 +693,18 @@ fn task_log_events_are_converted_into_log_entries() {
 #[test]
 fn worker_bundle_is_stale_when_required_output_is_missing() {
     let project_dir = temp_worker_project_dir("missing-output");
-    for file in ["index", "assistantTask", "mindMapTask", "protocol", "runtime"] {
-        fs::write(project_dir.join("src").join(format!("{file}.ts")), "export {};\n").unwrap();
+    for file in [
+        "index",
+        "assistantTask",
+        "mindMapTask",
+        "protocol",
+        "runtime",
+    ] {
+        fs::write(
+            project_dir.join("src").join(format!("{file}.ts")),
+            "export {};\n",
+        )
+        .unwrap();
     }
     fs::write(project_dir.join("dist").join("index.js"), "export {};\n").unwrap();
 
@@ -701,9 +714,23 @@ fn worker_bundle_is_stale_when_required_output_is_missing() {
 #[test]
 fn worker_bundle_is_stale_when_source_is_newer_than_dist() {
     let project_dir = temp_worker_project_dir("stale-output");
-    for file in ["index", "assistantTask", "mindMapTask", "protocol", "runtime"] {
-        fs::write(project_dir.join("src").join(format!("{file}.ts")), "export {};\n").unwrap();
-        fs::write(project_dir.join("dist").join(format!("{file}.js")), "export {};\n").unwrap();
+    for file in [
+        "index",
+        "assistantTask",
+        "mindMapTask",
+        "protocol",
+        "runtime",
+    ] {
+        fs::write(
+            project_dir.join("src").join(format!("{file}.ts")),
+            "export {};\n",
+        )
+        .unwrap();
+        fs::write(
+            project_dir.join("dist").join(format!("{file}.js")),
+            "export {};\n",
+        )
+        .unwrap();
     }
 
     sleep(Duration::from_millis(20));

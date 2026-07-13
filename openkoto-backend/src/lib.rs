@@ -6,5 +6,6 @@ pub mod files;
 pub mod learning;
 pub mod learning_items;
 pub mod legacy_imports;
+pub mod material_library;
 pub mod materials;
 pub mod routes;

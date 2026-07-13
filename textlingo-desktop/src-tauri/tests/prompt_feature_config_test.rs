@@ -12,25 +12,22 @@ fn deserializing_old_config_injects_builtin_prompt_features() {
 
     let config: AppConfig = serde_json::from_str(old_json).expect("config should parse");
 
-    assert!(config.prompt_features.iter().any(|item| item.id == "chat.default"));
-    assert!(
-        config
-            .prompt_features
-            .iter()
-            .any(|item| item.id == "selection.translate")
-    );
-    assert!(
-        config
-            .prompt_features
-            .iter()
-            .any(|item| item.id == "selection.explain")
-    );
-    assert!(
-        config
-            .prompt_features
-            .iter()
-            .any(|item| item.id == "selection.grammar")
-    );
+    assert!(config
+        .prompt_features
+        .iter()
+        .any(|item| item.id == "chat.default"));
+    assert!(config
+        .prompt_features
+        .iter()
+        .any(|item| item.id == "selection.translate"));
+    assert!(config
+        .prompt_features
+        .iter()
+        .any(|item| item.id == "selection.explain"));
+    assert!(config
+        .prompt_features
+        .iter()
+        .any(|item| item.id == "selection.grammar"));
 }
 
 #[test]
@@ -60,11 +57,12 @@ fn deserializing_partial_prompt_features_restores_missing_builtins_and_keeps_cus
 
     let config: AppConfig = serde_json::from_str(partial_json).expect("config should parse");
 
-    assert!(
-        config
-            .prompt_features
-            .iter()
-            .any(|item| item.id == "custom.summary")
-    );
-    assert!(config.prompt_features.iter().any(|item| item.id == "chat.default"));
+    assert!(config
+        .prompt_features
+        .iter()
+        .any(|item| item.id == "custom.summary"));
+    assert!(config
+        .prompt_features
+        .iter()
+        .any(|item| item.id == "chat.default"));
 }

@@ -17,6 +17,7 @@ use crate::{
         AgentTaskDto, ArtifactDto, BookmarkDto, FavoriteGrammarDto, FavoriteVocabularyDto,
         WordPackDto,
     },
+    material_library::{content_sha256_hex, normalize_source_url, validate_sha256},
     materials::{CreateMaterialRequest, MaterialSegmentInput},
     routes::AppState,
 };
@@ -465,6 +466,8 @@ impl LegacyMaterialInput {
             translated: self.translated,
             active_mind_map_artifact_id: self.active_mind_map_artifact_id,
             metadata: self.metadata,
+            file_sha256: None,
+            duplicate_policy: Some("keep_copy".to_string()),
             segments: self.segments,
         }
     }
@@ -900,6 +903,12 @@ async fn import_material(
     let metadata = payload
         .metadata
         .unwrap_or_else(|| Value::Object(Default::default()));
+    let normalized_source_url = normalize_source_url(payload.source_url.as_deref())?;
+    let content_sha256 = content_sha256_hex(&payload.content);
+    let file_sha256 = validate_sha256(
+        metadata.get("file_sha256").and_then(Value::as_str),
+        "file_sha256",
+    )?;
     let translated = payload.translated.unwrap_or(false);
     let segments = payload
         .segments
@@ -910,9 +919,10 @@ async fn import_material(
         r#"
         INSERT INTO materials (
             id, user_id, title, content, source_type, source_url, media_path, book_path,
-            book_type, translated, active_mind_map_artifact_id, metadata
+            book_type, translated, active_mind_map_artifact_id, metadata,
+            normalized_source_url, content_sha256, file_sha256
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT (id) DO UPDATE
         SET title = EXCLUDED.title,
             content = EXCLUDED.content,
@@ -924,6 +934,9 @@ async fn import_material(
             translated = EXCLUDED.translated,
             active_mind_map_artifact_id = EXCLUDED.active_mind_map_artifact_id,
             metadata = EXCLUDED.metadata,
+            normalized_source_url = EXCLUDED.normalized_source_url,
+            content_sha256 = EXCLUDED.content_sha256,
+            file_sha256 = EXCLUDED.file_sha256,
             updated_at = NOW()
         WHERE materials.user_id = EXCLUDED.user_id
         RETURNING id
@@ -941,6 +954,9 @@ async fn import_material(
     .bind(translated)
     .bind(payload.active_mind_map_artifact_id)
     .bind(metadata)
+    .bind(normalized_source_url)
+    .bind(content_sha256)
+    .bind(file_sha256)
     .fetch_optional(&mut *tx)
     .await?;
 

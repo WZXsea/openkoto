@@ -6,6 +6,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Loader2, Download } from "lucide-react";
 import { Article } from "../../types";
+import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
 
 interface YouTubeImportFormProps {
     onSave?: (article: Article) => void;
@@ -15,8 +16,17 @@ interface YouTubeImportFormProps {
 export function YouTubeImportForm({ onSave, onCancel }: YouTubeImportFormProps) {
     const { t } = useTranslation();
     const [url, setUrl] = useState("");
-    const [isImporting, setIsImporting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const importPreview = useMaterialImportPreview<Article>({
+        commit: (importJobId, duplicatePolicy) => invoke<Article>("import_youtube_video_cmd", {
+            url: url.trim(),
+            importJobId,
+            duplicatePolicy,
+        }),
+        onSuccess: onSave,
+        onError: (err) => setError(String(err)),
+    });
+    const isImporting = importPreview.isBusy;
 
     const handleImport = async () => {
         if (!url.trim()) {
@@ -29,22 +39,20 @@ export function YouTubeImportForm({ onSave, onCancel }: YouTubeImportFormProps) 
             return;
         }
 
-        setIsImporting(true);
         setError(null);
-
-        try {
-            const article = await invoke<Article>("import_youtube_video_cmd", { url: url.trim() });
-            onSave?.(article);
-        } catch (err) {
-            console.error("YouTube import failed:", err);
-            setError(String(err)); // Show exact error from backend
-        } finally {
-            setIsImporting(false);
-        }
+        await importPreview.startPreview({ sourceKind: "youtube", sourceUri: url.trim() });
     };
 
     return (
         <div className="flex flex-col h-full">
+            <MaterialImportPreviewDialogs
+                preview={importPreview.preview}
+                duplicate={importPreview.duplicate}
+                isBusy={importPreview.isBusy}
+                onConfirm={() => void importPreview.confirmPreview()}
+                onCancel={() => void importPreview.cancelPreview()}
+                onResolve={(action) => void importPreview.resolveDuplicate(action)}
+            />
             <div className="flex-1 space-y-4">
                 {error && (
                     <div className="mb-4">

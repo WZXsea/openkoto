@@ -46,6 +46,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -191,6 +192,76 @@ vi.mock("./lib/hooks/useAgentOpenMaterialListener", () => ({
 }));
 
 describe("App onboarding", () => {
+  it("waits for the packaged backend before restoring the session", async () => {
+    vi.useFakeTimers();
+    let backendStatusChecks = 0;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "packaged_backend_status_cmd") {
+        backendStatusChecks += 1;
+        return Promise.resolve({
+          enabled: true,
+          running: backendStatusChecks >= 3,
+          message: backendStatusChecks >= 3 ? "ready" : null,
+        });
+      }
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          model_configs: [],
+          prompt_features: [],
+        });
+      }
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+      if (command === "list_articles_cmd") return Promise.resolve([]);
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(screen.getByText("app.loading")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(screen.getByText("ArticleList")).toBeInTheDocument();
+    expect(backendStatusChecks).toBe(3);
+    expect(invokeMock).toHaveBeenCalledWith("backend_check_session_cmd");
+  });
+
+  it("leaves the loading screen when a startup command never settles", async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return new Promise(() => {});
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve({
+          configured: true,
+          connected: true,
+          authenticated: false,
+          backend_url: "http://127.0.0.1:19421",
+          user: null,
+          error: null,
+        });
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(screen.getByText("app.loading")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
+
+    expect(screen.getByText("OpenKoto Backend")).toBeInTheDocument();
+    expect(screen.getByText("需要登录 Backend")).toBeInTheDocument();
+  });
+
   it("blocks material loading until backend is configured and authenticated", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_config") {
@@ -289,7 +360,7 @@ describe("App onboarding", () => {
     });
   });
 
-  it("keeps ktv export unavailable during phase 1", async () => {
+  it("opens ktv export when the capability is enabled", async () => {
     const sampleVideoArticle = {
       id: "video-1",
       title: "Sample Video",
@@ -359,8 +430,133 @@ describe("App onboarding", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Open KTV Export" }));
 
-    expect(screen.queryByText("KtvExportPage")).not.toBeInTheDocument();
-    expect(screen.getByText("ArticleReader")).toBeInTheDocument();
+    expect(screen.getByText("KtvExportPage")).toBeInTheDocument();
+  });
+
+  it("shows the signed-in backend account and returns to the login gate after logout", async () => {
+    const sampleArticles = [
+      {
+        id: "article-1",
+        title: "Article One",
+        content: "one",
+        source_type: "article",
+        source_url: null,
+        media_path: null,
+        book_path: null,
+        book_type: null,
+        created_at: "2026-03-30T00:00:00Z",
+        translated: false,
+        active_mind_map_artifact_id: null,
+        segments: [],
+      },
+    ];
+
+    const authenticatedConfig = {
+      onboarding_completed: true,
+      active_model_id: undefined,
+      model_configs: [],
+      target_language: "zh-CN",
+      interface_language: "zh",
+      prompt_features: [],
+      backend_url: "http://127.0.0.1:4000",
+      auth_token: "token",
+    };
+    const loggedOutConfig = {
+      ...authenticatedConfig,
+      auth_token: undefined,
+    };
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve(authenticatedConfig);
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve(sampleArticles);
+      }
+
+      if (command === "backend_logout_cmd") {
+        return Promise.resolve(loggedOutConfig);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(screen.getByText("Reader")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "账户" }));
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByText("退出登录"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("backend_logout_cmd");
+    });
+    expect(await screen.findByText("OpenKoto Backend")).toBeInTheDocument();
+    expect(screen.getByText("需要登录 Backend")).toBeInTheDocument();
+    expect(screen.queryByText("ArticleList")).not.toBeInTheDocument();
+    expect(screen.queryByText("Article One")).not.toBeInTheDocument();
+  });
+
+  it("switches accounts by clearing the session and restores materials after re-authentication", async () => {
+    const sampleArticles = [{
+      id: "article-1", title: "Article One", content: "one", source_type: "article",
+      source_url: null, media_path: null, book_path: null, book_type: null,
+      created_at: "2026-03-30T00:00:00Z", translated: false,
+      active_mind_map_artifact_id: null, segments: [],
+    }];
+    const authenticatedConfig = {
+      onboarding_completed: true, active_model_id: undefined, model_configs: [],
+      target_language: "zh-CN", interface_language: "zh", prompt_features: [],
+      backend_url: "http://127.0.0.1:4000", auth_token: "account-a-token",
+    };
+    const loggedOutConfig = { ...authenticatedConfig, auth_token: undefined };
+    let session: "authenticated" | "logged-out" = "authenticated";
+
+    invokeMock.mockImplementation((command: string, args?: { email?: string; password?: string }) => {
+      if (command === "get_config") return Promise.resolve(session === "authenticated" ? authenticatedConfig : loggedOutConfig);
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(session === "authenticated" ? authenticatedBackendSession : {
+          ...authenticatedBackendSession, authenticated: false, user: null, error: null,
+        });
+      }
+      if (command === "list_articles_cmd") return Promise.resolve(session === "authenticated" ? sampleArticles : []);
+      if (command === "backend_logout_cmd") {
+        session = "logged-out";
+        return Promise.resolve(loggedOutConfig);
+      }
+      if (command === "backend_login_cmd") {
+        expect(args).toMatchObject({ email: "new@example.com", password: "new-password" });
+        session = "authenticated";
+        return Promise.resolve({ config: authenticatedConfig, user: authenticatedBackendSession.user, expires_at: "2026-03-31T00:00:00Z" });
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "账户" }));
+    await userEvent.click(screen.getByText("切换账户"));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("backend_logout_cmd"));
+    expect(await screen.findByText("需要登录 Backend")).toBeInTheDocument();
+    expect(screen.queryByText("ArticleList")).not.toBeInTheDocument();
+    expect(screen.queryByText("Article One")).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("Email"), "new@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "new-password");
+    await userEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(screen.getByText("Article One")).toBeInTheDocument();
   });
 
   it("keeps the favorites return target after switching articles in the reader", async () => {
@@ -597,6 +793,10 @@ describe("App onboarding", () => {
         return Promise.resolve(listCalls > 1 ? [importedArticle] : []);
       }
 
+      if (command === "preview_material_import_cmd") {
+        return Promise.resolve({ job: { id: "job-dropped" }, duplicates: { duplicate: false, matches: [] } });
+      }
+
       if (command === "import_book_cmd") {
         return Promise.resolve(importedArticle);
       }
@@ -622,6 +822,8 @@ describe("App onboarding", () => {
     expect(invokeMock).toHaveBeenCalledWith("import_book_cmd", {
       filePath: "/tmp/dropped.pdf",
       title: null,
+      importJobId: "job-dropped",
+      duplicatePolicy: "keep_copy",
     });
     expect(appShellMocks.onDragDropEvent).toHaveBeenCalledTimes(registrationsBeforeDrop);
 
@@ -674,6 +876,10 @@ describe("App onboarding", () => {
         return Promise.resolve([]);
       }
 
+      if (command === "preview_material_import_cmd") {
+        return Promise.resolve({ job: { id: "job-dropped" }, duplicates: { duplicate: false, matches: [] } });
+      }
+
       if (command === "import_book_cmd") {
         return importPromise;
       }
@@ -698,6 +904,8 @@ describe("App onboarding", () => {
     expect(invokeMock).toHaveBeenCalledWith("import_book_cmd", {
       filePath: "/tmp/dropped.pdf",
       title: null,
+      importJobId: "job-dropped",
+      duplicatePolicy: "keep_copy",
     });
     expect(listCalls).toBe(1);
 

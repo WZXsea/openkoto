@@ -1,5 +1,30 @@
 import type { FeatureBoundary } from "../types";
 
+export {
+  READING_PROGRESS_COMPLETION_THRESHOLD,
+  clampProgressRatio,
+  createEpubCfiLocator,
+  createMediaTimeLocator,
+  createPageLocator,
+  createReadingProgressUpdate,
+  createSegmentLocator,
+  getEpubCfiFromLocator,
+  getInitialProgressForReader,
+  getMediaTimeFromLocator,
+  getPageNumberFromLocator,
+  getPageNumberFromProgress,
+  getReadingProgressStatus,
+  getSegmentPositionFromLocator,
+  useReadingProgressReporter,
+} from "./readingProgress";
+export type {
+  ReaderKind,
+  ReadingProgressChangeHandler,
+  ReadingProgressLocator,
+  ReadingProgressStatus,
+  ReadingProgressUpdate,
+} from "./readingProgress";
+
 export const readerFeature = {
   id: "reader",
   label: "Reader",

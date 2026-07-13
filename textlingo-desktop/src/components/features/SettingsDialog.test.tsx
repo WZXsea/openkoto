@@ -176,4 +176,44 @@ describe("SettingsDialog", () => {
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("saves custom UI and reader font settings", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      return Promise.resolve("ok");
+    });
+
+    render(<SettingsDialog isOpen onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "settings.nav.appearance" }));
+
+    fireEvent.change(await screen.findByLabelText("UI font family"), {
+      target: { value: '"PingFang SC", sans-serif' },
+    });
+    fireEvent.change(screen.getByLabelText("Reader font family"), {
+      target: { value: "Georgia, serif" },
+    });
+
+    await userEvent.click(screen.getByText("Close"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_config_cmd",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            ui_font_family: '"PingFang SC", sans-serif',
+            reader_font_family: "Georgia, serif",
+          }),
+        }),
+      );
+    });
+  });
 });

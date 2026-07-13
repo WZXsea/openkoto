@@ -13,6 +13,8 @@ REQUIRED_CI_GATE_SNIPPETS = (
     'name: build bundled PDF sidecar',
     'name: verify bundled PDF sidecar',
     'bash script/verify_pdf_sidecar_binary.sh',
+    'name: Install agent worker dependencies',
+    'working-directory: ./textlingo-desktop/agent-worker',
 )
 
 REQUIRED_PUBLISH_SNIPPETS = (
@@ -23,6 +25,8 @@ REQUIRED_PUBLISH_SNIPPETS = (
     'name: build bundled PDF sidecar',
     'name: verify bundled PDF sidecar',
     'bash script/verify_pdf_sidecar_binary.sh',
+    'name: install agent worker dependencies',
+    'working-directory: ./textlingo-desktop/agent-worker',
 )
 
 REQUIRED_MACOS_MATRIX_ROWS = (
@@ -81,7 +85,7 @@ def main() -> int:
         print("\n".join(missing))
         return 1
 
-    print("release workflows contain pdf sidecar build/verify steps and correct macOS publish matrix")
+    print("release workflows install all Node workspaces, verify sidecars, and publish the macOS app and DMG")
     return 0
 
 

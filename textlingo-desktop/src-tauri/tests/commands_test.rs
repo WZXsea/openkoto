@@ -13,7 +13,12 @@ use openkoto_desktop_lib::{
     },
     pdf_sidecar::{build_pdf_sidecar_command_for_dir, resolve_pdf_sidecar_for_dir},
     subtitle_import::{create_article_from_srt, import_subtitles_into_article, parse_srt_content},
-    types::{AppConfig, Article, ArticleSegment, ModelConfig},
+    types::{
+        is_supported_material_import_source_kind, material_import_commit_recovery_strategy,
+        material_import_commit_state_from_metadata, material_import_effective_duplicate_policy,
+        material_import_metadata_with_commit_state, AppConfig, Article, ArticleSegment,
+        MaterialImportCommitState, MaterialImportRecoveryStrategy, ModelConfig,
+    },
 };
 
 fn sample_model_config() -> ModelConfig {
@@ -43,6 +48,10 @@ fn sample_article_defaults() -> Article {
         translated: false,
         active_mind_map_artifact_id: None,
         segments: Vec::new(),
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     }
 }
 
@@ -54,6 +63,89 @@ fn sample_material_summary(id: &str, title: &str, material_type: &str) -> Materi
         created_at: "2026-03-08T00:00:00Z".to_string(),
         translated: false,
     }
+}
+
+#[test]
+fn material_import_commit_state_preserves_policy_target_and_result() {
+    let metadata = serde_json::json!({
+        "resume_payload": { "source_kind": "url", "source_uri": "https://example.com" },
+        "source": "desktop_import",
+    });
+    let state = MaterialImportCommitState {
+        duplicate_policy: Some("replace".to_string()),
+        commit_kind: Some("replace".to_string()),
+        target_material_id: Some("target-material".to_string()),
+        result_material_id: Some("target-material".to_string()),
+    };
+
+    let persisted = material_import_metadata_with_commit_state(metadata, &state);
+
+    assert_eq!(persisted["source"], "desktop_import");
+    assert_eq!(persisted["resume_payload"]["source_kind"], "url");
+    assert_eq!(
+        material_import_commit_state_from_metadata(&persisted),
+        state
+    );
+    assert_eq!(
+        material_import_commit_recovery_strategy(&state),
+        MaterialImportRecoveryStrategy::SettleRecordedMaterial("target-material".to_string())
+    );
+}
+
+#[test]
+fn material_import_response_loss_recovery_is_idempotent_for_replace_and_open_existing() {
+    let open_existing = MaterialImportCommitState {
+        duplicate_policy: Some("open_existing".to_string()),
+        commit_kind: Some("open_existing".to_string()),
+        target_material_id: Some("existing-material".to_string()),
+        result_material_id: None,
+    };
+    let replace = MaterialImportCommitState {
+        duplicate_policy: Some("replace".to_string()),
+        commit_kind: Some("replace".to_string()),
+        target_material_id: Some("existing-material".to_string()),
+        result_material_id: None,
+    };
+
+    assert_eq!(
+        material_import_commit_recovery_strategy(&open_existing),
+        MaterialImportRecoveryStrategy::SettleOpenExisting("existing-material".to_string())
+    );
+    assert_eq!(
+        material_import_commit_recovery_strategy(&replace),
+        MaterialImportRecoveryStrategy::VerifyTargetMaterialImportMarker(
+            "existing-material".to_string()
+        )
+    );
+    assert_eq!(
+        material_import_commit_recovery_strategy(&replace),
+        material_import_commit_recovery_strategy(&replace)
+    );
+}
+
+#[test]
+fn material_import_replay_keeps_recorded_duplicate_policy_and_accepts_all_source_kinds() {
+    assert_eq!(
+        material_import_effective_duplicate_policy(None, Some("replace")).unwrap(),
+        Some("replace".to_string())
+    );
+    assert!(
+        material_import_effective_duplicate_policy(Some("open_existing"), Some("replace")).is_err()
+    );
+
+    for source_kind in [
+        "article",
+        "url",
+        "text_file",
+        "book",
+        "audio",
+        "video",
+        "subtitle",
+        "youtube",
+    ] {
+        assert!(is_supported_material_import_source_kind(source_kind));
+    }
+    assert!(!is_supported_material_import_source_kind("unknown"));
 }
 
 #[test]
@@ -546,10 +638,8 @@ fn build_ktv_ffmpeg_args_uses_ass_filter_and_output_path() {
 
 #[test]
 fn ensure_ktv_output_created_rejects_missing_output_file() {
-    let output = std::env::temp_dir().join(format!(
-        "openkoto-ktv-missing-{}.mp4",
-        uuid::Uuid::new_v4()
-    ));
+    let output =
+        std::env::temp_dir().join(format!("openkoto-ktv-missing-{}.mp4", uuid::Uuid::new_v4()));
 
     let error = ensure_ktv_output_created(&output).unwrap_err();
 
@@ -558,10 +648,8 @@ fn ensure_ktv_output_created_rejects_missing_output_file() {
 
 #[test]
 fn resolve_ffmpeg_invocation_prefers_system_binary_in_dev_mode() {
-    let temp_dir = std::env::temp_dir().join(format!(
-        "openkoto-system-ffmpeg-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let temp_dir =
+        std::env::temp_dir().join(format!("openkoto-system-ffmpeg-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
 
     let binary_name = if cfg!(target_os = "windows") {

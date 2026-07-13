@@ -1,9 +1,7 @@
+use crate::moonshot::{is_moonshot_provider, moonshot_chat_completions_url, moonshot_files_url};
 use crate::types::{
     AnalysisRequest, AnalysisResponse, AnalysisType, ChatRequest, ChatResponse, TranslationRequest,
     TranslationResponse,
-};
-use crate::moonshot::{
-    is_moonshot_provider, moonshot_chat_completions_url, moonshot_files_url,
 };
 use futures::StreamExt;
 use regex::Regex;
@@ -81,9 +79,8 @@ impl AIService {
                 self.model.strip_prefix("models/").unwrap_or(&self.model)
             ),
             "anthropic" => ANTHROPIC_API_URL.to_string(),
-            provider if is_moonshot_provider(provider) => {
-                moonshot_chat_completions_url(provider).unwrap_or_else(|| OPENAI_API_URL.to_string())
-            }
+            provider if is_moonshot_provider(provider) => moonshot_chat_completions_url(provider)
+                .unwrap_or_else(|| OPENAI_API_URL.to_string()),
             "ollama" => OLLAMA_DEFAULT_URL.to_string(),
             "lmstudio" => LMSTUDIO_DEFAULT_URL.to_string(),
             "openai-compatible" => {
@@ -274,10 +271,9 @@ impl AIService {
             })];
             self.make_google_request(contents, Some(0.3)).await?
         } else if self.is_anthropic_provider() {
-            let messages = vec![
-                json!({"role": "user", "content": request.text.clone()}),
-            ];
-            self.make_anthropic_request(Some(system_prompt), messages, Some(0.3)).await?
+            let messages = vec![json!({"role": "user", "content": request.text.clone()})];
+            self.make_anthropic_request(Some(system_prompt), messages, Some(0.3))
+                .await?
         } else {
             let messages = vec![
                 json!({"role": "system", "content": system_prompt}),
@@ -323,10 +319,13 @@ impl AIService {
             })];
             self.make_google_request(contents, Some(0.3)).await?
         } else if self.is_anthropic_provider() {
-            let messages = vec![
-                json!({"role": "user", "content": prompt}),
-            ];
-            self.make_anthropic_request(Some("你是专业翻译助手，将文本翻译并返回JSON格式结果。".to_string()), messages, Some(0.3)).await?
+            let messages = vec![json!({"role": "user", "content": prompt})];
+            self.make_anthropic_request(
+                Some("你是专业翻译助手，将文本翻译并返回JSON格式结果。".to_string()),
+                messages,
+                Some(0.3),
+            )
+            .await?
         } else {
             let messages = vec![
                 json!({"role": "system", "content": "你是专业翻译助手，将文本翻译并返回JSON格式结果。"}),
@@ -439,10 +438,9 @@ impl AIService {
             })];
             self.make_google_request(contents, Some(0.5)).await?
         } else if self.is_anthropic_provider() {
-            let messages = vec![
-                json!({"role": "user", "content": request.text}),
-            ];
-            self.make_anthropic_request(Some(system_prompt), messages, Some(0.5)).await?
+            let messages = vec![json!({"role": "user", "content": request.text})];
+            self.make_anthropic_request(Some(system_prompt), messages, Some(0.5))
+                .await?
         } else {
             let messages = vec![
                 json!({"role": "system", "content": system_prompt}),
@@ -822,10 +820,10 @@ Ensure all explanations, meanings, and descriptive text are written in {0}."#,
             })];
             self.make_google_request(contents, Some(0.3)).await?
         } else if self.is_anthropic_provider() {
-            let anthropic_messages = vec![
-                json!({"role": "user", "content": format!("Analyze this: {}", text)}),
-            ];
-            self.make_anthropic_request(Some(system_prompt), anthropic_messages, Some(0.3)).await?
+            let anthropic_messages =
+                vec![json!({"role": "user", "content": format!("Analyze this: {}", text)})];
+            self.make_anthropic_request(Some(system_prompt), anthropic_messages, Some(0.3))
+                .await?
         } else {
             self.make_request(messages, Some(0.3), false).await?
         };
@@ -909,8 +907,9 @@ Ensure all explanations, meanings, and descriptive text are written in {0}."#,
             .part("file", part)
             .text("purpose", "file-extract"); // Moonshot requires 'file-extract' for Kimi
 
-        let url = moonshot_files_url(&self.provider)
-            .ok_or_else(|| "File upload currently only supported for Moonshot provider".to_string())?;
+        let url = moonshot_files_url(&self.provider).ok_or_else(|| {
+            "File upload currently only supported for Moonshot provider".to_string()
+        })?;
 
         let response = self
             .client

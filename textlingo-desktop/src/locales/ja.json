@@ -25,6 +25,13 @@
     "model": "モデル",
     "quickSwitch": "クイック切替"
   },
+  "account": {
+    "menuLabel": "アカウント",
+    "signedIn": "ログイン済み",
+    "switch": "アカウントを切り替え",
+    "logout": "ログアウト",
+    "loggingOut": "ログアウト中"
+  },
   "assistant": {
     "mode": {
       "quick": "クイック",
@@ -335,6 +342,25 @@
       "themeName": "テーマスタイル",
       "themeMode": "表示モード"
     },
+    "fonts": {
+      "uiFont": "UIフォント",
+      "readerFont": "読書フォント",
+      "uiFontInput": "UIフォントファミリー",
+      "readerFontInput": "読書フォントファミリー",
+      "custom": "カスタム",
+      "customInput": "カスタム font-family",
+      "inputPlaceholder": "例: \"PingFang SC\", sans-serif",
+      "uiHelp": "ナビゲーション、ボタン、ダイアログなど大半のUI文字に適用します。",
+      "readerHelp": "記事本文、プレーンテキスト、EPUB読書エリアに適用します。",
+      "preview": "The quick brown fox jumps over OpenKoto. 中文字体预览。",
+      "themeDefault": "テーマ既定",
+      "systemSans": "システムサンセリフ",
+      "inter": "Inter",
+      "helvetica": "Helvetica / Arial",
+      "chineseSans": "中国語サンセリフ",
+      "serif": "セリフ",
+      "chineseSerif": "中国語セリフ"
+    },
     "models": {
       "siliconflow": {
         "deepseek-v3": "DeepSeek V3",
@@ -570,7 +596,7 @@
   },
   "dropImport": {
     "hint": "離してインポート",
-    "types": "PDF / EPUB / 動画 / 音声 / 字幕",
+    "types": "PDF / EPUB / MD / TXT / DOCX / 動画 / 音声 / 字幕",
     "importing": "{{count}} 個のファイルをインポート中…",
     "done": "{{count}} 件をインポートしました",
     "unsupported": "未対応のファイル形式: {{name}}",
@@ -618,10 +644,10 @@
   "bookImport": {
     "title": "ブックをインポート",
     "fileLabel": "ブックファイル",
-    "filePlaceholder": "EPUB、TXTまたはPDFファイルを選択...",
+    "filePlaceholder": "EPUBまたはPDFファイルを選択...",
     "titleLabel": "ブックタイトル",
     "titlePlaceholder": "空欄の場合はファイル名を使用",
-    "description": "EPUB、TXT、PDF形式をサポート。EPUBは複雑なレイアウト、TXTはプレーンテキスト、PDFは元のフォーマットを保持します。",
+    "description": "EPUB、PDF形式をサポート。Markdown、TXT、DOCX はテキストファイルからインポートしてください。",
     "import": "インポート",
     "importing": "インポート中...",
     "fileFilterName": "電子書籍",
@@ -629,6 +655,24 @@
       "fileRequired": "ファイルを選択してください",
       "selectFailed": "ファイル選択に失敗しました",
       "unsupportedFormat": "サポートされていないファイル形式"
+    }
+  },
+  "textFileImport": {
+    "title": "テキストファイル",
+    "hint": "ローカルのテキスト内容を、文ごとの精読、選択、学習候補に使える教材として取り込みます。",
+    "fileLabel": "テキストファイル",
+    "filePlaceholder": "Markdown、TXTまたはDOCXファイルを選択...",
+    "selectFileTitle": "テキストファイルを選択",
+    "description": ".md、.markdown、.txt、.docx に対応。PDF/EPUB はブックインポートを使用してください。",
+    "titleLabel": "タイトル",
+    "titlePlaceholder": "空欄ならファイル名を使用",
+    "import": "テキストをインポート",
+    "importing": "インポート中...",
+    "fileFilterName": "テキストファイル",
+    "errors": {
+      "fileRequired": "テキストファイルを選択してください",
+      "selectFailed": "ファイル選択に失敗しました",
+      "unsupportedFormat": "サポートされていないテキスト形式"
     }
   },
   "epubReader": {

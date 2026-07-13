@@ -10,9 +10,11 @@ import { LocalVideoImportForm } from "./LocalVideoImportForm";
 import { BookImportForm } from "./BookImportForm";
 import { LocalAudioImportForm } from "./LocalAudioImportForm";
 import { LocalSubtitleImportForm } from "./LocalSubtitleImportForm";
+import { TextFileImportForm } from "./TextFileImportForm";
 import { WebImportForm } from "./WebImportForm";
 import { cn } from "../../lib/utils";
 import { isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
+import { MaterialImportActivityProvider } from "../../features/materials/useMaterialImportPreview";
 
 const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'wma'];
 
@@ -21,7 +23,7 @@ function isAudioFile(path: string): boolean {
     return AUDIO_EXTENSIONS.includes(ext);
 }
 
-type MaterialType = "article" | "web" | "youtube" | "local" | "book" | "audio" | "subtitle";
+type MaterialType = "article" | "web" | "textFile" | "youtube" | "local" | "book" | "audio" | "subtitle";
 
 interface NewMaterialDialogProps {
     isOpen: boolean;
@@ -33,6 +35,7 @@ interface NewMaterialDialogProps {
 export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: NewMaterialDialogProps) {
     const { t } = useTranslation();
     const [activeTab, setActiveTab] = useState<MaterialType>("article");
+    const [isImportBusy, setIsImportBusy] = useState(false);
     const activeTabClassName = "bg-primary/10 text-primary";
     const inactiveTabClassName = "hover:bg-muted text-muted-foreground hover:text-foreground";
     const canUseWebImport = isPhase1CapabilityEnabled("webImport");
@@ -43,6 +46,7 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
         if (!isOpen) return;
         if (editingArticle) {
             if (editingArticle.source_type === "web" && canUseWebImport) setActiveTab("web");
+            else if (editingArticle.source_type === "text_file") setActiveTab("textFile");
             else if (editingArticle.book_path) setActiveTab("book");
             else if (editingArticle.media_path?.includes("http") && canUseYouTubeImport) setActiveTab("youtube"); // Simple heuristic
             else if (editingArticle.media_path && isAudioFile(editingArticle.media_path)) setActiveTab("audio");
@@ -51,6 +55,7 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
         } else {
             setActiveTab("article");
         }
+        setIsImportBusy(false);
     }, [isOpen, editingArticle]);
 
     const handleClose = () => {
@@ -65,11 +70,13 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
     const isEditing = !!editingArticle;
 
     return (
+        <MaterialImportActivityProvider onBusyChange={setIsImportBusy}>
         <Dialog
             isOpen={isOpen}
             onClose={handleClose}
             title={isEditing ? t("articleList.edit", "编辑素材") : t("header.newMaterial")}
             className="md:max-w-3xl !p-0 overflow-hidden flex flex-col h-[600px]"
+            closeDisabled={isImportBusy}
         >
             <div className="flex flex-1 h-full overflow-hidden">
                 {/* Left Sidebar - Tabs */}
@@ -86,8 +93,8 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                                 : inactiveTabClassName,
                             isEditing && activeTab !== "article" && "opacity-50 cursor-not-allowed"
                         )}
-                        onClick={() => !isEditing && setActiveTab("article")}
-                        disabled={isEditing}
+                        onClick={() => !isEditing && !isImportBusy && setActiveTab("article")}
+                        disabled={isEditing || isImportBusy}
                     >
                         <FileText size={18} />
                         {t("newArticle.title")}
@@ -102,8 +109,8 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                                     : inactiveTabClassName,
                                 isEditing && activeTab !== "web" && "opacity-50 cursor-not-allowed"
                             )}
-                            onClick={() => !isEditing && setActiveTab("web")}
-                            disabled={isEditing}
+                            onClick={() => !isEditing && !isImportBusy && setActiveTab("web")}
+                            disabled={isEditing || isImportBusy}
                         >
                             <Globe size={18} />
                             {t("webImport.title", "网页导入")}
@@ -113,13 +120,28 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                     <button
                         className={cn(
                             "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left",
+                            activeTab === "textFile"
+                                ? activeTabClassName
+                                : inactiveTabClassName,
+                            isEditing && activeTab !== "textFile" && "opacity-50 cursor-not-allowed"
+                        )}
+                        onClick={() => !isEditing && !isImportBusy && setActiveTab("textFile")}
+                        disabled={isEditing || isImportBusy}
+                    >
+                        <FileText size={18} />
+                        {t("textFileImport.title", "文本文件")}
+                    </button>
+
+                    <button
+                        className={cn(
+                            "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left",
                             activeTab === "book"
                                 ? activeTabClassName
                                 : inactiveTabClassName,
                             isEditing && activeTab !== "book" && "opacity-50 cursor-not-allowed"
                         )}
-                        onClick={() => !isEditing && setActiveTab("book")}
-                        disabled={isEditing}
+                        onClick={() => !isEditing && !isImportBusy && setActiveTab("book")}
+                        disabled={isEditing || isImportBusy}
                     >
                         <BookOpen size={18} />
                         {t("bookImport.title", "导入书籍")}
@@ -134,8 +156,8 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                                     : inactiveTabClassName,
                                 isEditing && activeTab !== "youtube" && "opacity-50 cursor-not-allowed"
                             )}
-                            onClick={() => !isEditing && setActiveTab("youtube")}
-                            disabled={isEditing}
+                            onClick={() => !isEditing && !isImportBusy && setActiveTab("youtube")}
+                            disabled={isEditing || isImportBusy}
                         >
                             <Youtube size={18} />
                             {t("youtubeImport.title")}
@@ -150,8 +172,8 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                                 : inactiveTabClassName,
                             isEditing && activeTab !== "local" && "opacity-50 cursor-not-allowed"
                         )}
-                        onClick={() => !isEditing && setActiveTab("local")}
-                        disabled={isEditing}
+                        onClick={() => !isEditing && !isImportBusy && setActiveTab("local")}
+                        disabled={isEditing || isImportBusy}
                     >
                         <FolderOpen size={18} />
                         {t("localImport.title")}
@@ -165,8 +187,8 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                                 : inactiveTabClassName,
                             isEditing && activeTab !== "audio" && "opacity-50 cursor-not-allowed"
                         )}
-                        onClick={() => !isEditing && setActiveTab("audio")}
-                        disabled={isEditing}
+                        onClick={() => !isEditing && !isImportBusy && setActiveTab("audio")}
+                        disabled={isEditing || isImportBusy}
                     >
                         <Music size={18} />
                         {t("audioImport.title", "本地音频")}
@@ -180,8 +202,8 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                                 : inactiveTabClassName,
                             isEditing && activeTab !== "subtitle" && "opacity-50 cursor-not-allowed"
                         )}
-                        onClick={() => !isEditing && setActiveTab("subtitle")}
-                        disabled={isEditing}
+                        onClick={() => !isEditing && !isImportBusy && setActiveTab("subtitle")}
+                        disabled={isEditing || isImportBusy}
                     >
                         <FileText size={18} />
                         {t("subtitleImport.title", "字幕文件")}
@@ -210,6 +232,7 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                             <>
                                 {activeTab === "book" && <BookImportForm onSave={handleSave} onCancel={handleClose} />}
                                 {activeTab === "web" && canUseWebImport && <WebImportForm onSave={handleSave} onCancel={handleClose} />}
+                                {activeTab === "textFile" && <TextFileImportForm onSave={handleSave} onCancel={handleClose} />}
                                 {activeTab === "youtube" && canUseYouTubeImport && <YouTubeImportForm onSave={handleSave} onCancel={handleClose} />}
                                 {activeTab === "local" && <LocalVideoImportForm onSave={handleSave} onCancel={handleClose} />}
                                 {activeTab === "audio" && <LocalAudioImportForm onSave={handleSave} onCancel={handleClose} />}
@@ -220,6 +243,7 @@ export function NewMaterialDialog({ isOpen, onClose, onSave, editingArticle }: N
                 </div>
             </div>
         </Dialog>
+        </MaterialImportActivityProvider>
     );
 }
 

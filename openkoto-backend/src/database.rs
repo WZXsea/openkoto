@@ -28,6 +28,6 @@ mod tests {
     fn embeds_current_migrations() {
         let migration_count = MIGRATOR.iter().count();
 
-        assert!(migration_count >= 3);
+        assert!(migration_count >= 8);
     }
 }

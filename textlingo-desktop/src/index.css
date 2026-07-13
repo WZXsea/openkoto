@@ -14,6 +14,14 @@
  * 不设置 :root 默认值，让主题 CSS 完全控制颜色
  */
 
+body {
+  font-family: var(--font-sans);
+}
+
+.openkoto-reader-font {
+  font-family: var(--openkoto-reader-font-family, var(--font-serif, var(--font-sans)));
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

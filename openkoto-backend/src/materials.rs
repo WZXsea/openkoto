@@ -1,18 +1,39 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, QueryBuilder, Transaction};
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::{
     auth::{ApiJson, AuthenticatedUser},
     error::AppError,
+    material_library::{
+        content_sha256_hex, ensure_no_material_duplicates_in_tx, fetch_material_tags,
+        fetch_material_tags_bulk, fetch_reading_progress, fetch_reading_progress_bulk,
+        lock_material_fingerprints, normalize_source_url, validate_sha256, MaterialTagDto,
+        ReadingProgressDto,
+    },
     routes::AppState,
 };
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ListMaterialsQuery {
+    pub query: Option<String>,
+    pub source_type: Option<String>,
+    pub tag: Option<String>,
+    pub reading_status: Option<String>,
+    pub sort: Option<String>,
+    pub limit: Option<String>,
+    pub offset: Option<String>,
+    pub include_archived: Option<String>,
+    pub created_from: Option<String>,
+    pub created_to: Option<String>,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateMaterialRequest {
@@ -37,6 +58,10 @@ pub struct CreateMaterialRequest {
     #[serde(default)]
     pub metadata: Option<Value>,
     #[serde(default)]
+    pub file_sha256: Option<String>,
+    #[serde(default)]
+    pub duplicate_policy: Option<String>,
+    #[serde(default)]
     pub segments: Option<Vec<MaterialSegmentInput>>,
 }
 
@@ -46,16 +71,16 @@ pub struct PatchMaterialRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub content: Option<String>,
-    #[serde(default)]
-    pub source_type: Option<String>,
-    #[serde(default)]
-    pub source_url: Option<String>,
-    #[serde(default)]
-    pub media_path: Option<String>,
-    #[serde(default)]
-    pub book_path: Option<String>,
-    #[serde(default)]
-    pub book_type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    pub source_type: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    pub source_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    pub media_path: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    pub book_path: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    pub book_type: Option<Option<String>>,
     #[serde(default)]
     pub translated: Option<bool>,
     #[serde(default)]
@@ -63,7 +88,22 @@ pub struct PatchMaterialRequest {
     #[serde(default)]
     pub metadata: Option<Value>,
     #[serde(default)]
+    pub file_sha256: Option<String>,
+    #[serde(default)]
     pub segments: Option<Vec<MaterialSegmentInput>>,
+}
+
+fn deserialize_patch_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkMaterialIdsRequest {
+    pub ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -101,6 +141,10 @@ pub struct ArticleDto {
     pub translated: bool,
     pub active_mind_map_artifact_id: Option<String>,
     pub segments: Vec<ArticleSegmentDto>,
+    pub metadata: Value,
+    pub tags: Vec<MaterialTagDto>,
+    pub reading_progress: Option<ReadingProgressDto>,
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +177,10 @@ struct MaterialRecord {
     active_mind_map_artifact_id: Option<String>,
     metadata: Value,
     created_at: DateTime<Utc>,
+    normalized_source_url: Option<String>,
+    content_sha256: Option<String>,
+    file_sha256: Option<String>,
+    archived_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -153,24 +201,147 @@ struct SegmentRecord {
 pub async fn list_materials(
     State(state): State<AppState>,
     AuthenticatedUser { user }: AuthenticatedUser,
+    Query(query): Query<ListMaterialsQuery>,
 ) -> Result<Json<Vec<ArticleDto>>, AppError> {
-    let records = sqlx::query_as::<_, MaterialRecord>(
-        r#"
-        SELECT id, title, content, source_type, source_url, media_path, book_path, book_type,
-               translated, active_mind_map_artifact_id, metadata, created_at
-        FROM materials
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        "#,
-    )
-    .bind(user.id)
-    .fetch_all(&state.pool)
-    .await?;
+    let tag_id = query
+        .tag
+        .as_deref()
+        .map(|value| {
+            Uuid::parse_str(value)
+                .map_err(|_| AppError::bad_request("invalid_material_query", "tag must be a UUID"))
+        })
+        .transpose()?;
+    let limit = parse_bounded_query_integer(query.limit.as_deref(), "limit", 1, 200)?;
+    let offset =
+        parse_bounded_query_integer(query.offset.as_deref(), "offset", 0, i64::MAX)?.unwrap_or(0);
+    let reading_status = query.reading_status.as_deref();
+    if reading_status
+        .is_some_and(|value| !matches!(value, "unread" | "reading" | "completed" | "archived"))
+    {
+        return Err(AppError::bad_request(
+            "invalid_material_query",
+            "reading_status must be unread, reading, completed, or archived",
+        ));
+    }
+    let include_archived =
+        parse_query_bool(query.include_archived.as_deref(), "include_archived")?.unwrap_or(false);
+    let created_from = parse_query_timestamp(query.created_from.as_deref(), "created_from")?;
+    let created_to = parse_query_timestamp(query.created_to.as_deref(), "created_to")?;
+    if let Some(source_type) = query.source_type.as_deref() {
+        validate_source_type(source_type)?;
+    }
+    let sort = query.sort.as_deref().unwrap_or("created_at_desc");
+    let order_by = match sort {
+        "created_at_desc" => "m.created_at DESC, m.id DESC",
+        "created_at_asc" => "m.created_at ASC, m.id ASC",
+        "updated_at_desc" => "m.updated_at DESC, m.id DESC",
+        "updated_at_asc" => "m.updated_at ASC, m.id ASC",
+        "title_asc" => "lower(m.title) ASC, m.id ASC",
+        "title_desc" => "lower(m.title) DESC, m.id DESC",
+        "last_opened_at_desc" | "last_read_at_desc" => {
+            "rp.last_opened_at DESC NULLS LAST, m.created_at DESC, m.id DESC"
+        }
+        "progress_desc" => "rp.progress_ratio DESC NULLS LAST, m.created_at DESC, m.id DESC",
+        "progress_asc" => "rp.progress_ratio ASC NULLS FIRST, m.created_at DESC, m.id DESC",
+        _ => {
+            return Err(AppError::bad_request(
+                "invalid_material_query",
+                "unsupported material sort",
+            ))
+        }
+    };
 
+    let mut builder = QueryBuilder::<Postgres>::new(
+        r#"
+        SELECT m.id, m.title, m.content, m.source_type, m.source_url, m.media_path,
+               m.book_path, m.book_type, m.translated, m.active_mind_map_artifact_id,
+               m.metadata, m.created_at, m.updated_at, m.normalized_source_url,
+               m.content_sha256, m.file_sha256, m.archived_at
+        FROM materials m
+        LEFT JOIN reading_progress rp
+          ON rp.user_id = m.user_id AND rp.material_id = m.id
+        WHERE m.user_id =
+        "#,
+    );
+    builder.push_bind(user.id);
+    if reading_status == Some("archived") {
+        builder.push(" AND m.archived_at IS NOT NULL");
+    } else if !include_archived {
+        builder.push(" AND m.archived_at IS NULL");
+    }
+    if let Some(value) = query
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        let pattern = format!("%{value}%");
+        builder
+            .push(" AND (m.title ILIKE ")
+            .push_bind(pattern.clone());
+        builder
+            .push(" OR m.content ILIKE ")
+            .push_bind(pattern.clone());
+        builder
+            .push(" OR COALESCE(m.source_url, '') ILIKE ")
+            .push_bind(pattern)
+            .push(")");
+    }
+    if let Some(source_type) = query.source_type.as_deref() {
+        builder.push(" AND m.source_type = ").push_bind(source_type);
+    }
+    if let Some(tag_id) = tag_id {
+        builder.push(
+            " AND EXISTS (SELECT 1 FROM material_tag_links mtl \
+             WHERE mtl.user_id = m.user_id AND mtl.material_id = m.id AND mtl.tag_id = ",
+        );
+        builder.push_bind(tag_id).push(")");
+    }
+    if let Some(created_from) = created_from {
+        builder
+            .push(" AND m.created_at >= ")
+            .push_bind(created_from);
+    }
+    if let Some(created_to) = created_to {
+        builder.push(" AND m.created_at <= ").push_bind(created_to);
+    }
+    if let Some(status) = reading_status {
+        if status == "archived" {
+            // The archive predicate above fully defines this virtual reading status.
+        } else if status == "unread" {
+            builder.push(" AND COALESCE(rp.status, 'unread') = 'unread'");
+        } else {
+            builder.push(" AND rp.status = ").push_bind(status);
+        }
+    }
+    builder.push(" ORDER BY ").push(order_by);
+    if let Some(limit) = limit {
+        builder.push(" LIMIT ").push_bind(limit);
+    }
+    if offset > 0 {
+        builder.push(" OFFSET ").push_bind(offset);
+    }
+
+    let records = builder
+        .build_query_as::<MaterialRecord>()
+        .fetch_all(&state.pool)
+        .await?;
+
+    let material_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
+    let (mut segments_by_material, mut tags_by_material, mut progress_by_material) = tokio::try_join!(
+        fetch_segments_bulk(&state.pool, user.id, &material_ids),
+        fetch_material_tags_bulk(&state.pool, user.id, &material_ids),
+        fetch_reading_progress_bulk(&state.pool, user.id, &material_ids),
+    )?;
     let mut materials = Vec::with_capacity(records.len());
     for record in records {
-        let segments = fetch_segments(&state.pool, user.id, record.id).await?;
-        materials.push(article_from_records(record, segments));
+        let material_id = record.id;
+        let segments = segments_by_material
+            .remove(&material_id)
+            .unwrap_or_default();
+        let tags = tags_by_material.remove(&material_id).unwrap_or_default();
+        let progress = progress_by_material.remove(&material_id);
+        materials.push(article_from_records(record, segments, tags, progress));
     }
 
     Ok(Json(materials))
@@ -192,20 +363,54 @@ pub async fn create_material(
         .source_type
         .or_else(|| Some("article".to_string()))
         .filter(|value| !value.trim().is_empty());
+    if let Some(source_type) = source_type.as_deref() {
+        validate_source_type(source_type)?;
+    }
+    let normalized_source_url = normalize_source_url(payload.source_url.as_deref())?;
+    let content_sha256 = content_sha256_hex(&payload.content);
+    let file_sha256 = validate_sha256(payload.file_sha256.as_deref(), "file_sha256")?;
+    let duplicate_policy = payload.duplicate_policy.as_deref().unwrap_or("reject");
+    if !matches!(duplicate_policy, "reject" | "keep_copy") {
+        return Err(AppError::bad_request(
+            "invalid_duplicate_policy",
+            "duplicate_policy must be reject or keep_copy",
+        ));
+    }
     let segment_inputs = payload
         .segments
         .unwrap_or_else(|| create_segments_from_content(&payload.content));
 
     let mut tx = state.pool.begin().await?;
+    if duplicate_policy == "reject" {
+        lock_material_fingerprints(
+            &mut tx,
+            user.id,
+            normalized_source_url.as_deref(),
+            content_sha256.as_deref(),
+            file_sha256.as_deref(),
+        )
+        .await?;
+        ensure_no_material_duplicates_in_tx(
+            &mut tx,
+            user.id,
+            None,
+            normalized_source_url.as_deref(),
+            content_sha256.as_deref(),
+            file_sha256.as_deref(),
+        )
+        .await?;
+    }
     let record = sqlx::query_as::<_, MaterialRecord>(
         r#"
         INSERT INTO materials (
             id, user_id, title, content, source_type, source_url, media_path, book_path,
-            book_type, translated, active_mind_map_artifact_id, metadata
+            book_type, translated, active_mind_map_artifact_id, metadata,
+            normalized_source_url, content_sha256, file_sha256
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING id, title, content, source_type, source_url, media_path, book_path, book_type,
-                  translated, active_mind_map_artifact_id, metadata, created_at
+                  translated, active_mind_map_artifact_id, metadata, created_at, updated_at,
+                  normalized_source_url, content_sha256, file_sha256, archived_at
         "#,
     )
     .bind(material_id)
@@ -220,6 +425,9 @@ pub async fn create_material(
     .bind(translated)
     .bind(payload.active_mind_map_artifact_id)
     .bind(metadata)
+    .bind(normalized_source_url)
+    .bind(content_sha256)
+    .bind(file_sha256)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -227,7 +435,9 @@ pub async fn create_material(
     tx.commit().await?;
 
     let segments = fetch_segments(&state.pool, user.id, record.id).await?;
-    Ok(Json(article_from_records(record, segments)))
+    let tags = fetch_material_tags(&state.pool, user.id, record.id).await?;
+    let progress = fetch_reading_progress(&state.pool, user.id, record.id).await?;
+    Ok(Json(article_from_records(record, segments, tags, progress)))
 }
 
 pub async fn get_material(
@@ -237,8 +447,10 @@ pub async fn get_material(
 ) -> Result<Json<ArticleDto>, AppError> {
     let record = fetch_material(&state.pool, user.id, id).await?;
     let segments = fetch_segments(&state.pool, user.id, id).await?;
+    let tags = fetch_material_tags(&state.pool, user.id, id).await?;
+    let progress = fetch_reading_progress(&state.pool, user.id, id).await?;
 
-    Ok(Json(article_from_records(record, segments)))
+    Ok(Json(article_from_records(record, segments, tags, progress)))
 }
 
 pub async fn patch_material(
@@ -248,6 +460,15 @@ pub async fn patch_material(
     ApiJson(payload): ApiJson<PatchMaterialRequest>,
 ) -> Result<Json<ArticleDto>, AppError> {
     let existing = fetch_material(&state.pool, user.id, id).await?;
+    let existing_normalized_source_url = existing
+        .normalized_source_url
+        .clone()
+        .or(normalize_source_url(existing.source_url.as_deref())?);
+    let existing_content_sha256 = existing
+        .content_sha256
+        .clone()
+        .or_else(|| content_sha256_hex(&existing.content));
+    let existing_file_sha256 = existing.file_sha256.clone();
 
     if let Some(title) = &payload.title {
         validate_title(title)?;
@@ -255,18 +476,49 @@ pub async fn patch_material(
 
     let title = payload.title.unwrap_or(existing.title);
     let content = payload.content.unwrap_or(existing.content);
-    let source_type = payload.source_type.or(existing.source_type);
-    let source_url = payload.source_url.or(existing.source_url);
-    let media_path = payload.media_path.or(existing.media_path);
-    let book_path = payload.book_path.or(existing.book_path);
-    let book_type = payload.book_type.or(existing.book_type);
+    let source_type = payload.source_type.unwrap_or(existing.source_type);
+    if let Some(source_type) = source_type.as_deref() {
+        validate_source_type(source_type)?;
+    }
+    let source_url = payload.source_url.unwrap_or(existing.source_url);
+    let normalized_source_url = normalize_source_url(source_url.as_deref())?;
+    let content_sha256 = content_sha256_hex(&content);
+    let file_sha256 = match payload.file_sha256.as_deref() {
+        Some(value) => validate_sha256(Some(value), "file_sha256")?,
+        None => existing.file_sha256,
+    };
+    let media_path = payload.media_path.unwrap_or(existing.media_path);
+    let book_path = payload.book_path.unwrap_or(existing.book_path);
+    let book_type = payload.book_type.unwrap_or(existing.book_type);
     let translated = payload.translated.unwrap_or(existing.translated);
     let active_mind_map_artifact_id = payload
         .active_mind_map_artifact_id
         .or(existing.active_mind_map_artifact_id);
     let metadata = payload.metadata.unwrap_or(existing.metadata);
+    let fingerprints_changed = normalized_source_url != existing_normalized_source_url
+        || content_sha256 != existing_content_sha256
+        || file_sha256 != existing_file_sha256;
 
     let mut tx = state.pool.begin().await?;
+    if fingerprints_changed {
+        lock_material_fingerprints(
+            &mut tx,
+            user.id,
+            normalized_source_url.as_deref(),
+            content_sha256.as_deref(),
+            file_sha256.as_deref(),
+        )
+        .await?;
+        ensure_no_material_duplicates_in_tx(
+            &mut tx,
+            user.id,
+            Some(id),
+            normalized_source_url.as_deref(),
+            content_sha256.as_deref(),
+            file_sha256.as_deref(),
+        )
+        .await?;
+    }
     let record = sqlx::query_as::<_, MaterialRecord>(
         r#"
         UPDATE materials
@@ -280,10 +532,14 @@ pub async fn patch_material(
             translated = $10,
             active_mind_map_artifact_id = $11,
             metadata = $12,
+            normalized_source_url = $13,
+            content_sha256 = $14,
+            file_sha256 = $15,
             updated_at = NOW()
         WHERE id = $1 AND user_id = $2
         RETURNING id, title, content, source_type, source_url, media_path, book_path, book_type,
-                  translated, active_mind_map_artifact_id, metadata, created_at
+                  translated, active_mind_map_artifact_id, metadata, created_at, updated_at,
+                  normalized_source_url, content_sha256, file_sha256, archived_at
         "#,
     )
     .bind(id)
@@ -298,6 +554,9 @@ pub async fn patch_material(
     .bind(translated)
     .bind(active_mind_map_artifact_id)
     .bind(metadata)
+    .bind(normalized_source_url)
+    .bind(content_sha256)
+    .bind(file_sha256)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -318,7 +577,63 @@ pub async fn patch_material(
     tx.commit().await?;
 
     let segments = fetch_segments(&state.pool, user.id, record.id).await?;
-    Ok(Json(article_from_records(record, segments)))
+    let tags = fetch_material_tags(&state.pool, user.id, record.id).await?;
+    let progress = fetch_reading_progress(&state.pool, user.id, record.id).await?;
+    Ok(Json(article_from_records(record, segments, tags, progress)))
+}
+
+pub async fn bulk_archive_materials(
+    State(state): State<AppState>,
+    AuthenticatedUser { user }: AuthenticatedUser,
+    ApiJson(payload): ApiJson<BulkMaterialIdsRequest>,
+) -> Result<Json<Value>, AppError> {
+    let ids = validate_bulk_ids(payload.ids)?;
+    let result = sqlx::query(
+        "UPDATE materials SET archived_at = COALESCE(archived_at, NOW()), updated_at = NOW() \
+         WHERE user_id = $1 AND id = ANY($2)",
+    )
+    .bind(user.id)
+    .bind(&ids)
+    .execute(&state.pool)
+    .await?;
+    Ok(Json(
+        serde_json::json!({ "affected": result.rows_affected() }),
+    ))
+}
+
+pub async fn bulk_unarchive_materials(
+    State(state): State<AppState>,
+    AuthenticatedUser { user }: AuthenticatedUser,
+    ApiJson(payload): ApiJson<BulkMaterialIdsRequest>,
+) -> Result<Json<Value>, AppError> {
+    let ids = validate_bulk_ids(payload.ids)?;
+    let result = sqlx::query(
+        "UPDATE materials SET archived_at = NULL, updated_at = NOW() \
+         WHERE user_id = $1 AND id = ANY($2)",
+    )
+    .bind(user.id)
+    .bind(&ids)
+    .execute(&state.pool)
+    .await?;
+    Ok(Json(
+        serde_json::json!({ "affected": result.rows_affected() }),
+    ))
+}
+
+pub async fn bulk_delete_materials(
+    State(state): State<AppState>,
+    AuthenticatedUser { user }: AuthenticatedUser,
+    ApiJson(payload): ApiJson<BulkMaterialIdsRequest>,
+) -> Result<Json<Value>, AppError> {
+    let ids = validate_bulk_ids(payload.ids)?;
+    let result = sqlx::query("DELETE FROM materials WHERE user_id = $1 AND id = ANY($2)")
+        .bind(user.id)
+        .bind(&ids)
+        .execute(&state.pool)
+        .await?;
+    Ok(Json(
+        serde_json::json!({ "affected": result.rows_affected() }),
+    ))
 }
 
 pub async fn delete_material(
@@ -353,7 +668,8 @@ async fn fetch_material(
     sqlx::query_as::<_, MaterialRecord>(
         r#"
         SELECT id, title, content, source_type, source_url, media_path, book_path, book_type,
-               translated, active_mind_map_artifact_id, metadata, created_at
+               translated, active_mind_map_artifact_id, metadata, created_at, updated_at,
+               normalized_source_url, content_sha256, file_sha256, archived_at
         FROM materials
         WHERE id = $1 AND user_id = $2
         "#,
@@ -384,6 +700,34 @@ async fn fetch_segments(
     .fetch_all(pool)
     .await
     .map_err(AppError::from)
+}
+
+async fn fetch_segments_bulk(
+    pool: &PgPool,
+    user_id: Uuid,
+    material_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<SegmentRecord>>, AppError> {
+    if material_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let records = sqlx::query_as::<_, SegmentRecord>(
+        r#"
+        SELECT id, material_id, segment_order, text, reading_text, translation, explanation,
+               start_time, end_time, is_new_paragraph, created_at
+        FROM material_segments
+        WHERE user_id = $1 AND material_id = ANY($2)
+        ORDER BY material_id, segment_order ASC
+        "#,
+    )
+    .bind(user_id)
+    .bind(material_ids)
+    .fetch_all(pool)
+    .await?;
+    let mut grouped = HashMap::<Uuid, Vec<SegmentRecord>>::new();
+    for record in records {
+        grouped.entry(record.material_id).or_default().push(record);
+    }
+    Ok(grouped)
 }
 
 async fn insert_segments(
@@ -434,7 +778,12 @@ async fn insert_segments(
     Ok(())
 }
 
-fn article_from_records(record: MaterialRecord, segments: Vec<SegmentRecord>) -> ArticleDto {
+fn article_from_records(
+    record: MaterialRecord,
+    segments: Vec<SegmentRecord>,
+    tags: Vec<MaterialTagDto>,
+    reading_progress: Option<ReadingProgressDto>,
+) -> ArticleDto {
     ArticleDto {
         id: record.id.to_string(),
         title: record.title,
@@ -448,6 +797,10 @@ fn article_from_records(record: MaterialRecord, segments: Vec<SegmentRecord>) ->
         translated: record.translated,
         active_mind_map_artifact_id: record.active_mind_map_artifact_id,
         segments: segments.into_iter().map(segment_from_record).collect(),
+        metadata: record.metadata,
+        tags,
+        reading_progress,
+        archived_at: record.archived_at.map(|value| value.to_rfc3339()),
     }
 }
 
@@ -476,6 +829,94 @@ fn validate_title(title: &str) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn validate_source_type(source_type: &str) -> Result<(), AppError> {
+    if !matches!(
+        source_type,
+        "article" | "web" | "text_file" | "youtube" | "local_video" | "audio" | "book"
+    ) {
+        return Err(AppError::bad_request(
+            "invalid_source_type",
+            "unsupported material source_type",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_bounded_query_integer(
+    value: Option<&str>,
+    field: &str,
+    minimum: i64,
+    maximum: i64,
+) -> Result<Option<i64>, AppError> {
+    value
+        .map(|value| {
+            value.parse::<i64>().map_err(|_| {
+                AppError::bad_request(
+                    "invalid_material_query",
+                    format!("{field} must be an integer"),
+                )
+            })
+        })
+        .transpose()?
+        .map(|value| {
+            if (minimum..=maximum).contains(&value) {
+                Ok(value)
+            } else {
+                Err(AppError::bad_request(
+                    "invalid_material_query",
+                    format!("{field} must be between {minimum} and {maximum}"),
+                ))
+            }
+        })
+        .transpose()
+}
+
+fn parse_query_bool(value: Option<&str>, field: &str) -> Result<Option<bool>, AppError> {
+    value
+        .map(|value| match value {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => Err(AppError::bad_request(
+                "invalid_material_query",
+                format!("{field} must be true or false"),
+            )),
+        })
+        .transpose()
+}
+
+fn parse_query_timestamp(
+    value: Option<&str>,
+    field: &str,
+) -> Result<Option<DateTime<Utc>>, AppError> {
+    value
+        .map(|value| {
+            DateTime::parse_from_rfc3339(value)
+                .map(|value| value.with_timezone(&Utc))
+                .map_err(|_| {
+                    AppError::bad_request(
+                        "invalid_material_query",
+                        format!("{field} must be an RFC3339 timestamp"),
+                    )
+                })
+        })
+        .transpose()
+}
+
+fn validate_bulk_ids(ids: Vec<Uuid>) -> Result<Vec<Uuid>, AppError> {
+    if ids.is_empty() || ids.len() > 100 {
+        return Err(AppError::bad_request(
+            "invalid_material_ids",
+            "ids must contain between 1 and 100 values",
+        ));
+    }
+    let mut seen = HashSet::with_capacity(ids.len());
+    let unique = ids
+        .into_iter()
+        .filter(|id| seen.insert(*id))
+        .collect::<Vec<_>>();
+    Ok(unique)
 }
 
 fn material_not_found() -> AppError {

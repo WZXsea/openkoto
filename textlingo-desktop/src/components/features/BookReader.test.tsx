@@ -47,7 +47,15 @@ vi.mock("../../lib/hooks", () => ({
 }));
 
 vi.mock("./TxtReader", () => ({
-  TxtReader: () => <div data-testid="txt-reader">TXT Reader</div>,
+  TxtReader: ({ initialProgress, onProgressChange }: { initialProgress?: { reader_kind: string }; onProgressChange?: (progress: unknown) => void }) => (
+    <button
+      data-testid="txt-reader"
+      data-reader-kind={initialProgress?.reader_kind}
+      onClick={() => onProgressChange?.({ reader_kind: "txt", locator: { kind: "page", page: 1, total_pages: 1 }, progress_ratio: 1, status: "completed" })}
+    >
+      TXT Reader
+    </button>
+  ),
 }));
 
 vi.mock("./PdfReader", () => ({
@@ -154,6 +162,22 @@ describe("BookReader", () => {
     expect(screen.getByTestId("article-mind-map-panel")).toBeInTheDocument();
   });
 
+  it("passes the reading-progress contract through to the active book reader", async () => {
+    const onProgressChange = vi.fn();
+    render(
+      <BookReader
+        article={createBookArticle()}
+        initialProgress={{ reader_kind: "txt", locator: { kind: "page", page: 2, total_pages: 4 }, progress_ratio: 0.5, status: "reading" }}
+        onProgressChange={onProgressChange}
+      />,
+    );
+
+    const reader = screen.getByTestId("txt-reader");
+    expect(reader).toHaveAttribute("data-reader-kind", "txt");
+    await userEvent.click(reader);
+    expect(onProgressChange).toHaveBeenCalledWith(expect.objectContaining({ locator: { kind: "page", page: 1, total_pages: 1 }, status: "completed" }));
+  });
+
   it("keeps a back button available when the assistant is restored in full mode", async () => {
     localStorageStore.set("book-reader-assistant-mode", "full");
     const onBack = vi.fn();
@@ -189,7 +213,7 @@ describe("BookReader", () => {
     expect(screen.getByText("基础阅读可用。配置 AI 模型后可启用翻译、讲解和分析。")).toBeInTheDocument();
   });
 
-  it("disables pdf translation during phase 1", async () => {
+  it("enables pdf translation when the capability is enabled", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "check_pdf_translation_files") {
         return {};
@@ -229,10 +253,10 @@ describe("BookReader", () => {
     render(<BookReader article={createBookArticle({ book_type: "pdf", book_path: "/tmp/book.pdf" })} />);
 
     const translateButton = screen.getByRole("button", { name: "翻译全文" });
-    expect(translateButton).toBeDisabled();
+    expect(translateButton).toBeEnabled();
 
     expect(invokeMock.mock.calls.some(([command]) => command === "check_plugin_installed_cmd")).toBe(false);
     await userEvent.click(translateButton);
-    expect(invokeMock.mock.calls.some(([command]) => command === "translate_pdf_document")).toBe(false);
+    expect(invokeMock.mock.calls.some(([command]) => command === "translate_pdf_document")).toBe(true);
   });
 });

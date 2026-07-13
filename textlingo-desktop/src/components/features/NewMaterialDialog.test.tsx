@@ -42,6 +42,10 @@ vi.mock("./LocalSubtitleImportForm", () => ({
   LocalSubtitleImportForm: () => <div>local subtitle import form</div>,
 }));
 
+vi.mock("./TextFileImportForm", () => ({
+  TextFileImportForm: () => <div>text file import form</div>,
+}));
+
 describe("NewMaterialDialog theme styling", () => {
   beforeEach(() => {
     invokeMock.mockReset();
@@ -59,7 +63,10 @@ describe("NewMaterialDialog theme styling", () => {
     const user = userEvent.setup();
     const expectations = [
       { name: "newArticle.title", forbiddenClass: "text-blue-500" },
+      { name: "网页导入", forbiddenClass: "text-blue-500" },
+      { name: "文本文件", forbiddenClass: "text-blue-500" },
       { name: "导入书籍", forbiddenClass: "text-purple-500" },
+      { name: "youtubeImport.title", forbiddenClass: "text-red-500" },
       { name: "localImport.title", forbiddenClass: "text-accent-foreground" },
       { name: "本地音频", forbiddenClass: "text-green-500" },
       { name: "字幕文件", forbiddenClass: "text-blue-500" },
@@ -73,9 +80,6 @@ describe("NewMaterialDialog theme styling", () => {
       expect(tab.className).toContain("text-primary");
       expect(tab.className).not.toContain(forbiddenClass);
     }
-
-    expect(screen.queryByRole("button", { name: "网页导入" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "youtubeImport.title" })).not.toBeInTheDocument();
   });
 
   it("renders the standalone subtitle import form from the new material dialog", async () => {
@@ -85,5 +89,14 @@ describe("NewMaterialDialog theme styling", () => {
     await user.click(screen.getByRole("button", { name: "字幕文件" }));
 
     expect(screen.getByText("local subtitle import form")).toBeInTheDocument();
+  });
+
+  it("renders the text file import form from the new material dialog", async () => {
+    render(<NewMaterialDialog isOpen onClose={() => {}} />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "文本文件" }));
+
+    expect(screen.getByText("text file import form")).toBeInTheDocument();
   });
 });

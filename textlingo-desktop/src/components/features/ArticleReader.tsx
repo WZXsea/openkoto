@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -48,6 +48,16 @@ import {
 import { useConfig } from "../../lib/hooks";
 import { buildMediaResourceUrl } from "../../lib/media";
 import { hasActiveModelConfig, isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
+import {
+  createReadingProgressUpdate,
+  createSegmentLocator,
+  getInitialProgressForReader,
+  getSegmentPositionFromLocator,
+  useReadingProgressReporter,
+  type ReadingProgressChangeHandler,
+  type ReadingProgressUpdate,
+} from "../../features/reader";
+import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
 
 const DEFAULT_BATCH_TRANSLATION_CONCURRENCY = 3;
 const MIN_BATCH_TRANSLATION_CONCURRENCY = 1;
@@ -74,6 +84,8 @@ interface ArticleReaderProps {
   hasPrev?: boolean;
   onUpdate?: () => void;
   onOpenKtvExport?: () => void;
+  initialProgress?: ReadingProgressUpdate;
+  onProgressChange?: ReadingProgressChangeHandler;
 }
 
 export function ArticleReader({
@@ -85,6 +97,8 @@ export function ArticleReader({
   hasPrev,
   onUpdate,
   onOpenKtvExport,
+  initialProgress,
+  onProgressChange,
 }: ArticleReaderProps) {
   const { t } = useTranslation();
   const assistantModeStorageKey = "article-reader-assistant-mode";
@@ -103,6 +117,9 @@ export function ArticleReader({
   const [viewMode, setViewMode] = useState<ViewMode>("original");
   const [fontSize, setFontSize] = useState(18);
   const [mediaUrl, setMediaUrl] = useState("");
+  const { reportProgress } = useReadingProgressReporter(onProgressChange);
+  const restoredArticleIdRef = useRef<string | undefined>(undefined);
+  const scrollProgressFrameRef = useRef<number | null>(null);
 
   // Segment Explorer State
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
@@ -157,6 +174,32 @@ export function ArticleReader({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [article.id]);
   const [isImportingSubtitles, setIsImportingSubtitles] = useState(false);
+  const [pendingSubtitlePath, setPendingSubtitlePath] = useState("");
+  const subtitleImportPreview = useMaterialImportPreview<Article>({
+    commit: (importJobId, duplicatePolicy) => invoke<Article>("import_article_subtitles_cmd", {
+      articleId: article.id,
+      subtitlePath: pendingSubtitlePath,
+      importJobId,
+      duplicatePolicy,
+    }),
+    onSuccess: (updatedArticle) => {
+      const importedCount = updatedArticle.segments?.length || 0;
+      const successTemplate = t(
+        "subtitleImport.successMessage",
+        "Imported {{count}} subtitle segments"
+      );
+      setLocalSegments(updatedArticle.segments || []);
+      setContent(updatedArticle.content);
+      setSuccessMessage(successTemplate.replace("{{count}}", String(importedCount)));
+      onUpdate?.();
+      void refreshArticle();
+      setTimeout(() => setSuccessMessage(null), 3000);
+    },
+    onError: (err) => {
+      console.error("[ArticleReader] Subtitle import failed:", err);
+      setError(t("subtitleImport.error", "Subtitle import failed") + ": " + String(err));
+    },
+  });
   const [extractionProgress, setExtractionProgress] = useState<string | null>(null);
 
   // 成功提示消息状态
@@ -285,6 +328,29 @@ export function ArticleReader({
     // 同步外部 article.segments 到本地状态
     setLocalSegments(article.segments || []);
   }, [article]);
+
+  useEffect(() => {
+    if (article.media_path || restoredArticleIdRef.current === article.id || localSegments.length === 0) {
+      return;
+    }
+
+    restoredArticleIdRef.current = article.id;
+    const initialArticleProgress = getInitialProgressForReader(initialProgress, "article");
+    const segmentOrder = getSegmentPositionFromLocator(initialArticleProgress?.locator);
+    if (segmentOrder === undefined) return;
+
+    const sortedSegments = [...localSegments].sort((left, right) => left.order - right.order);
+    const initialSegmentLocator = initialArticleProgress?.locator.kind === "segment"
+      ? initialArticleProgress.locator
+      : undefined;
+    const restoredById = initialSegmentLocator?.segment_id
+      ? sortedSegments.find((segment) => segment.id === initialSegmentLocator.segment_id)
+      : undefined;
+    const restoredSegment = restoredById ?? sortedSegments.find((segment) => segment.order === segmentOrder);
+    if (restoredSegment) {
+      setSelectedSegmentId(restoredSegment.id);
+    }
+  }, [article.id, article.media_path, initialProgress, localSegments]);
 
   // 自动滚动到激活的段落（非视频模式）
   useEffect(() => {
@@ -478,24 +544,19 @@ export function ArticleReader({
         return;
       }
 
+      setPendingSubtitlePath(selected);
       setIsImportingSubtitles(true);
-      const updatedArticle = await invoke<Article>("import_article_subtitles_cmd", {
-        articleId: article.id,
-        subtitlePath: selected,
+      await subtitleImportPreview.startPreview({
+        sourceKind: "subtitle",
+        sourceUri: `file://${selected}`,
+        filePath: selected,
+        title: article.title,
+        metadata: {
+          target_material_id: article.id,
+          mode: "attach",
+          skip_material_duplicate_check: true,
+        },
       });
-      const importedCount = updatedArticle.segments?.length || 0;
-      const successTemplate = t(
-        "subtitleImport.successMessage",
-        "Imported {{count}} subtitle segments"
-      );
-
-      setLocalSegments(updatedArticle.segments || []);
-      setContent(updatedArticle.content);
-      setSuccessMessage(successTemplate.replace("{{count}}", String(importedCount)));
-
-      onUpdate?.();
-      await refreshArticle();
-      setTimeout(() => setSuccessMessage(null), 3000);
     } catch (err) {
       console.error("[ArticleReader] Subtitle import failed:", err);
       setError(t("subtitleImport.error", "Subtitle import failed") + ": " + String(err));
@@ -575,6 +636,18 @@ export function ArticleReader({
     setActiveTab("explanation");
     setShowAssistant(true);
 
+    if (!article.media_path) {
+      const sortedSegments = [...localSegments].sort((left, right) => left.order - right.order);
+      const position = sortedSegments.findIndex((segment) => segment.id === id);
+      if (position >= 0) {
+        reportProgress(createReadingProgressUpdate(
+          "article",
+          createSegmentLocator(sortedSegments[position].order, sortedSegments.length, id),
+          (position + 1) / sortedSegments.length,
+        ));
+      }
+    }
+
     // Check if we need to auto-generate explanation
     const segment = localSegments.find(s => s.id === id);
     if (canUseAi && segment && !segment.explanation && !isGeneratingExplanation) {
@@ -582,6 +655,39 @@ export function ArticleReader({
       setTimeout(() => handleGenerateExplanation(id), 0);
     }
   };
+
+  const reportArticleScrollProgress = useCallback(() => {
+    scrollProgressFrameRef.current = null;
+    const container = readerContentRef.current;
+    if (!container || article.media_path || localSegments.length === 0) return;
+    const elements = Array.from(container.querySelectorAll<HTMLElement>("[data-reader-segment-id]"));
+    if (elements.length === 0) return;
+    const containerRect = container.getBoundingClientRect();
+    const readingLine = containerRect.top + Math.min(containerRect.height * 0.4, 240);
+    const activeElement = elements.find((element) => element.getBoundingClientRect().bottom >= readingLine)
+      ?? elements[elements.length - 1];
+    const segmentId = activeElement.dataset.readerSegmentId;
+    const sortedSegments = [...localSegments].sort((left, right) => left.order - right.order);
+    const position = sortedSegments.findIndex((segment) => segment.id === segmentId);
+    if (position < 0) return;
+    reportProgress(createReadingProgressUpdate(
+      "article",
+      createSegmentLocator(sortedSegments[position].order, sortedSegments.length, segmentId),
+      (position + 1) / sortedSegments.length,
+    ));
+  }, [article.media_path, localSegments, reportProgress]);
+
+  const handleReaderScroll = useCallback(() => {
+    if (article.media_path || scrollProgressFrameRef.current !== null) return;
+    scrollProgressFrameRef.current = window.requestAnimationFrame(reportArticleScrollProgress);
+  }, [article.media_path, reportArticleScrollProgress]);
+
+  useEffect(() => () => {
+    if (scrollProgressFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollProgressFrameRef.current);
+      scrollProgressFrameRef.current = null;
+    }
+  }, []);
 
   // Batch Translation State
   const [isBatchTranslating, setIsBatchTranslating] = useState(false);
@@ -997,6 +1103,14 @@ export function ArticleReader({
 
   const mainContent = (
     <>
+        <MaterialImportPreviewDialogs
+          preview={subtitleImportPreview.preview}
+          duplicate={subtitleImportPreview.duplicate}
+          isBusy={subtitleImportPreview.isBusy}
+          onConfirm={() => void subtitleImportPreview.confirmPreview()}
+          onCancel={() => void subtitleImportPreview.cancelPreview()}
+          onResolve={(action) => void subtitleImportPreview.resolveDuplicate(action)}
+        />
         {error && (
           <div className="absolute top-0 left-0 right-0 z-50 bg-destructive/90 border-b border-destructive text-destructive-foreground px-4 py-2 text-sm flex justify-between items-center backdrop-blur-md animate-in slide-in-from-top-full duration-300">
             <span>{error}</span>
@@ -1050,7 +1164,7 @@ export function ArticleReader({
         <div className="flex flex-col gap-3 p-4 border-b border-border bg-card/50 backdrop-blur-sm supports-[backdrop-filter]:bg-card/50">
           <div className="flex items-center gap-4 min-w-0">
             {onBack && (
-              <Button variant="ghost" size="sm" onClick={onBack}>
+              <Button variant="ghost" size="sm" onClick={onBack} aria-label={t("common.back", "返回")} title={t("common.back", "返回")}>
                 <ChevronLeft size={18} />
               </Button>
             )}
@@ -1365,8 +1479,10 @@ export function ArticleReader({
               ) : (
                 <div
                   ref={readerContentRef}
+                  data-testid="article-reader-scroll"
                   onMouseUp={handleReaderSelection}
                   onKeyUp={handleReaderSelection}
+                  onScroll={handleReaderScroll}
                   className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth"
                 >
                   {/* 视频/音频模式：使用 VideoSubtitlePlayer 组件 */}
@@ -1397,13 +1513,15 @@ export function ArticleReader({
                         isAudio={isAudioFile}
                         onOpenKtvExport={canOpenKtvExport ? onOpenKtvExport : undefined}
                         onViewModeChange={setViewMode}
+                        initialProgress={initialProgress}
+                        onProgressChange={onProgressChange}
                       />
                     );
                   })()}
 
                   {/* 非视频模式：段落式显示 */}
                   {hasSegments && !article.media_path && (
-                    <div className="max-w-3xl mx-auto pb-20">
+                    <div className="openkoto-reader-font max-w-3xl mx-auto pb-20">
                       {(() => {
                         const sortedSegments = [...localSegments].sort((a, b) => a.order - b.order);
                         const paragraphGroups: typeof sortedSegments[] = [];
@@ -1501,7 +1619,7 @@ export function ArticleReader({
 
                   {/* 纯文本模式：Markdown 渲染 */}
                   {!hasSegments && !article.media_path && (
-                    <article className="prose dark:prose-invert max-w-none pb-20 text-foreground">
+                    <article className="openkoto-reader-font prose dark:prose-invert max-w-none pb-20 text-foreground">
                       <ReactMarkdown>{content}</ReactMarkdown>
                     </article>
                   )}

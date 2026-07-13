@@ -119,6 +119,17 @@ describe("ArticleReader agent mode", () => {
           token: "test-token",
         });
       }
+      if (command === "preview_material_import_cmd") {
+        return Promise.resolve({
+          title: "Sample Article",
+          source_uri: "file:///tmp/sample.srt",
+          paragraph_count: 1,
+          content_snippet: "Imported subtitle",
+          file: { file_name: "sample.srt", sha256: "a".repeat(64) },
+          duplicates: { duplicate: false, matches: [] },
+          job: { id: "job-1" },
+        });
+      }
       if (command === "list_learning_items_cmd") {
         return Promise.resolve([]);
       }
@@ -191,6 +202,17 @@ describe("ArticleReader agent mode", () => {
           token: "test-token",
         });
       }
+      if (command === "preview_material_import_cmd") {
+        return Promise.resolve({
+          title: "Sample Article",
+          source_uri: "file:///tmp/sample.srt",
+          paragraph_count: 1,
+          content_snippet: "Imported subtitle",
+          file: { file_name: "sample.srt", sha256: "a".repeat(64) },
+          duplicates: { duplicate: false, matches: [] },
+          job: { id: "job-1" },
+        });
+      }
       if (command === "import_article_subtitles_cmd" || command === "get_article") {
         return Promise.resolve(importedArticle);
       }
@@ -208,13 +230,18 @@ describe("ArticleReader agent mode", () => {
     );
 
     await userEvent.click(screen.getByRole("button", { name: "Import subtitles" }));
+    await userEvent.click(await screen.findByRole("button", { name: "确认并导入" }));
 
     expect(openMock).toHaveBeenCalled();
-    expect(invokeMock).toHaveBeenCalledWith("import_article_subtitles_cmd", {
-      articleId: "article-1",
-      subtitlePath: "/tmp/sample.srt",
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("import_article_subtitles_cmd", {
+        articleId: "article-1",
+        subtitlePath: "/tmp/sample.srt",
+        importJobId: "job-1",
+        duplicatePolicy: "keep_copy",
+      });
+      expect(onUpdate).toHaveBeenCalledTimes(1);
     });
-    expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("creates a learning candidate from scoped segment text selection", async () => {
@@ -320,6 +347,36 @@ describe("ArticleReader agent mode", () => {
 
     expect(screen.getByTestId("reader-toolbar-view-mode-trigger")).toBeInTheDocument();
     expect(screen.queryByTestId("player-view-mode-trigger")).not.toBeInTheDocument();
+  });
+
+  it("reports the visible article segment while scrolling", async () => {
+    const onProgressChange = vi.fn();
+    const segments = [
+      { id: "seg-1", article_id: "article-1", order: 0, text: "First segment.", created_at: "2026-03-08T00:00:00Z", is_new_paragraph: true },
+      { id: "seg-2", article_id: "article-1", order: 1, text: "Second segment.", created_at: "2026-03-08T00:00:00Z", is_new_paragraph: true },
+      { id: "seg-3", article_id: "article-1", order: 2, text: "Third segment.", created_at: "2026-03-08T00:00:00Z", is_new_paragraph: true },
+    ];
+    render(<ArticleReader article={createArticle({ segments })} onProgressChange={onProgressChange} />);
+    const scrollContainer = screen.getByTestId("article-reader-scroll");
+    vi.spyOn(scrollContainer, "getBoundingClientRect").mockReturnValue({
+      top: 0, bottom: 400, left: 0, right: 800, width: 800, height: 400, x: 0, y: 0, toJSON: () => ({}),
+    });
+    const segmentElements = Array.from(scrollContainer.querySelectorAll<HTMLElement>("[data-reader-segment-id]"));
+    [100, 300, 500].forEach((bottom, index) => {
+      vi.spyOn(segmentElements[index], "getBoundingClientRect").mockReturnValue({
+        top: bottom - 80, bottom, left: 0, right: 700, width: 700, height: 80, x: 0, y: bottom - 80, toJSON: () => ({}),
+      });
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    await waitFor(() => {
+      expect(onProgressChange).toHaveBeenCalledWith(expect.objectContaining({
+        reader_kind: "article",
+        locator: expect.objectContaining({ kind: "segment", segment_id: "seg-2", segment_order: 1 }),
+        progress_ratio: 2 / 3,
+      }));
+    }, { timeout: 2_000 });
   });
 
   it("uses the configured batch explanation concurrency", async () => {

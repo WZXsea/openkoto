@@ -74,6 +74,10 @@ fn sample_article() -> Article {
         translated: false,
         active_mind_map_artifact_id: None,
         segments: Vec::new(),
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     }
 }
 

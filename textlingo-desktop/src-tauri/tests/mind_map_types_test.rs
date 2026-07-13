@@ -1,6 +1,6 @@
 use openkoto_desktop_lib::types::{
     AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Artifact, ArtifactType,
-    DiagnosticsCoverage, DiagnosticsContentType, MindMap, MindMapDiagnostics, MindMapNode,
+    DiagnosticsContentType, DiagnosticsCoverage, MindMap, MindMapDiagnostics, MindMapNode,
     MindMapNodeType, MindMapResult, MindMapStatus, SourceOffset, TimeRange,
 };
 
@@ -159,12 +159,7 @@ fn mind_map_result_supports_applicable_partial_and_not_applicable() {
     ));
     assert!(not_applicable_round_trip.map.is_none());
     assert!(matches!(
-        applicable_round_trip
-            .map
-            .as_ref()
-            .unwrap()
-            .root
-            .node_type,
+        applicable_round_trip.map.as_ref().unwrap().root.node_type,
         MindMapNodeType::Root
     ));
 }

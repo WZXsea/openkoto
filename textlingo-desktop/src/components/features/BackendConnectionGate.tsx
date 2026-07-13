@@ -32,7 +32,7 @@ export function BackendConnectionGate({
 }: BackendConnectionGateProps) {
   const [mode, setMode] = useState<AuthMode>("login");
   const detectedBackendUrl = status?.backend_url || config?.backend_url || null;
-  const [backendUrl, setBackendUrl] = useState(detectedBackendUrl || "http://127.0.0.1:4000");
+  const [backendUrl, setBackendUrl] = useState(detectedBackendUrl || "http://127.0.0.1:19421");
   const [hasEditedBackendUrl, setHasEditedBackendUrl] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -110,7 +110,7 @@ export function BackendConnectionGate({
                 setHasEditedBackendUrl(true);
                 setBackendUrl(event.target.value);
               }}
-              placeholder="http://127.0.0.1:4000"
+              placeholder="http://127.0.0.1:19421"
               autoCapitalize="none"
               autoCorrect="off"
             />

@@ -29,7 +29,9 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: textlingo-desktop/package-lock.json
+          cache-dependency-path: |
+            textlingo-desktop/package-lock.json
+            textlingo-desktop/agent-worker/package-lock.json
 
       - name: setup python
         uses: actions/setup-python@v6
@@ -42,6 +44,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
         working-directory: ./textlingo-desktop
+
+      - name: Install agent worker dependencies
+        run: npm ci
+        working-directory: ./textlingo-desktop/agent-worker
 
       - name: Typecheck
         run: npm run typecheck
@@ -96,8 +102,6 @@ jobs:
             args: "--target aarch64-apple-darwin --bundles app,dmg"
           - platform: "macos-15-intel"
             args: "--target x86_64-apple-darwin --bundles app,dmg"
-          - platform: "windows-latest"
-            args: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -118,7 +122,7 @@ jobs:
 
       - name: install dependencies (macos only)
         if: startsWith(matrix.platform, 'macos-')
-        run: brew install create-dmg
+        run: brew install create-dmg postgresql@16
 
       - name: import Apple Developer ID certificate (macos only)
         if: startsWith(matrix.platform, 'macos-')
@@ -146,8 +150,12 @@ jobs:
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8" >> "$GITHUB_ENV"
 
       - name: install frontend dependencies
-        run: npm install
+        run: npm ci
         working-directory: ./textlingo-desktop
+
+      - name: install agent worker dependencies
+        run: npm ci
+        working-directory: ./textlingo-desktop/agent-worker
 
       - name: download sidecar binaries
         run: |
@@ -180,6 +188,26 @@ jobs:
         run: python script/build_pdf_offline_assets.py
         shell: bash
 
+      - name: verify release version
+        env:
+          OPENKOTO_RELEASE_TAG: ${{ github.ref_name }}
+        run: bash script/verify_release_version.sh
+        shell: bash
+
+      - name: build packaged local runtime (macos only)
+        if: startsWith(matrix.platform, 'macos-')
+        working-directory: ./textlingo-desktop
+        run: |
+          export POSTGRES_CONFIG="$(brew --prefix postgresql@16)/bin/pg_config"
+          npm run build:backend-sidecar
+          npm run build:postgres-runtime
+          npm run build:node-runtime
+          test -x src-tauri/resources/backend/openkoto-backend
+          test -x src-tauri/resources/postgres/bin/postgres
+          test -x src-tauri/resources/postgres/bin/initdb
+          test -x src-tauri/resources/node/bin/node
+        shell: bash
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -193,26 +221,25 @@ jobs:
           releaseName: "OpenKoto Desktop ${{ github.ref_name }}"
           releaseBody: |
             ## Release Highlights
-            - Subtitle extraction now runs on real Whisper ASR instead of LLM listening, with word-level timestamps and smarter line segmentation for far more accurate subtitles.
-            - Added a dedicated transcription (ASR) section in Settings supporting multiple providers (302.AI, OpenAI, Groq, SiliconFlow, OpenAI-compatible), with model presets, API sync, and one-click links to each provider's docs.
-            - You can now pick which ASR model to use right from the "Extract" / "Re-extract" subtitle buttons — the chosen model is remembered as the default.
-            - Added drag-and-drop import: drop a video, audio, PDF, EPUB, or `.srt` file onto the main window to import it instantly.
+            - Added the PR-7 material workbench with unified import jobs, previews, duplicate resolution, search, filters, tags, and bulk actions.
+            - Added resumable reading progress for articles, PDF, EPUB, TXT, and media materials.
+            - Added account visibility, logout/account switching, text-file import, and configurable interface/reading fonts.
 
             ## Improved
-            - Long audio/video is automatically split into duration-based chunks before transcription, fixing timeouts on lengthy recordings.
-            - Audio is downmixed and compressed before upload to stay within ASR file-size limits.
-            - 302.AI transcription requests are auto-normalized to the supported `whisper-1` model to avoid provider errors.
+            - The macOS package now includes the Axum backend, PostgreSQL 16, Node.js, and the agent worker for standalone startup.
+            - The packaged Backend uses the stable local address `http://127.0.0.1:19421` and preserves data across application upgrades.
 
             ## Fixed
-            - Fixed PDF translation stalling when a model rejects a non-default temperature (now self-heals and retries).
+            - Hardened import idempotency, duplicate recovery, stale-task recovery, and multi-user isolation.
+            - Added bounded startup checks and packaged-runtime version validation.
 
-            > Desktop version `${{ github.ref_name }}`. Multi-platform release publishing remains tag-driven through this workflow.
-          releaseDraft: false
+            > Desktop version `${{ github.ref_name }}`. This release publishes macOS Apple Silicon and Intel packages.
+          releaseDraft: true
           prerelease: false
           projectPath: "./textlingo-desktop"
           args: ${{ matrix.args }}
 
-      - name: assert PDF sidecar entitlements (macos only)
+      - name: assert packaged resources and PDF sidecar entitlements (macos only)
         if: startsWith(matrix.platform, 'macos-')
         shell: bash
         run: |
@@ -220,6 +247,15 @@ jobs:
           APP=$(find textlingo-desktop/src-tauri/target -type d -name "*.app" -path "*/release/bundle/macos/*" | head -1)
           if [ -z "$APP" ]; then echo "::error::No .app bundle found"; exit 1; fi
           echo "App bundle: $APP"
+          test -x "$APP/Contents/Resources/backend/openkoto-backend"
+          test -x "$APP/Contents/Resources/postgres/bin/postgres"
+          test -x "$APP/Contents/Resources/postgres/bin/initdb"
+          test -x "$APP/Contents/Resources/node/bin/node"
+          test -f "$APP/Contents/Resources/agent-worker/package.json"
+          test -f "$APP/Contents/Resources/agent-worker/dist/index.js"
+          DMG=$(find textlingo-desktop/src-tauri/target -type f -name "*.dmg" -path "*/release/bundle/dmg/*" | head -1)
+          if [ -z "$DMG" ]; then echo "::error::No DMG found"; exit 1; fi
+          hdiutil verify "$DMG"
           SIDECAR="$APP/Contents/MacOS/openkoto-pdf-translator"
           if [ ! -f "$SIDECAR" ]; then
             echo "::error::PDF sidecar not found at $SIDECAR"
@@ -237,3 +273,14 @@ jobs:
             echo "::error::disable-library-validation entitlement missing on PDF sidecar — PDF translation will fail at runtime"
             exit 1
           fi
+
+  finalize-release:
+    needs: publish-tauri
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish validated release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --prerelease=false --latest

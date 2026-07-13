@@ -27,6 +27,16 @@ import {
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Label } from "../ui/label";
+import {
+    createPageLocator,
+    createReadingProgressUpdate,
+    getInitialProgressForReader,
+    getPageNumberFromLocator,
+    getPageNumberFromProgress,
+    useReadingProgressReporter,
+    type ReadingProgressChangeHandler,
+    type ReadingProgressUpdate,
+} from "../../features/reader";
 
 interface TxtReaderProps {
     /** TXT 文件内容 */
@@ -41,6 +51,10 @@ interface TxtReaderProps {
     fontSize?: number;
     /** 返回按钮回调 */
     onBack?: () => void;
+    /** 后端保存的阅读进度 */
+    initialProgress?: ReadingProgressUpdate;
+    /** 阅读位置变化回调 */
+    onProgressChange?: ReadingProgressChangeHandler;
 }
 
 // 每页大约显示的字符数
@@ -53,6 +67,8 @@ export function TxtReader({
     onTextSelect,
     fontSize: initialFontSize = 18,
     onBack,
+    initialProgress,
+    onProgressChange,
 }: TxtReaderProps) {
     const { t } = useTranslation();
 
@@ -68,6 +84,7 @@ export function TxtReader({
     const [bookmarkTitle, setBookmarkTitle] = useState("");
     const [bookmarkNote, setBookmarkNote] = useState("");
     const [bookmarkSelectedText, setBookmarkSelectedText] = useState("");
+    const { reportProgress } = useReadingProgressReporter(onProgressChange);
 
     // 将内容分页
     const pages = useMemo(() => {
@@ -99,6 +116,28 @@ export function TxtReader({
 
     // 总页数
     const totalPages = pages.length;
+
+    useEffect(() => {
+        const initialTxtProgress = getInitialProgressForReader(initialProgress, "txt");
+        const initialPage = getPageNumberFromLocator(initialTxtProgress?.locator)
+            ?? getPageNumberFromProgress(initialTxtProgress?.progress_ratio, totalPages);
+        if (initialPage) {
+            setCurrentPage(initialPage - 1);
+            return;
+        }
+
+        setCurrentPage((current) => Math.min(Math.max(0, current), totalPages - 1));
+    }, [content, initialProgress, totalPages]);
+
+    useEffect(() => {
+        if (totalPages < 1) return;
+        const pageNumber = currentPage + 1;
+        reportProgress(createReadingProgressUpdate(
+            "txt",
+            createPageLocator(pageNumber, totalPages),
+            pageNumber / totalPages,
+        ), pageNumber >= totalPages);
+    }, [currentPage, reportProgress, totalPages]);
 
     // 翻页
     const handlePrevPage = useCallback(() => {
@@ -194,7 +233,7 @@ export function TxtReader({
             <div className="flex items-center justify-between p-3 border-b border-border bg-card/50 backdrop-blur-sm gap-4">
                 <div className="flex items-center gap-2 shrink-0">
                     {onBack && (
-                        <Button variant="ghost" size="sm" onClick={onBack}>
+                        <Button variant="ghost" size="sm" onClick={onBack} aria-label={t("common.back", "返回")} title={t("common.back", "返回")}>
                             <ChevronLeft size={18} />
                         </Button>
                     )}
@@ -298,7 +337,7 @@ export function TxtReader({
                     onMouseUp={handleMouseUp}
                 >
                     <div
-                        className="max-w-3xl mx-auto whitespace-pre-wrap text-foreground leading-relaxed"
+                        className="openkoto-reader-font max-w-3xl mx-auto whitespace-pre-wrap text-foreground leading-relaxed"
                         style={{
                             fontSize: `${fontSize}px`,
                             lineHeight: 2,

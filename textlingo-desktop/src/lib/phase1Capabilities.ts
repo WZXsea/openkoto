@@ -1,12 +1,12 @@
 import type { AppConfig } from "./tauri";
 
 export const phase1Capabilities = {
-  youtubeImport: false,
-  webImport: false,
-  pdfTranslation: false,
-  ktvExport: false,
-  autoSubtitleExtraction: false,
-  updateCheck: false,
+  youtubeImport: true,
+  webImport: true,
+  pdfTranslation: true,
+  ktvExport: true,
+  autoSubtitleExtraction: true,
+  updateCheck: true,
 } as const;
 
 export type Phase1Capability = keyof typeof phase1Capabilities;

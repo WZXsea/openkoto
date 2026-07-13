@@ -19,7 +19,11 @@ describe("Local subtitle import form", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     openMock.mockReset();
-    invokeMock.mockResolvedValue({ id: "article-1" });
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "preview_material_import_cmd") return Promise.resolve({ job: { id: "job-1" }, duplicates: { duplicate: false, matches: [] } });
+      if (command === "import_srt_file_cmd") return Promise.resolve({ id: "article-1" });
+      return Promise.reject(new Error(`Unexpected command: ${command}`));
+    });
   });
 
   afterEach(() => {
@@ -38,10 +42,13 @@ describe("Local subtitle import form", () => {
       "Lesson Title"
     );
     await user.click(screen.getByRole("button", { name: /import|导入/i }));
+    await user.click(screen.getByRole("button", { name: "确认并导入" }));
 
     expect(invokeMock).toHaveBeenCalledWith("import_srt_file_cmd", {
       filePath: "/tmp/lesson.srt",
       title: "Lesson Title",
+      importJobId: "job-1",
+      duplicatePolicy: "keep_copy",
     });
   });
 });

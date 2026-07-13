@@ -45,7 +45,7 @@ OpenKoto Desktop は、**オープンソースの AI 搭載言語学習アプリ
 
 | バージョン | 説明 | リンク |
 |------------|------|--------|
-| **デスクトップ版** | **おすすめ** 🖥️ ネイティブ性能、ローカルデータ、Mac/Windows/Linux 対応 | [最新版をダウンロード](https://github.com/hikariming/OpenKoto/releases) |
+| **デスクトップ版** | **おすすめ** 🖥️ ネイティブ性能、ローカルデータ、macOS（Apple Silicon/Intel）対応 | [最新版をダウンロード](https://github.com/hikariming/OpenKoto/releases) |
 | Web 版 | インストール不要、オンラインで利用可能 | [https://openkoto.app](https://openkoto.app) |
 | ソースコード | 🆓 完全オープンソース、Apache 2.0 ライセンス | [GitHub リポジトリ](https://github.com/hikariming/OpenKoto) |
 
@@ -72,7 +72,11 @@ OpenKoto Desktop は、**オープンソースの AI 搭載言語学習アプリ
 ## 近日公開
 
 - 📚 パーソナライズされた語彙・文法練習システム
-- 🎥 YouTube 動画学習サポート
+
+## WZX PR-7 macOS ビルド
+スタンドアロンの `0.7.0` Apple Silicon プレリリースには、Axum Backend、PostgreSQL 16、Node.js、統合素材インポート、検索、読書進捗の永続化が含まれます。インストール前に [macOS のインストールとデータに関する注意事項](docs/INSTALL_MACOS.md) を確認してください。
+
+[WZX PR-7 プレリリースをダウンロード](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.7.0-pr7-material-workbench)
 
 ## はじめ方
 
@@ -148,7 +152,7 @@ sudo xattr -r -d com.apple.quarantine /Applications/OpenKoto\ Desktop.app
 
 ## 現在のバージョン
 
-**v0.1.4** (開発版)
+**v0.7.0** (WZX PR-7 プレリリース)
 
 ## 作者の他のプロジェクト
 

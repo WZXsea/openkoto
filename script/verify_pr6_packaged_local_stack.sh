@@ -110,7 +110,11 @@ smoke_postgres_runtime() {
   postgres_env_prefix "$pgroot"
   mkdir -p "$tmp_dir/socket"
 
-  if ! "$pgroot/bin/initdb" -D "$tmp_dir/data" --username openkoto --auth-local=trust --auth-host=trust >"$initdb_log" 2>&1; then
+  local share_dir
+  share_dir="$(find "$pgroot/share" -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/postgres.bki' \; -print -quit)"
+  [ -n "$share_dir" ] || fail "Bundled PostgreSQL share directory is missing initdb templates"
+
+  if ! "$pgroot/bin/initdb" -D "$tmp_dir/data" -L "$share_dir" --username openkoto --auth-local=trust --auth-host=trust >"$initdb_log" 2>&1; then
     cat "$initdb_log" >&2 || true
     cleanup_postgres_smoke
     fail "Bundled PostgreSQL initdb smoke failed"

@@ -13,11 +13,8 @@ use openkoto_desktop_lib::{
 };
 
 fn temp_data_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "openkoto-tools-{}-{}",
-        name,
-        uuid::Uuid::new_v4()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("openkoto-tools-{}-{}", name, uuid::Uuid::new_v4()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -76,6 +73,10 @@ fn sample_article() -> Article {
                 is_new_paragraph: false,
             },
         ],
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     }
 }
 
@@ -126,7 +127,10 @@ fn article_read_window_returns_stable_cursor_and_segment_ids() {
     assert!(window.end_offset > window.start_offset);
     assert!(!window.text.is_empty());
     assert!(window.has_more);
-    assert_eq!(window.source_segment_ids, vec!["seg-1".to_string(), "seg-2".to_string()]);
+    assert_eq!(
+        window.source_segment_ids,
+        vec!["seg-1".to_string(), "seg-2".to_string()]
+    );
     assert_eq!(window.time_range.unwrap().start, 0.0);
 }
 

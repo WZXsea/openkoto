@@ -162,6 +162,10 @@ pub async fn import_youtube_video(app: AppHandle, url: String) -> Result<Article
         translated: false,
         active_mind_map_artifact_id: None,
         segments,
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     };
 
     Ok(article)

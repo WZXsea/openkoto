@@ -27,8 +27,12 @@ pub fn resolve_ffmpeg_invocation_for_path(
     dev_mode: bool,
     path_override: Option<&OsStr>,
 ) -> FfmpegInvocation {
-    if resolve_ffmpeg_program_for_requirement_path(dev_mode, path_override, FfmpegRequirement::Basic)
-        .is_some()
+    if resolve_ffmpeg_program_for_requirement_path(
+        dev_mode,
+        path_override,
+        FfmpegRequirement::Basic,
+    )
+    .is_some()
     {
         FfmpegInvocation::System
     } else {
@@ -47,7 +51,9 @@ pub fn resolve_ffmpeg_program_for_requirement_path(
 
     system_ffmpeg_candidates(requirement)
         .into_iter()
-        .find(|candidate| system_ffmpeg_satisfies_requirement(candidate, path_override, requirement))
+        .find(|candidate| {
+            system_ffmpeg_satisfies_requirement(candidate, path_override, requirement)
+        })
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
@@ -76,12 +82,11 @@ pub async fn run_ffmpeg_with_requirement(
 }
 
 async fn run_system_ffmpeg(program: String, args: Vec<String>) -> Result<FfmpegRunOutput, String> {
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new(program).args(args).output()
-    })
-    .await
-    .map_err(|error| format!("系统 FFmpeg 执行任务失败: {error}"))?
-    .map_err(|error| format!("系统 FFmpeg 执行失败: {error}"))?;
+    let output =
+        tauri::async_runtime::spawn_blocking(move || Command::new(program).args(args).output())
+            .await
+            .map_err(|error| format!("系统 FFmpeg 执行任务失败: {error}"))?
+            .map_err(|error| format!("系统 FFmpeg 执行失败: {error}"))?;
 
     Ok(FfmpegRunOutput {
         invocation: FfmpegInvocation::System,
@@ -123,7 +128,9 @@ fn system_ffmpeg_satisfies_requirement(
 
     match requirement {
         FfmpegRequirement::Basic => true,
-        FfmpegRequirement::SubtitleBurn => system_ffmpeg_supports_subtitle_burn(program, path_override),
+        FfmpegRequirement::SubtitleBurn => {
+            system_ffmpeg_supports_subtitle_burn(program, path_override)
+        }
     }
 }
 
@@ -193,7 +200,11 @@ fn system_ffmpeg_candidates(requirement: FfmpegRequirement) -> Vec<OsString> {
         push_candidate(&mut candidates, &mut seen, path);
     }
 
-    push_candidate(&mut candidates, &mut seen, OsString::from(ffmpeg_binary_name()));
+    push_candidate(
+        &mut candidates,
+        &mut seen,
+        OsString::from(ffmpeg_binary_name()),
+    );
     candidates
 }
 

@@ -38,6 +38,16 @@ import {
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Label } from "../ui/label";
+import {
+    createPageLocator,
+    createReadingProgressUpdate,
+    getInitialProgressForReader,
+    getPageNumberFromLocator,
+    getPageNumberFromProgress,
+    useReadingProgressReporter,
+    type ReadingProgressChangeHandler,
+    type ReadingProgressUpdate,
+} from "../../features/reader";
 
 
 
@@ -50,6 +60,10 @@ interface PdfReaderProps {
     onTextSelect?: (text: string) => void;
     /** 返回按钮回调 */
     onBack?: () => void;
+    /** 后端保存的阅读进度，优先于旧版本地存储 */
+    initialProgress?: ReadingProgressUpdate;
+    /** 阅读位置变化回调 */
+    onProgressChange?: ReadingProgressChangeHandler;
 }
 
 export function PdfReader({
@@ -57,6 +71,8 @@ export function PdfReader({
     title,
     onTextSelect,
     onBack,
+    initialProgress,
+    onProgressChange,
 }: PdfReaderProps) {
     const { t } = useTranslation();
     const containerRef = useRef<HTMLDivElement>(null);
@@ -83,6 +99,7 @@ export function PdfReader({
     const [bookmarkTitle, setBookmarkTitle] = useState("");
     const [bookmarkNote, setBookmarkNote] = useState("");
     const [bookmarkSelectedText, setBookmarkSelectedText] = useState("");
+    const { reportProgress } = useReadingProgressReporter(onProgressChange);
 
     // PDF 加载成功回调
     const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
@@ -90,17 +107,14 @@ export function PdfReader({
         setIsLoading(false);
         setError(null);
 
-        // 恢复上次阅读进度
-        if (bookPath) {
-            const savedPage = localStorage.getItem(`pdf-page-${bookPath}`);
-            if (savedPage) {
-                const parsed = parseInt(savedPage);
-                if (parsed > 0 && parsed <= numPages) {
-                    setPageNumber(parsed);
-                }
-            }
+        // 后端阅读进度是权威来源；没有用户 ID 时不读取跨会话 localStorage。
+        const initialPdfProgress = getInitialProgressForReader(initialProgress, "pdf");
+        const initialPage = getPageNumberFromLocator(initialPdfProgress?.locator)
+            ?? getPageNumberFromProgress(initialPdfProgress?.progress_ratio, numPages);
+        if (initialPage) {
+            setPageNumber(Math.min(numPages, Math.max(1, initialPage)));
         }
-    }, [bookPath]);
+    }, [initialProgress]);
 
     // PDF 加载失败回调
     const onDocumentLoadError = useCallback((err: Error) => {
@@ -224,12 +238,14 @@ export function PdfReader({
         };
     }, []);
 
-    // 保存阅读进度
     useEffect(() => {
-        if (bookPath && pageNumber > 0) {
-            localStorage.setItem(`pdf-page-${bookPath}`, pageNumber.toString());
-        }
-    }, [bookPath, pageNumber]);
+        if (numPages < 1) return;
+        reportProgress(createReadingProgressUpdate(
+            "pdf",
+            createPageLocator(pageNumber, numPages),
+            pageNumber / numPages,
+            ), pageNumber >= numPages);
+    }, [numPages, pageNumber, reportProgress]);
 
     // 键盘快捷键
     useEffect(() => {
@@ -311,7 +327,7 @@ export function PdfReader({
             <div className="flex items-center justify-between p-3 border-b border-border bg-card/50 backdrop-blur-sm gap-4 shrink-0">
                 <div className="flex items-center gap-2 shrink-0">
                     {onBack && (
-                        <Button variant="ghost" size="sm" onClick={onBack}>
+                        <Button variant="ghost" size="sm" onClick={onBack} aria-label={t("common.back", "返回")} title={t("common.back", "返回")}>
                             <ChevronLeft size={18} />
                         </Button>
                     )}

@@ -32,6 +32,16 @@ import {
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Label } from "../ui/label";
+import {
+    clampProgressRatio,
+    createEpubCfiLocator,
+    createReadingProgressUpdate,
+    getEpubCfiFromLocator,
+    getInitialProgressForReader,
+    useReadingProgressReporter,
+    type ReadingProgressChangeHandler,
+    type ReadingProgressUpdate,
+} from "../../features/reader";
 
 interface EpubReaderProps {
     /** EPUB 文件的 URL 或本地路径 */
@@ -44,6 +54,26 @@ interface EpubReaderProps {
     fontSize?: number;
     /** 返回按钮回调 */
     onBack?: () => void;
+    /** 后端保存的阅读进度，优先于旧版本地存储 */
+    initialProgress?: ReadingProgressUpdate;
+    /** 阅读位置变化回调 */
+    onProgressChange?: ReadingProgressChangeHandler;
+}
+
+const DEFAULT_EPUB_READER_FONT =
+    '"Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif';
+
+function getConfiguredReaderFontFamily(): string {
+    if (typeof window === "undefined") {
+        return DEFAULT_EPUB_READER_FONT;
+    }
+
+    return (
+        window
+            .getComputedStyle(document.documentElement)
+            .getPropertyValue("--openkoto-reader-font-family")
+            .trim() || DEFAULT_EPUB_READER_FONT
+    );
 }
 
 export function EpubReader({
@@ -52,6 +82,8 @@ export function EpubReader({
     onTextSelect,
     fontSize: initialFontSize = 100,
     onBack,
+    initialProgress,
+    onProgressChange,
 }: EpubReaderProps) {
     const { t } = useTranslation();
 
@@ -79,6 +111,8 @@ export function EpubReader({
     const isSeeking = useRef(false);
     // 是否已准备好位置信息
     const [locationsReady, setLocationsReady] = useState(false);
+    const pendingInitialPercentageRef = useRef<number | undefined>(undefined);
+    const { reportProgress } = useReadingProgressReporter(onProgressChange);
 
     // 书签相关状态
     const [isBookmarkSidebarOpen, setIsBookmarkSidebarOpen] = useState(false);
@@ -89,6 +123,7 @@ export function EpubReader({
     // 处理位置变化
     const handleLocationChange = useCallback((epubcifi: string) => {
         setLocation(epubcifi);
+        let progressRatio = progress / 100;
 
         // 如果不在拖动中，且位置信息已准备好，更新进度条
         if (!isSeeking.current && renditionRef.current && locationsReady) {
@@ -98,28 +133,40 @@ export function EpubReader({
                 if (currentLocation && (currentLocation as any).start) {
                     // @ts-ignore
                     const percentage = renditionRef.current.book.locations.percentageFromCfi((currentLocation as any).start.cfi);
-                    setProgress(Math.round(percentage * 100));
+                    progressRatio = clampProgressRatio(percentage);
+                    setProgress(Math.round(progressRatio * 100));
                 }
             } catch (e) {
                 console.warn("Failed to get progress:", e);
             }
         }
 
-        // 可以在这里保存阅读进度到 localStorage
-        if (bookPath) {
-            localStorage.setItem(`epub-location-${bookPath}`, epubcifi);
-        }
-    }, [bookPath, locationsReady]);
+        reportProgress(createReadingProgressUpdate("epub", createEpubCfiLocator(epubcifi), progressRatio));
 
-    // 加载保存的阅读进度
+    }, [locationsReady, progress, reportProgress]);
+
+    // 后端阅读进度是权威来源；没有用户 ID 时不读取跨会话 localStorage。
     useEffect(() => {
-        if (bookPath) {
-            const savedLocation = localStorage.getItem(`epub-location-${bookPath}`);
-            if (savedLocation) {
-                setLocation(savedLocation);
-            }
+        const initialEpubProgress = getInitialProgressForReader(initialProgress, "epub");
+        const initialCfi = getEpubCfiFromLocator(initialEpubProgress?.locator);
+        const initialPercentage = initialEpubProgress?.progress_ratio;
+
+        setLocationsReady(false);
+        pendingInitialPercentageRef.current = initialCfi ? undefined : initialPercentage;
+        if (initialPercentage !== undefined) {
+            setProgress(Math.round(clampProgressRatio(initialPercentage) * 100));
         }
-    }, [bookPath]);
+        if (initialCfi) {
+            setLocation(initialCfi);
+            return;
+        }
+        if (initialPercentage !== undefined) {
+            setLocation(0);
+            return;
+        }
+
+        setLocation(0);
+    }, [bookPath, initialProgress]);
 
     // 应用字体大小
     useEffect(() => {
@@ -138,7 +185,7 @@ export function EpubReader({
         // 设置主题样式
         rendition.themes.default({
             body: {
-                fontFamily: '"Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif',
+                fontFamily: getConfiguredReaderFontFamily(),
                 lineHeight: "1.8",
                 color: "var(--foreground, #1a1a1a)",
                 background: "var(--background, #ffffff)",
@@ -168,6 +215,15 @@ export function EpubReader({
                 setLocationsReady(true);
                 // 初始化当前进度
                 try {
+                    const initialPercentage = pendingInitialPercentageRef.current;
+                    if (initialPercentage !== undefined) {
+                        // @ts-ignore
+                        const initialCfi = rendition.book.locations.cfiFromPercentage(initialPercentage);
+                        if (initialCfi) {
+                            rendition.display(initialCfi);
+                        }
+                        pendingInitialPercentageRef.current = undefined;
+                    }
                     // @ts-ignore
                     const currentLocation = rendition.currentLocation();
                     if (currentLocation && (currentLocation as any).start) {
@@ -276,7 +332,7 @@ export function EpubReader({
             <div className="flex items-center justify-between p-3 border-b border-border bg-card/50 backdrop-blur-sm gap-4">
                 <div className="flex items-center gap-2 shrink-0">
                     {onBack && (
-                        <Button variant="ghost" size="sm" onClick={onBack}>
+                        <Button variant="ghost" size="sm" onClick={onBack} aria-label={t("common.back", "返回")} title={t("common.back", "返回")}>
                             <ChevronLeft size={18} />
                         </Button>
                     )}

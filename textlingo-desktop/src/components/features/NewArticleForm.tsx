@@ -8,6 +8,7 @@ import { FileText, Loader2, Link, Clipboard, Cloud, Info } from "lucide-react";
 import { getApiClient } from "../../lib/api";
 import { Article } from "../../types";
 import { isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
+import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
 
 interface NewArticleFormProps {
     onSave?: (article: Article) => void;
@@ -26,6 +27,18 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
     const [useBackend, setUseBackend] = useState(false);
     const canFetchRemoteContent = isPhase1CapabilityEnabled("webImport");
     const remoteFetchDisabledMessage = t("common.phase1Disabled", "第一阶段保留本地阅读核心能力，此增强功能暂不启用。");
+    const importPreview = useMaterialImportPreview<Article>({
+        commit: (importJobId, duplicatePolicy) => invoke<Article>("create_article", {
+            title: title.trim() || t("articleList.untitled"),
+            content,
+            sourceUrl: sourceUrl.trim() || undefined,
+            importJobId,
+            duplicatePolicy,
+        }),
+        onSuccess: onSave,
+        onError: (err) => setError(String(err)),
+    });
+    const isSubmitBusy = isSaving || importPreview.isBusy;
 
     // Load config and check if backend is available
     useEffect(() => {
@@ -52,26 +65,25 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
             return;
         }
 
-        setIsSaving(true);
         setError(null);
+        if (!initialArticle) {
+            await importPreview.startPreview({
+                sourceKind: "article",
+                sourceUri: sourceUrl.trim() || undefined,
+                content,
+                title: title.trim() || t("articleList.untitled"),
+            });
+            return;
+        }
+
+        setIsSaving(true);
         try {
-            let article: Article;
-            if (initialArticle) {
-                // Update existing article
-                article = await invoke<Article>("update_article", {
-                    id: initialArticle.id,
-                    title: title.trim() || t("articleList.untitled"),
-                    content,
-                    sourceUrl: sourceUrl.trim() || undefined,
-                });
-            } else {
-                // Create new article
-                article = await invoke<Article>("create_article", {
-                    title: title.trim() || t("articleList.untitled"),
-                    content,
-                    sourceUrl: sourceUrl.trim() || undefined,
-                });
-            }
+            const article = await invoke<Article>("update_article", {
+                id: initialArticle.id,
+                title: title.trim() || t("articleList.untitled"),
+                content,
+                sourceUrl: sourceUrl.trim() || undefined,
+            });
             onSave?.(article);
         } catch (err) {
             setError(err as string);
@@ -196,6 +208,16 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
 
     return (
         <div className="flex flex-col h-full">
+            {!initialArticle && (
+                <MaterialImportPreviewDialogs
+                    preview={importPreview.preview}
+                    duplicate={importPreview.duplicate}
+                    isBusy={importPreview.isBusy}
+                    onConfirm={() => void importPreview.confirmPreview()}
+                    onCancel={() => void importPreview.cancelPreview()}
+                    onResolve={(action) => void importPreview.resolveDuplicate(action)}
+                />
+            )}
             <div className="flex-1 space-y-4 overflow-y-auto pr-1">
                 {error && (
                     <div className="p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
@@ -287,11 +309,11 @@ export function NewArticleForm({ onSave, onCancel, initialArticle }: NewArticleF
             </div>
 
             <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-border">
-                <Button variant="secondary" onClick={onCancel} disabled={isSaving || isFetching}>
+                <Button variant="secondary" onClick={onCancel} disabled={isSubmitBusy || isFetching}>
                     {t("newArticle.cancel")}
                 </Button>
-                <Button onClick={handleSave} disabled={isSaving || isFetching} className="gap-2">
-                    {isSaving ? (
+                <Button onClick={handleSave} disabled={isSubmitBusy || isFetching} className="gap-2">
+                    {isSubmitBusy ? (
                         <>
                             <Loader2 size={16} className="animate-spin" />
                             {t("newArticle.saving")}

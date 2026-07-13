@@ -26,6 +26,13 @@
     "model": "Model",
     "quickSwitch": "Quick Switch"
   },
+  "account": {
+    "menuLabel": "Account",
+    "signedIn": "Signed in",
+    "switch": "Switch Account",
+    "logout": "Log Out",
+    "loggingOut": "Logging out"
+  },
   "assistant": {
     "mode": {
       "quick": "Quick Ask",
@@ -345,6 +352,25 @@
       "themeName": "Theme Style",
       "themeMode": "Display Mode"
     },
+    "fonts": {
+      "uiFont": "UI font",
+      "readerFont": "Reader font",
+      "uiFontInput": "UI font family",
+      "readerFontInput": "Reader font family",
+      "custom": "Custom",
+      "customInput": "Custom font-family",
+      "inputPlaceholder": "e.g. \"PingFang SC\", sans-serif",
+      "uiHelp": "Applies to navigation, buttons, dialogs and most interface text.",
+      "readerHelp": "Applies to article text, plain text and EPUB reading areas.",
+      "preview": "The quick brown fox jumps over OpenKoto. 中文字体预览。",
+      "themeDefault": "Theme default",
+      "systemSans": "System Sans",
+      "inter": "Inter",
+      "helvetica": "Helvetica / Arial",
+      "chineseSans": "Chinese Sans",
+      "serif": "Serif",
+      "chineseSerif": "Chinese Serif"
+    },
     "models": {
       "siliconflow": {
         "deepseek-v3": "DeepSeek V3",
@@ -575,7 +601,7 @@
   },
   "dropImport": {
     "hint": "Release to import",
-    "types": "PDF / EPUB / video / audio / subtitle",
+    "types": "PDF / EPUB / MD / TXT / DOCX / video / audio / subtitle",
     "importing": "Importing {{count}} file(s)…",
     "done": "Imported {{count}} item(s)",
     "unsupported": "Unsupported file type: {{name}}",
@@ -622,12 +648,12 @@
   },
   "bookImport": {
     "title": "Reading Materials",
-    "hint": "Supports papers, books, novels, etc. Supports PDF, TXT, EPUB formats. Used for multilingual accessible reading and learning of articles and literature.",
+    "hint": "Supports papers, books, novels, etc. Supports PDF and EPUB formats for accessible reading and learning.",
     "fileLabel": "Book File",
-    "filePlaceholder": "Select EPUB, TXT or PDF file...",
+    "filePlaceholder": "Select EPUB or PDF file...",
     "titleLabel": "Book Title",
     "titlePlaceholder": "Leave empty to use filename",
-    "description": "Supports EPUB, TXT and PDF formats. EPUB for complex layouts, TXT for plain text, PDF preserves original formatting.",
+    "description": "Supports EPUB and PDF formats. Use Text File import for Markdown, TXT and DOCX.",
     "import": "Import Book",
     "importing": "Importing...",
     "fileFilterName": "eBooks",
@@ -635,6 +661,24 @@
       "fileRequired": "Please select a file",
       "selectFailed": "Failed to select file",
       "unsupportedFormat": "Unsupported file format"
+    }
+  },
+  "textFileImport": {
+    "title": "Text File",
+    "hint": "Import local text content and turn it into article material for sentence reading, selection, and learning candidates.",
+    "fileLabel": "Text File",
+    "filePlaceholder": "Select Markdown, TXT or DOCX file...",
+    "selectFileTitle": "Select text file",
+    "description": "Supports .md, .markdown, .txt and .docx. Use Reading Materials for PDF/EPUB.",
+    "titleLabel": "Title",
+    "titlePlaceholder": "Leave empty to use the file name",
+    "import": "Import Text",
+    "importing": "Importing...",
+    "fileFilterName": "Text Files",
+    "errors": {
+      "fileRequired": "Please select a text file",
+      "selectFailed": "Failed to select file",
+      "unsupportedFormat": "Unsupported text file format"
     }
   },
   "epubReader": {

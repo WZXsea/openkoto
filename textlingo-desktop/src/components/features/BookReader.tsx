@@ -27,14 +27,17 @@ import { useConfig } from "../../lib/hooks";
 import { logger } from "../../lib/logger";
 import { buildMediaResourceUrl } from "../../lib/media";
 import { hasActiveModelConfig, isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
+import type { ReadingProgressChangeHandler, ReadingProgressUpdate } from "../../features/reader";
 
 interface BookReaderProps {
     article: Article;
     onBack?: () => void;
     onUpdate?: () => void;
+    initialProgress?: ReadingProgressUpdate;
+    onProgressChange?: ReadingProgressChangeHandler;
 }
 
-export function BookReader({ article, onBack }: BookReaderProps) {
+export function BookReader({ article, onBack, initialProgress, onProgressChange }: BookReaderProps) {
     const { t } = useTranslation();
     const assistantModeStorageKey = "book-reader-assistant-mode";
     const backToMaterialsLabel = t("bookReader.backToMaterials", "返回素材列表");
@@ -474,13 +477,18 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                             bookPath={bookUrl}
                             title={article.title}
                             onTextSelect={handleTextSelect}
+                            initialProgress={initialProgress}
+                            onProgressChange={onProgressChange}
                         />
                     )}
                     {isTxt && (
                         <TxtReader
                             content={article.content}
                             title={article.title}
+                            bookPath={article.book_path}
                             onTextSelect={handleTextSelect}
+                            initialProgress={initialProgress}
+                            onProgressChange={onProgressChange}
                         />
                     )}
                     {isPdf && (
@@ -492,6 +500,8 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                                             bookPath={bookUrl}
                                             title="原文"
                                             onTextSelect={handleTextSelect}
+                                            initialProgress={initialProgress}
+                                            onProgressChange={onProgressChange}
                                         />
                                     </div>
                                     <div className="flex-1 min-w-0">
@@ -499,6 +509,8 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                                             bookPath={monoPdfUrl}
                                             title="译文"
                                             onTextSelect={handleTextSelect}
+                                            initialProgress={initialProgress}
+                                            onProgressChange={onProgressChange}
                                         />
                                     </div>
                                 </div>
@@ -507,6 +519,8 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                                     bookPath={getCurrentPdfPath()}
                                     title={article.title}
                                     onTextSelect={handleTextSelect}
+                                    initialProgress={initialProgress}
+                                    onProgressChange={onProgressChange}
                                 />
                             )}
                         </>

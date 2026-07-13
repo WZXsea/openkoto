@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { BookOpen, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { AccountMenu } from "../components/features/AccountMenu";
 import { ApiQuickSwitcher } from "../components/features/ApiQuickSwitcher";
 import { BackendConnectionGate } from "../components/features/BackendConnectionGate";
 import { DropImportOverlay, type DropImportStatus } from "../components/features/DropImportOverlay";
@@ -14,12 +15,71 @@ import { UpdateChecker } from "../components/features/UpdateChecker";
 import { Button } from "../components/ui/button";
 import { getApiClient } from "../lib/api";
 import { importDroppedPath, isSupportedDropPath, getFileName } from "../lib/dropImport";
+import { applyFontSettings } from "../lib/fontSettings";
 import { useAgentOpenMaterialListener } from "../lib/hooks/useAgentOpenMaterialListener";
 import { isPhase1CapabilityEnabled } from "../lib/phase1Capabilities";
 import type { Article, AppConfig, BackendSessionCheck } from "../lib/tauri";
 import { useAppStore } from "./appStore";
 import { getAppNavigationItem } from "./navigation";
 import { AppRoutes } from "./routes";
+
+const STARTUP_INVOKE_TIMEOUT_MS = 8_000;
+const PACKAGED_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
+
+interface PackagedBackendStartupStatus {
+  enabled: boolean;
+  running: boolean;
+  message: string | null;
+}
+
+function invokeWithTimeout<T>(command: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error(`${command} timed out after ${STARTUP_INVOKE_TIMEOUT_MS}ms`));
+    }, STARTUP_INVOKE_TIMEOUT_MS);
+
+    void invoke<T>(command).then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function waitForPackagedBackend(): Promise<PackagedBackendStartupStatus | null> {
+  const deadline = Date.now() + PACKAGED_BACKEND_STARTUP_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    let status: PackagedBackendStartupStatus;
+    try {
+      status = await invokeWithTimeout<PackagedBackendStartupStatus>("packaged_backend_status_cmd");
+    } catch {
+      // Core/dev builds and component tests may not provide the packaged runtime.
+      return null;
+    }
+
+    if (!status || typeof status.enabled !== "boolean" || typeof status.running !== "boolean") {
+      return null;
+    }
+    if (!status.enabled || status.running || status.message) return status;
+    await sleep(200);
+  }
+
+  return {
+    enabled: true,
+    running: false,
+    message: "本地 Backend 启动超时，请重试或检查应用日志。",
+  };
+}
 
 export function AppShell() {
   const { t } = useTranslation();
@@ -28,6 +88,7 @@ export function AppShell() {
   const store = useAppStore();
   const {
     dismissOnboarding,
+    goHome,
     hasDismissedOnboarding,
     openArticle,
     openArticleById,
@@ -45,6 +106,7 @@ export function AppShell() {
   const [dropStatus, setDropStatus] = useState<DropImportStatus | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendSessionCheck | null>(null);
   const [isCheckingBackend, setIsCheckingBackend] = useState(true);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const dropStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isImportingRef = useRef(false);
   const isMountedRef = useRef(true);
@@ -74,14 +136,56 @@ export function AppShell() {
   const loadData = useCallback(async (): Promise<Article[]> => {
     if (isMountedRef.current) setIsLoading(true);
     try {
-      const configResult = await invoke<AppConfig | null>("get_config");
-      const sessionResult = await invoke<BackendSessionCheck>("backend_check_session_cmd");
+      const packagedBackendStatus = await waitForPackagedBackend();
+      const [configOutcome, sessionOutcome] = await Promise.allSettled([
+        invokeWithTimeout<AppConfig | null>("get_config"),
+        invokeWithTimeout<BackendSessionCheck>("backend_check_session_cmd"),
+      ]);
+      const configResult = configOutcome.status === "fulfilled" ? configOutcome.value : null;
+
+      if (configOutcome.status === "rejected") {
+        console.error("Failed to load config:", configOutcome.reason);
+      }
+
+      if (sessionOutcome.status === "rejected") {
+        const message = sessionOutcome.reason instanceof Error
+          ? sessionOutcome.reason.message
+          : String(sessionOutcome.reason);
+        if (isMountedRef.current) {
+          applyFontSettings(configResult);
+          setConfig(configResult);
+          setArticles([]);
+          setBackendStatus({
+            configured: Boolean(configResult?.backend_url),
+            connected: false,
+            authenticated: false,
+            backend_url: configResult?.backend_url ?? "http://127.0.0.1:19421",
+            user: null,
+            error: `Backend 启动检查失败：${message}`,
+          });
+        }
+        return [];
+      }
+
+      const sessionResult = sessionOutcome.value;
+      const packagedBackendError = packagedBackendStatus?.enabled && !packagedBackendStatus.running
+        ? packagedBackendStatus.message
+        : null;
+      const effectiveSessionResult = !sessionResult.configured && packagedBackendError
+        ? {
+            ...sessionResult,
+            configured: true,
+            backend_url: configResult?.backend_url ?? "http://127.0.0.1:19421",
+            error: packagedBackendError,
+          }
+        : sessionResult;
       if (isMountedRef.current) {
+        applyFontSettings(configResult);
         setConfig(configResult);
-        setBackendStatus(sessionResult);
+        setBackendStatus(effectiveSessionResult);
         const hasSavedModelConfigs = Boolean(configResult?.model_configs?.length);
         const shouldShowOnboarding =
-          sessionResult.authenticated &&
+          effectiveSessionResult.authenticated &&
           !hasDismissedOnboarding() &&
           (!configResult || (!configResult.onboarding_completed && !hasSavedModelConfigs));
 
@@ -91,12 +195,12 @@ export function AppShell() {
         setShowOnboarding(shouldShowOnboarding);
       }
 
-      if (!sessionResult.authenticated) {
+      if (!effectiveSessionResult.authenticated) {
         if (isMountedRef.current) setArticles([]);
         return [];
       }
 
-      const articlesResult = await invoke<Article[]>("list_articles_cmd");
+      const articlesResult = await invokeWithTimeout<Article[]>("list_articles_cmd");
       if (isMountedRef.current) {
         setArticles(articlesResult);
       }
@@ -114,12 +218,51 @@ export function AppShell() {
 
   const handleBackendAuthenticated = useCallback(async (config: AppConfig) => {
     if (isMountedRef.current) {
+      applyFontSettings(config);
       setConfig(config);
       getApiClient(config);
       setIsCheckingBackend(true);
     }
     await loadData();
   }, [loadData, setConfig]);
+
+  const handleBackendLogout = useCallback(async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      const configResult = await invoke<AppConfig>("backend_logout_cmd");
+      if (!isMountedRef.current) return;
+
+      applyFontSettings(configResult);
+      setConfig(configResult);
+      setArticles([]);
+      goHome();
+      setShowOnboarding(false);
+      setBackendStatus({
+        configured: Boolean(configResult.backend_url || backendStatus?.backend_url),
+        connected: Boolean(backendStatus?.connected),
+        authenticated: false,
+        backend_url: configResult.backend_url || backendStatus?.backend_url || null,
+        user: null,
+        error: null,
+      });
+      setIsCheckingBackend(false);
+    } catch (error) {
+      console.error("Failed to logout backend account:", error);
+      await loadData();
+    } finally {
+      if (isMountedRef.current) setIsLoggingOut(false);
+    }
+  }, [
+    backendStatus?.backend_url,
+    backendStatus?.connected,
+    goHome,
+    isLoggingOut,
+    loadData,
+    setArticles,
+    setConfig,
+    setShowOnboarding,
+  ]);
 
   const dropActionsRef = useRef({
     loadData,
@@ -208,12 +351,16 @@ export function AppShell() {
           const errors: string[] = [];
           for (const path of paths) {
             try {
-              const article = await importDroppedPath(path);
+              const result = await importDroppedPath(path);
               if (!isDropActive()) {
                 isImportingRef.current = false;
                 return;
               }
-              imported.push(article);
+              if (result.kind === "conflict") {
+                errors.push(dropActions.t("dropImport.duplicate", "发现重复素材，导入已暂停。请在导入任务中选择取消、打开已有、替换或保留副本。"));
+                continue;
+              }
+              imported.push(result.article);
             } catch (err) {
               if (!isDropActive()) {
                 isImportingRef.current = false;
@@ -411,9 +558,18 @@ export function AppShell() {
       </main>
 
       <footer className="px-6 py-3 border-t border-border bg-card/50 text-xs text-muted-foreground">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <p>OpenKoto v{__APP_VERSION__}</p>
-          <ApiQuickSwitcher config={store.config} onConfigChange={() => { void loadData(); }} />
+          <div className="flex min-w-0 items-center gap-3">
+            <AccountMenu
+              user={backendStatus.user}
+              backendUrl={backendStatus.backend_url}
+              isLoggingOut={isLoggingOut}
+              onLogout={handleBackendLogout}
+              onSwitchAccount={handleBackendLogout}
+            />
+            <ApiQuickSwitcher config={store.config} onConfigChange={() => { void loadData(); }} />
+          </div>
         </div>
       </footer>
     </div>

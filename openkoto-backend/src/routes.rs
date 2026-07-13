@@ -11,7 +11,7 @@ use sqlx::PgPool;
 
 use crate::{
     auth, config::AppConfig, error::AppError, files, learning, learning_items, legacy_imports,
-    materials,
+    material_library, materials,
 };
 
 #[derive(Clone)]
@@ -59,10 +59,64 @@ pub fn build_router(state: AppState) -> Router {
             get(materials::list_materials).post(materials::create_material),
         )
         .route(
+            "/materials/duplicate-check",
+            post(material_library::check_material_duplicates),
+        )
+        .route(
+            "/materials/bulk-archive",
+            post(materials::bulk_archive_materials),
+        )
+        .route(
+            "/materials/bulk-unarchive",
+            post(materials::bulk_unarchive_materials),
+        )
+        .route(
+            "/materials/bulk-delete",
+            post(materials::bulk_delete_materials),
+        )
+        .route(
+            "/materials/bulk-tags",
+            post(material_library::bulk_material_tags),
+        )
+        .route(
+            "/materials/{id}/tags",
+            get(material_library::get_material_tags).put(material_library::set_material_tags),
+        )
+        .route(
+            "/materials/{id}/reading-progress",
+            get(material_library::get_reading_progress)
+                .put(material_library::upsert_reading_progress),
+        )
+        .route(
             "/materials/{id}",
             get(materials::get_material)
                 .patch(materials::patch_material)
                 .delete(materials::delete_material),
+        )
+        .route(
+            "/material-tags",
+            get(material_library::list_material_tags).post(material_library::create_material_tag),
+        )
+        .route(
+            "/material-tags/{id}/merge",
+            post(material_library::merge_material_tag),
+        )
+        .route(
+            "/material-tags/{id}",
+            get(material_library::get_material_tag)
+                .patch(material_library::patch_material_tag)
+                .delete(material_library::delete_material_tag),
+        )
+        .route(
+            "/material-import-jobs",
+            get(material_library::list_material_import_jobs)
+                .post(material_library::create_material_import_job),
+        )
+        .route(
+            "/material-import-jobs/{id}",
+            get(material_library::get_material_import_job)
+                .patch(material_library::patch_material_import_job)
+                .delete(material_library::delete_material_import_job),
         )
         .route("/files", post(files::upload_file))
         .route("/files/{id}", get(files::download_file))

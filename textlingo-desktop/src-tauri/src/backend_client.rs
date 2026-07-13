@@ -1,12 +1,17 @@
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use reqwest::{multipart, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    AgentTask, AppConfig, Article, ArticleSegment, Artifact, Bookmark, FavoriteGrammar,
-    FavoriteVocabulary, WordPack,
+    AgentTask, AppConfig, Article, ArticleSegment, Artifact, Bookmark, BulkMaterialIdsRequest,
+    BulkMaterialTagsRequest, BulkOperationResponse, CreateMaterialImportJobRequest,
+    CreateMaterialTagRequest, DeleteResponse, DuplicateCheckRequest, DuplicateCheckResponse,
+    FavoriteGrammar, FavoriteVocabulary, ListMaterialImportJobsQuery, ListMaterialsQuery,
+    MaterialImportJob, MaterialTag, MergeMaterialTagRequest, PatchMaterialImportJobRequest,
+    PatchMaterialTagRequest, ReadingProgress, SetMaterialTagsRequest, UpsertReadingProgressRequest,
+    WordPack,
 };
 
 #[derive(Debug, Clone)]
@@ -177,15 +182,15 @@ pub struct PatchMaterialRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub content: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub book_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub book_type: Option<String>,
     #[serde(default)]
     pub translated: Option<bool>,
@@ -195,6 +200,38 @@ pub struct PatchMaterialRequest {
     pub metadata: Option<Value>,
     #[serde(default)]
     pub segments: Option<Vec<ArticleSegment>>,
+}
+
+const MATERIAL_SOURCE_PATCH_FIELDS: &[&str] = &[
+    "source_type",
+    "source_url",
+    "media_path",
+    "book_path",
+    "book_type",
+];
+
+fn material_patch_request_body(
+    payload: &PatchMaterialRequest,
+    file_sha256: Option<&str>,
+    clear_source_fields: bool,
+) -> Value {
+    let mut body = serde_json::to_value(payload)
+        .expect("PatchMaterialRequest must serialize to a JSON object");
+    let object = body
+        .as_object_mut()
+        .expect("PatchMaterialRequest must serialize to a JSON object");
+    if let Some(file_sha256) = file_sha256 {
+        object.insert(
+            "file_sha256".to_string(),
+            Value::String(file_sha256.to_string()),
+        );
+    }
+    if clear_source_fields {
+        for field in MATERIAL_SOURCE_PATCH_FIELDS {
+            object.entry((*field).to_string()).or_insert(Value::Null);
+        }
+    }
+    body
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,7 +461,12 @@ impl BackendClient {
     }
 
     pub async fn health(&self) -> Result<BackendHealthResponse, BackendClientError> {
-        let response = self.client.get(self.url("/health")).send().await?;
+        let response = self
+            .client
+            .get(self.url("/health"))
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await?;
         self.parse_response(response).await
     }
 
@@ -470,19 +512,322 @@ impl BackendClient {
             .client
             .get(self.url("/auth/me"))
             .bearer_auth(&self.auth_token)
+            .timeout(Duration::from_secs(5))
             .send()
             .await?;
         self.parse_response(response).await
     }
 
     pub async fn list_materials(&self) -> Result<Vec<Article>, BackendClientError> {
-        let response = self
+        self.list_materials_with_query(None).await
+    }
+
+    pub async fn list_materials_with_query(
+        &self,
+        query: Option<&ListMaterialsQuery>,
+    ) -> Result<Vec<Article>, BackendClientError> {
+        let request = self
             .client
             .get(self.url("/materials"))
+            .bearer_auth(&self.auth_token);
+        let request = if let Some(query) = query {
+            request.query(query)
+        } else {
+            request
+        };
+        let response = request.send().await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn list_material_tags(&self) -> Result<Vec<MaterialTag>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url("/material-tags"))
             .bearer_auth(&self.auth_token)
             .send()
             .await?;
         self.parse_response(response).await
+    }
+
+    pub async fn create_material_tag(
+        &self,
+        payload: &CreateMaterialTagRequest,
+    ) -> Result<MaterialTag, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/material-tags"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn patch_material_tag(
+        &self,
+        id: &str,
+        payload: &PatchMaterialTagRequest,
+    ) -> Result<MaterialTag, BackendClientError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/material-tags/{id}")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn delete_material_tag(
+        &self,
+        id: &str,
+    ) -> Result<DeleteResponse, BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/material-tags/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn merge_material_tag(
+        &self,
+        source_tag_id: &str,
+        payload: &MergeMaterialTagRequest,
+    ) -> Result<MaterialTag, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/material-tags/{source_tag_id}/merge")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_material_tags(
+        &self,
+        material_id: &str,
+    ) -> Result<Vec<MaterialTag>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/materials/{material_id}/tags")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn set_material_tags(
+        &self,
+        material_id: &str,
+        payload: &SetMaterialTagsRequest,
+    ) -> Result<Vec<MaterialTag>, BackendClientError> {
+        let response = self
+            .client
+            .put(self.url(&format!("/materials/{material_id}/tags")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn bulk_material_tags(
+        &self,
+        payload: &BulkMaterialTagsRequest,
+    ) -> Result<BulkOperationResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/materials/bulk-tags"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_reading_progress(
+        &self,
+        material_id: &str,
+    ) -> Result<Option<ReadingProgress>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/materials/{material_id}/reading-progress")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn upsert_reading_progress(
+        &self,
+        material_id: &str,
+        payload: &UpsertReadingProgressRequest,
+    ) -> Result<ReadingProgress, BackendClientError> {
+        let response = self
+            .client
+            .put(self.url(&format!("/materials/{material_id}/reading-progress")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn list_material_import_jobs(
+        &self,
+        query: Option<&ListMaterialImportJobsQuery>,
+    ) -> Result<Vec<MaterialImportJob>, BackendClientError> {
+        let request = self
+            .client
+            .get(self.url("/material-import-jobs"))
+            .bearer_auth(&self.auth_token);
+        let request = if let Some(query) = query {
+            request.query(query)
+        } else {
+            request
+        };
+        let response = request.send().await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn create_material_import_job(
+        &self,
+        payload: &CreateMaterialImportJobRequest,
+    ) -> Result<MaterialImportJob, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/material-import-jobs"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_material_import_job(
+        &self,
+        id: &str,
+    ) -> Result<MaterialImportJob, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/material-import-jobs/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn patch_material_import_job(
+        &self,
+        id: &str,
+        payload: &PatchMaterialImportJobRequest,
+    ) -> Result<MaterialImportJob, BackendClientError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/material-import-jobs/{id}")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn patch_material_import_job_metadata(
+        &self,
+        id: &str,
+        metadata: Value,
+    ) -> Result<MaterialImportJob, BackendClientError> {
+        self.patch_material_import_job(
+            id,
+            &PatchMaterialImportJobRequest {
+                metadata: Some(metadata),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn cancel_material_import_job(
+        &self,
+        id: &str,
+    ) -> Result<MaterialImportJob, BackendClientError> {
+        self.patch_material_import_job(
+            id,
+            &PatchMaterialImportJobRequest {
+                status: Some("cancelled".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_material_import_job(
+        &self,
+        id: &str,
+    ) -> Result<DeleteResponse, BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/material-import-jobs/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn check_material_duplicates(
+        &self,
+        payload: &DuplicateCheckRequest,
+    ) -> Result<DuplicateCheckResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/materials/duplicate-check"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    async fn bulk_material_operation(
+        &self,
+        route: &str,
+        payload: &BulkMaterialIdsRequest,
+    ) -> Result<BulkOperationResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(route))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn bulk_archive_materials(
+        &self,
+        payload: &BulkMaterialIdsRequest,
+    ) -> Result<BulkOperationResponse, BackendClientError> {
+        self.bulk_material_operation("/materials/bulk-archive", payload)
+            .await
+    }
+
+    pub async fn bulk_unarchive_materials(
+        &self,
+        payload: &BulkMaterialIdsRequest,
+    ) -> Result<BulkOperationResponse, BackendClientError> {
+        self.bulk_material_operation("/materials/bulk-unarchive", payload)
+            .await
+    }
+
+    pub async fn bulk_delete_materials(
+        &self,
+        payload: &BulkMaterialIdsRequest,
+    ) -> Result<BulkOperationResponse, BackendClientError> {
+        self.bulk_material_operation("/materials/bulk-delete", payload)
+            .await
     }
 
     pub async fn get_material(&self, id: &str) -> Result<Article, BackendClientError> {
@@ -499,11 +844,37 @@ impl BackendClient {
         &self,
         payload: &CreateMaterialRequest,
     ) -> Result<Article, BackendClientError> {
+        self.create_material_with_options(payload, None, None).await
+    }
+
+    pub async fn create_material_with_options(
+        &self,
+        payload: &CreateMaterialRequest,
+        file_sha256: Option<&str>,
+        duplicate_policy: Option<&str>,
+    ) -> Result<Article, BackendClientError> {
+        let mut body = serde_json::to_value(payload)
+            .expect("CreateMaterialRequest must serialize to a JSON object");
+        let object = body
+            .as_object_mut()
+            .expect("CreateMaterialRequest must serialize to a JSON object");
+        if let Some(file_sha256) = file_sha256 {
+            object.insert(
+                "file_sha256".to_string(),
+                Value::String(file_sha256.to_string()),
+            );
+        }
+        if let Some(duplicate_policy) = duplicate_policy {
+            object.insert(
+                "duplicate_policy".to_string(),
+                Value::String(duplicate_policy.to_string()),
+            );
+        }
         let response = self
             .client
             .post(self.url("/materials"))
             .bearer_auth(&self.auth_token)
-            .json(payload)
+            .json(&body)
             .send()
             .await?;
         self.parse_response(response).await
@@ -514,11 +885,42 @@ impl BackendClient {
         id: &str,
         payload: &PatchMaterialRequest,
     ) -> Result<Article, BackendClientError> {
+        self.patch_material_with_file_hash(id, payload, None).await
+    }
+
+    pub async fn patch_material_with_file_hash(
+        &self,
+        id: &str,
+        payload: &PatchMaterialRequest,
+        file_sha256: Option<&str>,
+    ) -> Result<Article, BackendClientError> {
+        self.patch_material_with_options(id, payload, file_sha256, false)
+            .await
+    }
+
+    pub async fn patch_material_replacing_source_fields_with_file_hash(
+        &self,
+        id: &str,
+        payload: &PatchMaterialRequest,
+        file_sha256: Option<&str>,
+    ) -> Result<Article, BackendClientError> {
+        self.patch_material_with_options(id, payload, file_sha256, true)
+            .await
+    }
+
+    async fn patch_material_with_options(
+        &self,
+        id: &str,
+        payload: &PatchMaterialRequest,
+        file_sha256: Option<&str>,
+        clear_source_fields: bool,
+    ) -> Result<Article, BackendClientError> {
+        let body = material_patch_request_body(payload, file_sha256, clear_source_fields);
         let response = self
             .client
             .patch(self.url(&format!("/materials/{id}")))
             .bearer_auth(&self.auth_token)
-            .json(payload)
+            .json(&body)
             .send()
             .await?;
         self.parse_response(response).await
@@ -1019,6 +1421,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn material_patch_body_omits_partial_fields_and_only_clears_missing_replace_sources() {
+        let payload = PatchMaterialRequest {
+            source_type: Some("web".to_string()),
+            source_url: Some("https://example.com/material".to_string()),
+            ..Default::default()
+        };
+
+        let partial = material_patch_request_body(&payload, None, false);
+        assert_eq!(partial["source_type"], "web");
+        assert_eq!(partial["source_url"], "https://example.com/material");
+        for field in ["media_path", "book_path", "book_type"] {
+            assert!(partial.get(field).is_none(), "{field} must be omitted");
+        }
+
+        let replacement = material_patch_request_body(&payload, None, true);
+        assert_eq!(replacement["source_type"], "web");
+        assert_eq!(replacement["source_url"], "https://example.com/material");
+        for field in ["media_path", "book_path", "book_type"] {
+            assert_eq!(replacement.get(field), Some(&Value::Null));
+        }
+    }
+
+    #[test]
     fn config_requires_url_and_token() {
         let config = AppConfig {
             backend_url: Some("http://127.0.0.1:4000/".to_string()),
@@ -1091,5 +1516,49 @@ mod tests {
             serde_json::from_str(r#"{"deleted":true}"#).unwrap();
 
         assert!(response.deleted);
+    }
+
+    #[test]
+    fn article_keeps_material_library_fields_from_backend() {
+        let article: Article = serde_json::from_value(serde_json::json!({
+            "id": "material-1",
+            "title": "Reading",
+            "content": "Body",
+            "source_type": "article",
+            "source_url": null,
+            "media_path": null,
+            "book_path": null,
+            "book_type": null,
+            "created_at": "2026-07-11T00:00:00Z",
+            "translated": false,
+            "segments": [],
+            "metadata": { "source": "test" },
+            "tags": [{
+                "id": "tag-1",
+                "name": "Research",
+                "color": "#2255aa",
+                "created_at": "2026-07-11T00:00:00Z",
+                "updated_at": "2026-07-11T00:00:00Z"
+            }],
+            "reading_progress": {
+                "material_id": "material-1",
+                "reader_kind": "article",
+                "locator": { "kind": "segment", "segment_order": 2, "total_segments": 5 },
+                "progress_ratio": 0.4,
+                "status": "reading",
+                "last_opened_at": "2026-07-11T00:00:00Z",
+                "completed_at": null,
+                "updated_at": "2026-07-11T00:00:00Z"
+            },
+            "archived_at": null
+        }))
+        .unwrap();
+
+        assert_eq!(article.tags[0].name, "Research");
+        assert_eq!(
+            article.reading_progress.unwrap().locator["segment_order"],
+            2
+        );
+        assert_eq!(article.metadata["source"], "test");
     }
 }

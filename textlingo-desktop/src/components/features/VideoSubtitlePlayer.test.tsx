@@ -131,4 +131,37 @@ describe("VideoSubtitlePlayer", () => {
 
     expect(screen.getByText("Beta")).toBeInTheDocument();
   });
+
+  it("restores synced media progress ahead of legacy storage and reports a completed playback", () => {
+    localStorageStore.set("textlingo_video_position_article-1", "2");
+    const onProgressChange = vi.fn();
+    render(
+      <VideoSubtitlePlayer
+        videoUrl="http://localhost/video.mp4"
+        segments={[createSegment()]}
+        selectedSegmentId={null}
+        onSegmentClick={vi.fn()}
+        fontSize={18}
+        viewMode="original"
+        articleId="article-1"
+        initialProgress={{ reader_kind: "media", locator: { kind: "time", current_time: 12.5, duration: 100 }, progress_ratio: 0.125, status: "reading" }}
+        onProgressChange={onProgressChange}
+      />,
+    );
+
+    const video = document.querySelector("video") as HTMLVideoElement;
+    Object.defineProperty(video, "duration", { configurable: true, value: 100 });
+    Object.defineProperty(video, "currentTime", { configurable: true, writable: true, value: 0 });
+    fireEvent.loadedMetadata(video);
+    expect(video.currentTime).toBe(12.5);
+
+    video.currentTime = 100;
+    fireEvent.ended(video);
+    expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      reader_kind: "media",
+      locator: { kind: "time", current_time: 100, duration: 100 },
+      progress_ratio: 1,
+      status: "completed",
+    }));
+  });
 });

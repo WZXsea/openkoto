@@ -69,9 +69,7 @@ fn backend_client_for_app(app_handle: &AppHandle) -> Result<BackendClient, Strin
         .get("auth_token")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            "Backend sign-in is required before importing legacy data.".to_string()
-        })?;
+        .ok_or_else(|| "Backend sign-in is required before importing legacy data.".to_string())?;
     Ok(BackendClient::new(BackendClientConfig {
         base_url: base_url.to_string(),
         auth_token: auth_token.to_string(),
@@ -456,10 +454,7 @@ mod tests {
 
         assert_eq!(redacted["auth_token"], "[redacted]");
         assert_eq!(redacted["model_configs"][0]["api_key"], "[redacted]");
-        assert_eq!(
-            redacted["model_configs"][0]["access_token"],
-            "[redacted]"
-        );
+        assert_eq!(redacted["model_configs"][0]["access_token"], "[redacted]");
         assert_eq!(redacted["authorization"], "[redacted]");
         assert_eq!(redacted["target_language"], "zh-CN");
     }
@@ -486,6 +481,10 @@ mod tests {
             translated: false,
             active_mind_map_artifact_id: None,
             segments: Vec::new(),
+            metadata: serde_json::json!({}),
+            tags: Vec::new(),
+            reading_progress: None,
+            archived_at: None,
         };
 
         let payload = material_payload_from_article(article);

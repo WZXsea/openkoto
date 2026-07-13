@@ -7,6 +7,7 @@ import { Textarea } from "../ui/textarea";
 import { Loader2, Globe, Check, Eye } from "lucide-react";
 import { getApiClient } from "../../lib/api";
 import { Article } from "../../types";
+import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
 
 interface WebImportFormProps {
   onSave?: (article: Article) => void;
@@ -24,10 +25,21 @@ export function WebImportForm({ onSave, onCancel }: WebImportFormProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [isFetching, setIsFetching] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewLoaded, setPreviewLoaded] = useState(false);
   const [fetchSource, setFetchSource] = useState<"local" | "backend" | null>(null);
+  const importPreview = useMaterialImportPreview<Article>({
+    commit: (importJobId, duplicatePolicy) => invoke<Article>("import_web_material_cmd", {
+      url: url.trim(),
+      title: title.trim() || undefined,
+      content,
+      importJobId,
+      duplicatePolicy,
+    }),
+    onSuccess: onSave,
+    onError: (err) => setError(String(err)),
+  });
+  const isImporting = importPreview.isBusy;
 
   const isValidUrl = (value: string) =>
     value.startsWith("http://") || value.startsWith("https://");
@@ -94,24 +106,25 @@ export function WebImportForm({ onSave, onCancel }: WebImportFormProps) {
       return;
     }
 
-    setIsImporting(true);
     setError(null);
-    try {
-      const article = await invoke<Article>("import_web_material_cmd", {
-        url: normalizedUrl,
-        title: title.trim() || undefined,
-        content,
-      });
-      onSave?.(article);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setIsImporting(false);
-    }
+    await importPreview.startPreview({
+      sourceKind: "url",
+      sourceUri: normalizedUrl,
+      content,
+      title: title.trim() || undefined,
+    });
   };
 
   return (
     <div className="flex flex-col h-full">
+      <MaterialImportPreviewDialogs
+        preview={importPreview.preview}
+        duplicate={importPreview.duplicate}
+        isBusy={importPreview.isBusy}
+        onConfirm={() => void importPreview.confirmPreview()}
+        onCancel={() => void importPreview.cancelPreview()}
+        onResolve={(action) => void importPreview.resolveDuplicate(action)}
+      />
       <div className="flex-1 space-y-4 overflow-y-auto pr-1">
         {error && (
           <div className="p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm break-words">

@@ -29,19 +29,33 @@ use crate::storage::{
 };
 use crate::subtitle_import::{create_article_from_srt, import_subtitles_into_article};
 use crate::types::{
+    is_supported_material_import_source_kind, material_import_commit_recovery_strategy,
+    material_import_commit_state_from_metadata, material_import_effective_duplicate_policy,
+    material_import_metadata_with_commit_state, material_import_recorded_duplicate_policy,
     AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, AnalysisRequest, AnalysisResponse,
     AnalysisType, Article, ArticleEvidenceItem, ArticleEvidenceResult, ArticleOverview,
     ArticleSearchHit, ArticleSearchResult, ArticleSegment, ArticleTextWindow, Artifact,
-    ArtifactType, AssistantConversationMessage, Bookmark, ChatRequest, ChatResponse,
-    FavoriteGrammar, FavoriteVocabulary, ModelConfig, TimeRange, TranslationRequest,
-    TranslationResponse, WordPack,
+    ArtifactType, AssistantConversationMessage, Bookmark, BulkMaterialIdsRequest,
+    BulkMaterialTagsRequest, BulkOperationResponse, ChatRequest, ChatResponse,
+    CreateMaterialImportJobRequest, CreateMaterialTagRequest, DeleteResponse,
+    DuplicateCheckRequest, DuplicateCheckResponse, FavoriteGrammar, FavoriteVocabulary,
+    ImportJobOptions, ListMaterialImportJobsQuery, ListMaterialsQuery, MaterialImportCommitState,
+    MaterialImportJob, MaterialImportRecoveryStrategy, MaterialTag, MergeMaterialTagRequest,
+    ModelConfig, PatchMaterialImportJobRequest, PatchMaterialTagRequest, PreviewMaterialFileInfo,
+    PreviewMaterialImportRequest, PreviewMaterialImportResponse, ReadingProgress,
+    SetMaterialTagsRequest, TimeRange, TranslationRequest, TranslationResponse,
+    UpsertReadingProgressRequest, WordPack,
 };
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
+use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 pub type AppState<'a> = State<'a, AIServiceCache>;
@@ -78,6 +92,1754 @@ fn backend_error_to_string(error: BackendClientError) -> String {
         }
         other => other.to_string(),
     }
+}
+
+fn is_invalid_backend_token(error: &BackendClientError) -> bool {
+    matches!(
+        error,
+        BackendClientError::Backend {
+            status,
+            code,
+            ..
+        } if *status == StatusCode::UNAUTHORIZED && code == "invalid_token"
+    )
+}
+
+#[cfg(test)]
+mod backend_session_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_backend_token_detection_is_specific() {
+        let invalid_token = BackendClientError::Backend {
+            status: StatusCode::UNAUTHORIZED,
+            code: "invalid_token".to_string(),
+            message: "invalid bearer token".to_string(),
+        };
+        let wrong_password = BackendClientError::Backend {
+            status: StatusCode::UNAUTHORIZED,
+            code: "invalid_credentials".to_string(),
+            message: "invalid credentials".to_string(),
+        };
+
+        assert!(is_invalid_backend_token(&invalid_token));
+        assert!(!is_invalid_backend_token(&wrong_password));
+    }
+
+    #[test]
+    fn network_import_hash_uses_backend_url_normalization() {
+        let first =
+            normalized_network_source_sha256("https://EXAMPLE.com:443/path?z=2&a=1#ignored")
+                .unwrap();
+        let second = normalized_network_source_sha256("https://example.com/path?a=1&z=2").unwrap();
+
+        assert_eq!(first, second);
+        assert!(normalized_network_source_sha256("file:///tmp/private.txt").is_err());
+        assert!(normalized_network_source_sha256("https://user@example.com/path").is_err());
+    }
+
+    #[test]
+    fn content_hash_normalizes_whitespace_and_unicode() {
+        assert_eq!(content_sha256("a   b\t c"), content_sha256("a b c"));
+        assert_eq!(content_sha256("cafe\u{301}"), content_sha256("caf\u{e9}"));
+    }
+
+    #[test]
+    fn import_job_metadata_keeps_resume_parameters() {
+        let source = MaterialImportSource {
+            source_kind: "video".to_string(),
+            source_uri: Some("file:///tmp/video.mp4".to_string()),
+            content: None,
+            file_path: Some(PathBuf::from("/tmp/video.mp4")),
+            file_id: None,
+            title: Some("Video".to_string()),
+            metadata: serde_json::json!({
+                "source": "desktop_import",
+                "subtitle_path": "/tmp/video.srt",
+            }),
+        };
+
+        let metadata = import_job_metadata(&source);
+        assert_eq!(metadata["resume_payload"]["source_kind"], "video");
+        assert_eq!(metadata["resume_payload"]["file_path"], "/tmp/video.mp4");
+        assert_eq!(
+            metadata["resume_payload"]["subtitle_path"],
+            "/tmp/video.srt"
+        );
+    }
+
+    #[test]
+    fn subtitle_attachment_hash_detects_repeated_file() {
+        let metadata = serde_json::json!({ "subtitle_file": { "sha256": "abc" } });
+        assert!(metadata_has_subtitle_hash(&metadata, "abc"));
+        assert!(!metadata_has_subtitle_hash(&metadata, "def"));
+    }
+
+    #[test]
+    fn import_commit_rejects_source_different_from_preview() {
+        let source = MaterialImportSource {
+            source_kind: "article".to_string(),
+            source_uri: Some("https://example.com/source".to_string()),
+            content: Some("previewed content".to_string()),
+            file_path: None,
+            file_id: None,
+            title: Some("Previewed title".to_string()),
+            metadata: serde_json::json!({ "source": "desktop_create_article" }),
+        };
+        let input_hash = content_sha256(source.content.as_deref().unwrap()).unwrap();
+        let job = MaterialImportJob {
+            id: Uuid::new_v4().to_string(),
+            source_kind: source.source_kind.clone(),
+            source_uri: source.source_uri.clone(),
+            normalized_source_url: source.source_uri.clone(),
+            file_id: None,
+            input_hash: Some(input_hash.clone()),
+            file_sha256: None,
+            content_sha256: Some(input_hash.clone()),
+            status: "preview_ready".to_string(),
+            progress: 0.75,
+            error_code: None,
+            error_message: None,
+            result_material_id: None,
+            preview: serde_json::json!({}),
+            metadata: import_job_metadata(&source),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            started_at: None,
+            finished_at: None,
+        };
+
+        assert!(validate_import_job_source(&job, &source, &input_hash).is_ok());
+        let mut changed = source.clone();
+        changed.title = Some("Changed after preview".to_string());
+        assert!(validate_import_job_source(&job, &changed, &input_hash).is_err());
+        assert!(validate_import_job_source(&job, &source, &"f".repeat(64)).is_err());
+    }
+}
+
+const MATERIAL_LIBRARY_MAX_BULK_IDS: usize = 100;
+
+fn validate_uuid(value: &str, field: &str) -> Result<(), String> {
+    Uuid::parse_str(value)
+        .map(|_| ())
+        .map_err(|_| format!("{field} must be a UUID"))
+}
+
+fn validate_bulk_ids(ids: &[String], field: &str, allow_empty: bool) -> Result<(), String> {
+    if (!allow_empty && ids.is_empty()) || ids.len() > MATERIAL_LIBRARY_MAX_BULK_IDS {
+        return Err(format!(
+            "{field} must contain between {} and {MATERIAL_LIBRARY_MAX_BULK_IDS} values",
+            if allow_empty { 0 } else { 1 }
+        ));
+    }
+    let mut seen = HashSet::new();
+    for id in ids {
+        validate_uuid(id, field)?;
+        if !seen.insert(id) {
+            return Err(format!("{field} must not contain duplicate values"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_import_job_query(query: &ListMaterialImportJobsQuery) -> Result<(), String> {
+    if let Some(status) = query.status.as_deref() {
+        if !matches!(
+            status,
+            "queued"
+                | "validating"
+                | "parsing"
+                | "preview_ready"
+                | "committing"
+                | "succeeded"
+                | "failed_retryable"
+                | "failed_terminal"
+                | "cancelled"
+        ) {
+            return Err("unsupported material import status".to_string());
+        }
+    }
+    if let Some(limit) = query.limit.as_deref() {
+        let value = limit
+            .parse::<u64>()
+            .map_err(|_| "limit must be an integer".to_string())?;
+        if !(1..=200).contains(&value) {
+            return Err("limit must be between 1 and 200".to_string());
+        }
+    }
+    if let Some(offset) = query.offset.as_deref() {
+        offset
+            .parse::<u64>()
+            .map_err(|_| "offset must be a non-negative integer".to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn material_library_list_cmd(
+    app_handle: AppHandle,
+    query: Option<ListMaterialsQuery>,
+) -> Result<Vec<Article>, String> {
+    backend_client_for_app(&app_handle)?
+        .list_materials_with_query(query.as_ref())
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_list_tags_cmd(
+    app_handle: AppHandle,
+) -> Result<Vec<MaterialTag>, String> {
+    backend_client_for_app(&app_handle)?
+        .list_material_tags()
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_create_tag_cmd(
+    app_handle: AppHandle,
+    request: CreateMaterialTagRequest,
+) -> Result<MaterialTag, String> {
+    if request.name.trim().is_empty() {
+        return Err("tag name is required".to_string());
+    }
+    backend_client_for_app(&app_handle)?
+        .create_material_tag(&request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_patch_tag_cmd(
+    app_handle: AppHandle,
+    id: String,
+    request: PatchMaterialTagRequest,
+) -> Result<MaterialTag, String> {
+    validate_uuid(&id, "id")?;
+    if request.name.is_none() && request.color.is_none() {
+        return Err("at least one tag field is required".to_string());
+    }
+    if request
+        .name
+        .as_deref()
+        .is_some_and(|name| name.trim().is_empty())
+    {
+        return Err("tag name is required".to_string());
+    }
+    backend_client_for_app(&app_handle)?
+        .patch_material_tag(&id, &request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_delete_tag_cmd(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<DeleteResponse, String> {
+    validate_uuid(&id, "id")?;
+    backend_client_for_app(&app_handle)?
+        .delete_material_tag(&id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_merge_tag_cmd(
+    app_handle: AppHandle,
+    source_tag_id: String,
+    request: MergeMaterialTagRequest,
+) -> Result<MaterialTag, String> {
+    validate_uuid(&source_tag_id, "source_tag_id")?;
+    validate_uuid(&request.target_tag_id, "target_tag_id")?;
+    if source_tag_id == request.target_tag_id {
+        return Err("source and target tags must differ".to_string());
+    }
+    backend_client_for_app(&app_handle)?
+        .merge_material_tag(&source_tag_id, &request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_get_tags_cmd(
+    app_handle: AppHandle,
+    material_id: String,
+) -> Result<Vec<MaterialTag>, String> {
+    validate_uuid(&material_id, "material_id")?;
+    backend_client_for_app(&app_handle)?
+        .get_material_tags(&material_id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_set_tags_cmd(
+    app_handle: AppHandle,
+    material_id: String,
+    request: SetMaterialTagsRequest,
+) -> Result<Vec<MaterialTag>, String> {
+    validate_uuid(&material_id, "material_id")?;
+    validate_bulk_ids(&request.tag_ids, "tag_ids", true)?;
+    backend_client_for_app(&app_handle)?
+        .set_material_tags(&material_id, &request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_bulk_tags_cmd(
+    app_handle: AppHandle,
+    request: BulkMaterialTagsRequest,
+) -> Result<BulkOperationResponse, String> {
+    if !matches!(request.mode.as_str(), "add" | "remove" | "replace") {
+        return Err("mode must be add, remove, or replace".to_string());
+    }
+    validate_bulk_ids(&request.ids, "ids", false)?;
+    validate_bulk_ids(&request.tag_ids, "tag_ids", request.mode == "replace")?;
+    backend_client_for_app(&app_handle)?
+        .bulk_material_tags(&request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_get_reading_progress_cmd(
+    app_handle: AppHandle,
+    material_id: String,
+) -> Result<Option<ReadingProgress>, String> {
+    validate_uuid(&material_id, "material_id")?;
+    backend_client_for_app(&app_handle)?
+        .get_reading_progress(&material_id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_upsert_reading_progress_cmd(
+    app_handle: AppHandle,
+    material_id: String,
+    request: UpsertReadingProgressRequest,
+) -> Result<ReadingProgress, String> {
+    validate_uuid(&material_id, "material_id")?;
+    if !request.progress_ratio.is_finite() || !(0.0..=1.0).contains(&request.progress_ratio) {
+        return Err("progress_ratio must be between 0 and 1".to_string());
+    }
+    if !matches!(
+        request.reader_kind.as_str(),
+        "article" | "pdf" | "epub" | "txt" | "media"
+    ) {
+        return Err("unsupported reader_kind".to_string());
+    }
+    if !request.locator.is_object() {
+        return Err("locator must be a JSON object".to_string());
+    }
+    backend_client_for_app(&app_handle)?
+        .upsert_reading_progress(&material_id, &request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_create_import_job_cmd(
+    app_handle: AppHandle,
+    request: CreateMaterialImportJobRequest,
+) -> Result<MaterialImportJob, String> {
+    backend_client_for_app(&app_handle)?
+        .create_material_import_job(&request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_list_import_jobs_cmd(
+    app_handle: AppHandle,
+    query: Option<ListMaterialImportJobsQuery>,
+) -> Result<Vec<MaterialImportJob>, String> {
+    if let Some(query) = query.as_ref() {
+        validate_import_job_query(query)?;
+    }
+    backend_client_for_app(&app_handle)?
+        .list_material_import_jobs(query.as_ref())
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_get_import_job_cmd(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<MaterialImportJob, String> {
+    validate_uuid(&id, "id")?;
+    backend_client_for_app(&app_handle)?
+        .get_material_import_job(&id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_patch_import_job_cmd(
+    app_handle: AppHandle,
+    id: String,
+    request: PatchMaterialImportJobRequest,
+) -> Result<MaterialImportJob, String> {
+    validate_uuid(&id, "id")?;
+    if request
+        .progress
+        .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+    {
+        return Err("progress must be between 0 and 1".to_string());
+    }
+    backend_client_for_app(&app_handle)?
+        .patch_material_import_job(&id, &request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_cancel_import_job_cmd(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<MaterialImportJob, String> {
+    validate_uuid(&id, "id")?;
+    backend_client_for_app(&app_handle)?
+        .cancel_material_import_job(&id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+fn resume_string(payload: &serde_json::Value, field: &str) -> Option<String> {
+    payload
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn metadata_has_subtitle_hash(metadata: &serde_json::Value, file_hash: &str) -> bool {
+    metadata
+        .pointer("/subtitle_file/sha256")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|existing_hash| existing_hash == file_hash)
+}
+
+#[tauri::command]
+pub async fn material_library_resume_import_job_cmd(
+    app_handle: AppHandle,
+    id: String,
+    duplicate_policy: Option<String>,
+) -> Result<Article, String> {
+    validate_uuid(&id, "id")?;
+    let client = backend_client_for_app(&app_handle)?;
+    let mut job = client
+        .get_material_import_job(&id)
+        .await
+        .map_err(backend_error_to_string)?;
+    if job.status == "succeeded" {
+        let material_id = job
+            .result_material_id
+            .as_deref()
+            .ok_or_else(|| "completed import job is missing result_material_id".to_string())?;
+        return client
+            .get_material(material_id)
+            .await
+            .map_err(backend_error_to_string);
+    }
+    let duplicate_policy = material_import_effective_duplicate_policy(
+        duplicate_policy.as_deref(),
+        material_import_recorded_duplicate_policy(&job.metadata).as_deref(),
+    )?;
+    parse_duplicate_policy(duplicate_policy.as_deref())?;
+    if let Some(article) = recover_completed_import_side_effect(&client, job.clone()).await? {
+        return Ok(article);
+    }
+    if job.status == "committing" {
+        let updated_at = chrono::DateTime::parse_from_rfc3339(&job.updated_at)
+            .map_err(|_| "material import job has an invalid updated_at timestamp".to_string())?;
+        if chrono::Utc::now().signed_duration_since(updated_at.with_timezone(&chrono::Utc))
+            < chrono::Duration::minutes(5)
+        {
+            return Err("material import is still committing; retry after the current operation has had time to finish".to_string());
+        }
+        job = client
+            .patch_material_import_job(
+                &id,
+                &PatchMaterialImportJobRequest {
+                    status: Some("failed_retryable".to_string()),
+                    error_code: Some(Some("interrupted_commit".to_string())),
+                    error_message: Some(Some(
+                        "the previous commit did not report completion and can be resumed"
+                            .to_string(),
+                    )),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(backend_error_to_string)?;
+    }
+    if !matches!(job.status.as_str(), "failed_retryable" | "preview_ready") {
+        return Err(
+            "only failed_retryable, preview_ready, or stale committing material imports can be resumed".to_string(),
+        );
+    }
+    let payload = job
+        .metadata
+        .get("resume_payload")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "material import job does not contain resume parameters".to_string())?;
+    let source_kind =
+        resume_string(payload, "source_kind").unwrap_or_else(|| job.source_kind.clone());
+    if !is_supported_material_import_source_kind(&source_kind) {
+        return Err(format!(
+            "unsupported material import retry source_kind: {source_kind}"
+        ));
+    }
+    let file_path = || {
+        resume_string(payload, "file_path")
+            .ok_or_else(|| "material import retry requires the original file path".to_string())
+    };
+
+    match source_kind.as_str() {
+        "article" => {
+            create_article(
+                app_handle,
+                resume_string(payload, "title").unwrap_or_else(|| "Untitled Material".to_string()),
+                resume_string(payload, "content")
+                    .ok_or_else(|| "article retry requires original content".to_string())?,
+                resume_string(payload, "source_uri"),
+                Some(id),
+                duplicate_policy,
+            )
+            .await
+        }
+        "url" => {
+            import_web_material_cmd(
+                app_handle,
+                resume_string(payload, "source_uri")
+                    .ok_or_else(|| "URL retry requires source_uri".to_string())?,
+                resume_string(payload, "title"),
+                resume_string(payload, "content")
+                    .ok_or_else(|| "URL retry requires extracted content".to_string())?,
+                Some(id),
+                duplicate_policy,
+            )
+            .await
+        }
+        "text_file" => {
+            import_text_file_cmd(
+                app_handle,
+                file_path()?,
+                resume_string(payload, "title"),
+                Some(id),
+                duplicate_policy,
+            )
+            .await
+        }
+        "book" => {
+            import_book_cmd(
+                app_handle,
+                file_path()?,
+                resume_string(payload, "title"),
+                Some(id),
+                duplicate_policy,
+            )
+            .await
+        }
+        "audio" | "video" => {
+            import_local_video_cmd(
+                app_handle,
+                file_path()?,
+                resume_string(payload, "subtitle_path"),
+                Some(id),
+                duplicate_policy,
+            )
+            .await
+        }
+        "youtube" => {
+            import_youtube_video_cmd(
+                app_handle,
+                resume_string(payload, "source_uri")
+                    .ok_or_else(|| "YouTube retry requires source_uri".to_string())?,
+                Some(id),
+                duplicate_policy,
+            )
+            .await
+        }
+        "subtitle" if resume_string(payload, "mode").as_deref() == Some("attach") => {
+            import_article_subtitles_cmd(
+                app_handle,
+                resume_string(payload, "target_material_id")
+                    .ok_or_else(|| "subtitle retry requires target_material_id".to_string())?,
+                file_path()?,
+                Some(id),
+                duplicate_policy,
+            )
+            .await
+        }
+        "subtitle" => {
+            import_srt_file_cmd(
+                app_handle,
+                file_path()?,
+                resume_string(payload, "title"),
+                Some(id),
+                duplicate_policy,
+            )
+            .await
+        }
+        _ => Err(format!(
+            "unsupported material import retry source_kind: {source_kind}"
+        )),
+    }
+}
+
+#[tauri::command]
+pub async fn material_library_duplicate_check_cmd(
+    app_handle: AppHandle,
+    request: DuplicateCheckRequest,
+) -> Result<DuplicateCheckResponse, String> {
+    if request.source_url.as_deref().is_none_or(str::is_empty)
+        && request.content.as_deref().is_none_or(str::is_empty)
+        && request.content_sha256.as_deref().is_none_or(str::is_empty)
+        && request.file_sha256.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("at least one duplicate check input is required".to_string());
+    }
+    backend_client_for_app(&app_handle)?
+        .check_material_duplicates(&request)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+async fn material_library_bulk_operation(
+    app_handle: &AppHandle,
+    request: BulkMaterialIdsRequest,
+    operation: &str,
+) -> Result<BulkOperationResponse, String> {
+    validate_bulk_ids(&request.ids, "ids", false)?;
+    let client = backend_client_for_app(app_handle)?;
+    let result = match operation {
+        "archive" => client.bulk_archive_materials(&request).await,
+        "unarchive" => client.bulk_unarchive_materials(&request).await,
+        "delete" => client.bulk_delete_materials(&request).await,
+        _ => unreachable!("unsupported material bulk operation"),
+    };
+    result.map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn material_library_bulk_archive_cmd(
+    app_handle: AppHandle,
+    request: BulkMaterialIdsRequest,
+) -> Result<BulkOperationResponse, String> {
+    material_library_bulk_operation(&app_handle, request, "archive").await
+}
+
+#[tauri::command]
+pub async fn material_library_bulk_unarchive_cmd(
+    app_handle: AppHandle,
+    request: BulkMaterialIdsRequest,
+) -> Result<BulkOperationResponse, String> {
+    material_library_bulk_operation(&app_handle, request, "unarchive").await
+}
+
+#[tauri::command]
+pub async fn material_library_bulk_delete_cmd(
+    app_handle: AppHandle,
+    request: BulkMaterialIdsRequest,
+) -> Result<BulkOperationResponse, String> {
+    material_library_bulk_operation(&app_handle, request, "delete").await
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn normalized_network_source_sha256(value: &str) -> Result<String, String> {
+    let mut url = url::Url::parse(value)
+        .map_err(|_| "network import source must be an absolute URL".to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(
+            "network import source must use http or https and must not contain credentials"
+                .to_string(),
+        );
+    }
+    url.set_fragment(None);
+    if (url.scheme() == "http" && url.port() == Some(80))
+        || (url.scheme() == "https" && url.port() == Some(443))
+    {
+        let _ = url.set_port(None);
+    }
+    let mut pairs = url.query_pairs().into_owned().collect::<Vec<_>>();
+    pairs.sort();
+    url.set_query(None);
+    if !pairs.is_empty() {
+        url.query_pairs_mut().extend_pairs(pairs);
+    }
+    Ok(sha256_bytes(url.as_str().as_bytes()))
+}
+
+fn content_sha256(content: &str) -> Option<String> {
+    let normalized = content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .nfc()
+        .collect::<String>();
+    (!normalized.is_empty()).then(|| sha256_bytes(normalized.as_bytes()))
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("Failed to open file for SHA-256: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Failed to read file for SHA-256: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn validate_sha256_hex(value: &str, field: &str) -> Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{field} must be a 64-character hexadecimal SHA-256"
+        ));
+    }
+    Ok(value)
+}
+
+fn count_preview_paragraphs(content: Option<&str>) -> usize {
+    let Some(content) = content else {
+        return 0;
+    };
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    normalized
+        .split("\n\n")
+        .filter(|paragraph| !paragraph.trim().is_empty())
+        .count()
+}
+
+fn preview_title(request: &PreviewMaterialImportRequest, path: Option<&Path>) -> String {
+    request
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            path.and_then(Path::file_stem)
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        })
+        .or_else(|| request.source_uri.clone())
+        .unwrap_or_else(|| "Untitled Material".to_string())
+}
+
+fn retryable_backend_error(error: &BackendClientError) -> bool {
+    match error {
+        BackendClientError::Request(_) | BackendClientError::Io(_) => true,
+        BackendClientError::Backend { status, .. } => {
+            status.is_server_error()
+                || *status == StatusCode::REQUEST_TIMEOUT
+                || *status == StatusCode::TOO_MANY_REQUESTS
+        }
+        BackendClientError::NotConfigured | BackendClientError::InvalidFileName => false,
+    }
+}
+
+async fn mark_import_job_failed(
+    client: &BackendClient,
+    job_id: &str,
+    error_code: &str,
+    error_message: &str,
+    retryable: bool,
+) {
+    let _ = client
+        .patch_material_import_job(
+            job_id,
+            &PatchMaterialImportJobRequest {
+                status: Some(if retryable {
+                    "failed_retryable".to_string()
+                } else {
+                    "failed_terminal".to_string()
+                }),
+                error_code: Some(Some(error_code.to_string())),
+                error_message: Some(Some(error_message.to_string())),
+                ..Default::default()
+            },
+        )
+        .await;
+}
+
+async fn patch_import_job(
+    client: &BackendClient,
+    job_id: &str,
+    status: &str,
+    progress: f64,
+    preview: Option<serde_json::Value>,
+    result_material_id: Option<String>,
+) -> Result<MaterialImportJob, BackendClientError> {
+    client
+        .patch_material_import_job(
+            job_id,
+            &PatchMaterialImportJobRequest {
+                status: Some(status.to_string()),
+                progress: Some(progress),
+                result_material_id: result_material_id.map(Some),
+                preview,
+                ..Default::default()
+            },
+        )
+        .await
+}
+
+fn preview_content_from_request(
+    request: &PreviewMaterialImportRequest,
+    path: Option<&Path>,
+) -> Result<Option<String>, String> {
+    if let Some(content) = request.content.as_ref() {
+        return Ok(Some(content.clone()));
+    }
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if is_text_import_extension(&extension) {
+        return read_text_import_content(path, &extension).map(Some);
+    }
+    if extension == "srt" {
+        return std::fs::read_to_string(path)
+            .map(Some)
+            .map_err(|error| format!("Failed to read subtitle file: {error}"));
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+pub async fn preview_material_import_cmd(
+    app_handle: AppHandle,
+    request: PreviewMaterialImportRequest,
+) -> Result<PreviewMaterialImportResponse, String> {
+    if !is_supported_material_import_source_kind(&request.source_kind) {
+        return Err("unsupported material import source_kind".to_string());
+    }
+
+    let path = request.file_path.as_deref().map(Path::new);
+    if let Some(path) = path {
+        if !path.is_file() {
+            return Err(format!("File does not exist: {}", path.display()));
+        }
+    }
+    if let Some(file_id) = request.file_id.as_deref() {
+        validate_uuid(file_id, "file_id")?;
+    }
+
+    let requested_content = request.content.clone();
+    let initial_content_sha = match request.content_sha256.as_deref() {
+        Some(value) => Some(validate_sha256_hex(value, "content_sha256")?),
+        None => requested_content.as_deref().and_then(content_sha256),
+    };
+    let computed_file_sha = match request.file_sha256.as_deref() {
+        Some(value) => Some(validate_sha256_hex(value, "file_sha256")?),
+        None => path.map(file_sha256).transpose()?,
+    };
+    let input_hash = match request.input_hash.as_deref() {
+        Some(value) => validate_sha256_hex(value, "input_hash")?,
+        None => initial_content_sha
+            .clone()
+            .or_else(|| computed_file_sha.clone())
+            .map(Ok)
+            .unwrap_or_else(|| {
+                normalized_network_source_sha256(request.source_uri.as_deref().ok_or_else(
+                    || "content, file_path, input_hash, or source_uri is required".to_string(),
+                )?)
+            })?,
+    };
+
+    let client = backend_client_for_app(&app_handle)?;
+    let preview_source = MaterialImportSource {
+        source_kind: request.source_kind.clone(),
+        source_uri: request.source_uri.clone(),
+        content: requested_content.clone(),
+        file_path: request.file_path.as_deref().map(PathBuf::from),
+        file_id: request.file_id.clone(),
+        title: request.title.clone(),
+        metadata: request
+            .metadata
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({})),
+    };
+    let job_metadata = import_job_metadata(&preview_source);
+    let mut current_job = client
+        .create_material_import_job(&CreateMaterialImportJobRequest {
+            id: None,
+            source_kind: request.source_kind.clone(),
+            source_uri: request.source_uri.clone(),
+            file_id: request.file_id.clone(),
+            input_hash: Some(input_hash),
+            file_sha256: computed_file_sha.clone(),
+            content: requested_content.clone(),
+            content_sha256: initial_content_sha,
+            preview: serde_json::json!({}),
+            metadata: job_metadata,
+        })
+        .await
+        .map_err(backend_error_to_string)?;
+    current_job = patch_import_job(&client, &current_job.id, "validating", 0.15, None, None)
+        .await
+        .map_err(backend_error_to_string)?;
+
+    let content = match preview_content_from_request(&request, path) {
+        Ok(content) => content,
+        Err(message) => {
+            mark_import_job_failed(
+                &client,
+                &current_job.id,
+                "preview_parse_failed",
+                &message,
+                retryable_import_message(&message),
+            )
+            .await;
+            return Err(message);
+        }
+    };
+    let computed_content_sha = content.as_deref().and_then(content_sha256);
+    current_job = patch_import_job(&client, &current_job.id, "parsing", 0.55, None, None)
+        .await
+        .map_err(backend_error_to_string)?;
+
+    let source_url = request
+        .source_uri
+        .as_ref()
+        .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+        .cloned();
+    let skip_material_duplicate_check = request
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("skip_material_duplicate_check"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let duplicates = if skip_material_duplicate_check {
+        DuplicateCheckResponse {
+            duplicate: false,
+            normalized_source_url: None,
+            content_sha256: computed_content_sha,
+            file_sha256: computed_file_sha.clone(),
+            matches: Vec::new(),
+        }
+    } else {
+        match client
+            .check_material_duplicates(&DuplicateCheckRequest {
+                source_url,
+                content: content.clone(),
+                content_sha256: computed_content_sha,
+                file_sha256: computed_file_sha.clone(),
+            })
+            .await
+        {
+            Ok(duplicates) => duplicates,
+            Err(error) => {
+                let message = error.to_string();
+                mark_import_job_failed(
+                    &client,
+                    &current_job.id,
+                    "preview_duplicate_check_failed",
+                    &message,
+                    retryable_backend_error(&error),
+                )
+                .await;
+                return Err(backend_error_to_string(error));
+            }
+        }
+    };
+
+    let file_metadata = path
+        .map(std::fs::metadata)
+        .transpose()
+        .map_err(|error| format!("Failed to read file metadata for import preview: {error}"))?;
+    let title = preview_title(&request, path);
+    let file_info = PreviewMaterialFileInfo {
+        file_path: request.file_path.clone(),
+        file_id: request.file_id.clone(),
+        file_name: path
+            .and_then(Path::file_name)
+            .and_then(|value| value.to_str())
+            .map(str::to_string),
+        byte_size: file_metadata.map(|value| value.len()),
+        sha256: computed_file_sha.clone(),
+    };
+    let paragraph_count = count_preview_paragraphs(content.as_deref());
+    let content_snippet = content
+        .as_deref()
+        .map(|value| value.chars().take(500).collect::<String>());
+    let source_uri = request.source_uri.clone();
+    let preview = serde_json::json!({
+        "title": title,
+        "file": file_info,
+        "paragraph_count": paragraph_count,
+        "content_snippet": content_snippet,
+        "source_uri": source_uri,
+        "duplicates": duplicates,
+    });
+    current_job = match patch_import_job(
+        &client,
+        &current_job.id,
+        "preview_ready",
+        0.75,
+        Some(preview),
+        None,
+    )
+    .await
+    {
+        Ok(job) => job,
+        Err(error) => {
+            let message = error.to_string();
+            mark_import_job_failed(
+                &client,
+                &current_job.id,
+                "preview_failed",
+                &message,
+                retryable_backend_error(&error),
+            )
+            .await;
+            return Err(backend_error_to_string(error));
+        }
+    };
+
+    Ok(PreviewMaterialImportResponse {
+        title,
+        source_uri,
+        file: file_info,
+        paragraph_count,
+        content_snippet,
+        duplicates,
+        job: current_job,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct MaterialImportSource {
+    source_kind: String,
+    source_uri: Option<String>,
+    content: Option<String>,
+    file_path: Option<PathBuf>,
+    file_id: Option<String>,
+    title: Option<String>,
+    metadata: serde_json::Value,
+}
+
+fn import_job_metadata(source: &MaterialImportSource) -> serde_json::Value {
+    let mut metadata = source.metadata.clone();
+    if !metadata.is_object() {
+        metadata = serde_json::json!({});
+    }
+    let mut resume_payload = serde_json::json!({
+        "source_kind": source.source_kind,
+        "source_uri": source.source_uri,
+        "content": source.content,
+        "file_path": source.file_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
+        "file_id": source.file_id,
+        "title": source.title,
+    });
+    if let (Some(resume), Some(extra)) =
+        (resume_payload.as_object_mut(), source.metadata.as_object())
+    {
+        for (key, value) in extra {
+            resume.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    metadata
+        .as_object_mut()
+        .unwrap()
+        .insert("resume_payload".to_string(), resume_payload);
+    metadata
+}
+
+fn validate_import_job_source(
+    job: &MaterialImportJob,
+    source: &MaterialImportSource,
+    input_hash: &str,
+) -> Result<(), String> {
+    if job.source_kind != source.source_kind {
+        return Err("import_job_id belongs to a different source_kind".to_string());
+    }
+    if job.input_hash.as_deref() != Some(input_hash) {
+        return Err(
+            "import source does not match the input hash recorded during preview".to_string(),
+        );
+    }
+    let stored = job
+        .metadata
+        .get("resume_payload")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| {
+            "material import job is missing its preview source parameters".to_string()
+        })?;
+    let expected = import_job_metadata(source)
+        .get("resume_payload")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    for field in [
+        "source_kind",
+        "source_uri",
+        "content",
+        "file_path",
+        "file_id",
+    ] {
+        if stored.get(field) != expected.get(field) {
+            return Err(format!(
+                "import source field {field} does not match the previewed input"
+            ));
+        }
+    }
+    if stored.get("title").is_some_and(|value| !value.is_null())
+        && stored.get("title") != expected.get("title")
+    {
+        return Err("import source field title does not match the previewed input".to_string());
+    }
+    Ok(())
+}
+
+fn metadata_for_import_commit(
+    metadata: Option<serde_json::Value>,
+    job_id: &str,
+) -> serde_json::Value {
+    let mut metadata = metadata
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    metadata
+        .as_object_mut()
+        .unwrap()
+        .insert("import_job_id".to_string(), serde_json::json!(job_id));
+    metadata
+}
+
+fn metadata_for_replaced_material(
+    existing_metadata: &serde_json::Value,
+    imported_article_metadata: &serde_json::Value,
+    imported_metadata: Option<serde_json::Value>,
+    job_id: &str,
+) -> serde_json::Value {
+    let mut metadata = existing_metadata
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new);
+    for candidate in [Some(imported_article_metadata), imported_metadata.as_ref()] {
+        if let Some(values) = candidate.and_then(serde_json::Value::as_object) {
+            for (key, value) in values {
+                metadata.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    metadata_for_import_commit(Some(serde_json::Value::Object(metadata)), job_id)
+}
+
+fn material_was_committed_by_job(article: &Article, job_id: &str) -> bool {
+    article
+        .metadata
+        .get("import_job_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value == job_id)
+}
+
+async fn persist_import_job_commit_state(
+    client: &BackendClient,
+    job: &MaterialImportJob,
+    state: &MaterialImportCommitState,
+) -> Result<MaterialImportJob, BackendClientError> {
+    client
+        .patch_material_import_job_metadata(
+            &job.id,
+            material_import_metadata_with_commit_state(job.metadata.clone(), state),
+        )
+        .await
+}
+
+async fn finish_import_job(
+    client: &BackendClient,
+    job_id: &str,
+    material_id: &str,
+) -> Result<(), BackendClientError> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match patch_import_job(
+            client,
+            job_id,
+            "succeeded",
+            1.0,
+            None,
+            Some(material_id.to_string()),
+        )
+        .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                if let Ok(job) = client.get_material_import_job(job_id).await {
+                    if job.status == "succeeded"
+                        && job.result_material_id.as_deref() == Some(material_id)
+                    {
+                        return Ok(());
+                    }
+                }
+                last_error = Some(error);
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(150 * (attempt + 1))).await;
+                }
+            }
+        }
+    }
+    Err(last_error.expect("finish_import_job must record an error"))
+}
+
+struct PreparedMaterialImport {
+    article: Article,
+    metadata: Option<serde_json::Value>,
+    file_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportDuplicatePolicy {
+    Cancel,
+    OpenExisting,
+    Replace,
+    KeepCopy,
+}
+
+impl ImportDuplicatePolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cancel => "cancel",
+            Self::OpenExisting => "open_existing",
+            Self::Replace => "replace",
+            Self::KeepCopy => "keep_copy",
+        }
+    }
+}
+
+fn parse_duplicate_policy(value: Option<&str>) -> Result<Option<ImportDuplicatePolicy>, String> {
+    value
+        .map(|value| match value {
+            "cancel" => Ok(ImportDuplicatePolicy::Cancel),
+            "open_existing" => Ok(ImportDuplicatePolicy::OpenExisting),
+            "replace" => Ok(ImportDuplicatePolicy::Replace),
+            "keep_copy" => Ok(ImportDuplicatePolicy::KeepCopy),
+            _ => Err(
+                "duplicate_policy must be cancel, open_existing, replace, or keep_copy".to_string(),
+            ),
+        })
+        .transpose()
+}
+
+fn import_commit_state(
+    policy: Option<ImportDuplicatePolicy>,
+    commit_kind: &str,
+    target_material_id: impl Into<String>,
+) -> MaterialImportCommitState {
+    MaterialImportCommitState {
+        duplicate_policy: policy
+            .map(ImportDuplicatePolicy::as_str)
+            .map(str::to_string),
+        commit_kind: Some(commit_kind.to_string()),
+        target_material_id: Some(target_material_id.into()),
+        result_material_id: None,
+    }
+}
+
+fn retryable_import_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "timeout",
+        "timed out",
+        "connection",
+        "temporarily",
+        "network",
+        "failed to execute",
+        "failed to upload",
+        "rate limit",
+        "429",
+        "502",
+        "503",
+        "504",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
+fn import_source_hashes(
+    source: &MaterialImportSource,
+) -> Result<(Option<String>, Option<String>, String), String> {
+    let content_hash = source.content.as_deref().and_then(content_sha256);
+    let file_hash = source.file_path.as_deref().map(file_sha256).transpose()?;
+    let input_hash =
+        match content_hash.clone().or_else(|| file_hash.clone()) {
+            Some(hash) => hash,
+            None => normalized_network_source_sha256(source.source_uri.as_deref().ok_or_else(
+                || "import source must include content, file_path, or source_uri".to_string(),
+            )?)?,
+        };
+    Ok((content_hash, file_hash, input_hash))
+}
+
+fn duplicate_check_for_source(
+    source: &MaterialImportSource,
+    content: Option<String>,
+    content_sha256: Option<String>,
+    file_sha256: Option<String>,
+) -> DuplicateCheckRequest {
+    DuplicateCheckRequest {
+        source_url: source
+            .source_uri
+            .as_ref()
+            .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+            .cloned(),
+        content,
+        content_sha256,
+        file_sha256,
+    }
+}
+
+async fn advance_import_job_to_parsing(
+    client: &BackendClient,
+    mut job: MaterialImportJob,
+) -> Result<MaterialImportJob, BackendClientError> {
+    if job.status == "failed_retryable" {
+        job = patch_import_job(client, &job.id, "queued", 0.0, None, None).await?;
+    }
+    if job.status == "queued" {
+        job = patch_import_job(client, &job.id, "validating", 0.15, None, None).await?;
+    }
+    if job.status == "validating" {
+        job = patch_import_job(client, &job.id, "parsing", 0.5, None, None).await?;
+    }
+    if matches!(job.status.as_str(), "parsing" | "preview_ready") {
+        Ok(job)
+    } else {
+        Err(BackendClientError::Backend {
+            status: StatusCode::CONFLICT,
+            code: "invalid_import_job_state".to_string(),
+            message: format!("import job cannot be committed from {}", job.status),
+        })
+    }
+}
+
+async fn begin_import_job_commit(
+    client: &BackendClient,
+    job: MaterialImportJob,
+    state: &MaterialImportCommitState,
+) -> Result<MaterialImportJob, BackendClientError> {
+    if job.status == "committing" {
+        let recorded = material_import_commit_state_from_metadata(&job.metadata);
+        if recorded == *state {
+            return Ok(job);
+        }
+        if recorded.commit_kind.is_none() || recorded.target_material_id.is_none() {
+            return client
+                .patch_material_import_job_metadata(
+                    &job.id,
+                    material_import_metadata_with_commit_state(job.metadata.clone(), state),
+                )
+                .await;
+        }
+        return Err(BackendClientError::Backend {
+            status: StatusCode::CONFLICT,
+            code: "import_commit_intent_conflict".to_string(),
+            message: "material import already has a different commit intent".to_string(),
+        });
+    }
+    let mut job = advance_import_job_to_parsing(client, job).await?;
+    if job.status == "parsing" {
+        job = patch_import_job(client, &job.id, "preview_ready", 0.75, None, None).await?;
+    }
+    client
+        .patch_material_import_job(
+            &job.id,
+            &PatchMaterialImportJobRequest {
+                status: Some("committing".to_string()),
+                progress: Some(0.9),
+                metadata: Some(material_import_metadata_with_commit_state(
+                    job.metadata.clone(),
+                    state,
+                )),
+                ..Default::default()
+            },
+        )
+        .await
+}
+
+async fn recover_completed_import_side_effect(
+    client: &BackendClient,
+    job: MaterialImportJob,
+) -> Result<Option<Article>, String> {
+    let mut state = material_import_commit_state_from_metadata(&job.metadata);
+    let (material_id, side_effect_is_recorded) =
+        match material_import_commit_recovery_strategy(&state) {
+            MaterialImportRecoveryStrategy::SettleRecordedMaterial(material_id)
+            | MaterialImportRecoveryStrategy::SettleOpenExisting(material_id) => {
+                (material_id, true)
+            }
+            MaterialImportRecoveryStrategy::VerifyTargetMaterialImportMarker(material_id) => {
+                (material_id, false)
+            }
+            MaterialImportRecoveryStrategy::NoRecordedSideEffect => {
+                let Some(material_id) = job.result_material_id.clone() else {
+                    return Ok(None);
+                };
+                (material_id, true)
+            }
+        };
+    let article = match client.get_material(&material_id).await {
+        Ok(article) => article,
+        Err(BackendClientError::Backend { status, .. }) if status == StatusCode::NOT_FOUND => {
+            return Ok(None);
+        }
+        Err(error) => return Err(backend_error_to_string(error)),
+    };
+    if !side_effect_is_recorded && !material_was_committed_by_job(&article, &job.id) {
+        return Ok(None);
+    }
+    if job.status != "succeeded" {
+        if state.commit_kind.is_none() || state.target_material_id.is_none() {
+            state = import_commit_state(None, "create", article.id.clone());
+        }
+        state.result_material_id = Some(article.id.clone());
+        let committing = begin_import_job_commit(client, job, &state)
+            .await
+            .map_err(backend_error_to_string)?;
+        finish_import_job(client, &committing.id, &article.id)
+            .await
+            .map_err(backend_error_to_string)?;
+    }
+    Ok(Some(article))
+}
+
+async fn resolve_duplicate_without_commit(
+    client: &BackendClient,
+    mut job: MaterialImportJob,
+    duplicate: &crate::types::DuplicateMatch,
+    policy: ImportDuplicatePolicy,
+) -> Result<Option<Article>, String> {
+    match policy {
+        ImportDuplicatePolicy::Cancel => {
+            client
+                .cancel_material_import_job(&job.id)
+                .await
+                .map_err(backend_error_to_string)?;
+            Err("Import cancelled because a duplicate material exists".to_string())
+        }
+        ImportDuplicatePolicy::OpenExisting => {
+            let mut commit =
+                import_commit_state(Some(policy), "open_existing", duplicate.material_id.clone());
+            job = begin_import_job_commit(client, job, &commit)
+                .await
+                .map_err(backend_error_to_string)?;
+            let article = client
+                .get_material(&duplicate.material_id)
+                .await
+                .map_err(backend_error_to_string)?;
+            commit.result_material_id = Some(article.id.clone());
+            let _ = persist_import_job_commit_state(client, &job, &commit)
+                .await
+                .map_err(backend_error_to_string)?;
+            finish_import_job(client, &job.id, &article.id)
+                .await
+                .map_err(backend_error_to_string)?;
+            Ok(Some(article))
+        }
+        ImportDuplicatePolicy::Replace | ImportDuplicatePolicy::KeepCopy => Ok(None),
+    }
+}
+
+async fn run_material_import<F, Fut>(
+    app_handle: &AppHandle,
+    source: MaterialImportSource,
+    options: ImportJobOptions,
+    prepare: F,
+) -> Result<Article, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<PreparedMaterialImport, String>>,
+{
+    let client = backend_client_for_app(app_handle)?;
+    let is_replay = options.import_job_id.is_some();
+    let (source_content_hash, source_file_hash, input_hash) = import_source_hashes(&source)?;
+    if let Some(file_id) = source.file_id.as_deref() {
+        validate_uuid(file_id, "file_id")?;
+    }
+
+    let mut job = if let Some(job_id) = options.import_job_id.as_deref() {
+        validate_uuid(job_id, "import_job_id")?;
+        client
+            .get_material_import_job(job_id)
+            .await
+            .map_err(backend_error_to_string)?
+    } else {
+        client
+            .create_material_import_job(&CreateMaterialImportJobRequest {
+                id: None,
+                source_kind: source.source_kind.clone(),
+                source_uri: source.source_uri.clone(),
+                file_id: source.file_id.clone(),
+                input_hash: Some(input_hash.clone()),
+                file_sha256: source_file_hash.clone(),
+                content: source.content.clone(),
+                content_sha256: source_content_hash.clone(),
+                preview: serde_json::json!({}),
+                metadata: import_job_metadata(&source),
+            })
+            .await
+            .map_err(backend_error_to_string)?
+    };
+
+    if job.status == "succeeded" {
+        let material_id = job
+            .result_material_id
+            .as_deref()
+            .ok_or_else(|| "completed import job is missing result_material_id".to_string())?;
+        return client
+            .get_material(material_id)
+            .await
+            .map_err(backend_error_to_string);
+    }
+    validate_import_job_source(&job, &source, &input_hash)?;
+    let effective_duplicate_policy = material_import_effective_duplicate_policy(
+        options.duplicate_policy.as_deref(),
+        material_import_recorded_duplicate_policy(&job.metadata).as_deref(),
+    )?;
+    let policy = parse_duplicate_policy(effective_duplicate_policy.as_deref())?;
+    if let Some(policy) = policy {
+        let mut commit = material_import_commit_state_from_metadata(&job.metadata);
+        if commit.duplicate_policy.as_deref() != Some(policy.as_str()) {
+            commit.duplicate_policy = Some(policy.as_str().to_string());
+            job = persist_import_job_commit_state(&client, &job, &commit)
+                .await
+                .map_err(backend_error_to_string)?;
+        }
+    }
+    if let Some(article) = recover_completed_import_side_effect(&client, job.clone()).await? {
+        return Ok(article);
+    }
+
+    if let Ok(existing) = client.get_material(&job.id).await {
+        if material_was_committed_by_job(&existing, &job.id) {
+            let mut commit = import_commit_state(policy, "create", existing.id.clone());
+            commit.result_material_id = Some(existing.id.clone());
+            let committing = begin_import_job_commit(&client, job, &commit)
+                .await
+                .map_err(backend_error_to_string)?;
+            finish_import_job(&client, &committing.id, &existing.id)
+                .await
+                .map_err(backend_error_to_string)?;
+            return Ok(existing);
+        }
+    }
+
+    let initial_duplicates = client
+        .check_material_duplicates(&duplicate_check_for_source(
+            &source,
+            source.content.clone(),
+            source_content_hash,
+            source_file_hash.clone(),
+        ))
+        .await
+        .map_err(backend_error_to_string)?;
+    if let Some(duplicate) = initial_duplicates.matches.first() {
+        let Some(policy) = policy else {
+            mark_import_job_failed(
+                &client,
+                &job.id,
+                "duplicate_policy_required",
+                "duplicate material detected; choose cancel, open_existing, replace, or keep_copy",
+                is_replay,
+            )
+            .await;
+            return Err(format!(
+                "Duplicate material detected: {}. duplicate_policy is required",
+                duplicate.material_id
+            ));
+        };
+        if let Some(article) =
+            resolve_duplicate_without_commit(&client, job.clone(), duplicate, policy).await?
+        {
+            return Ok(article);
+        }
+    } else if policy == Some(ImportDuplicatePolicy::Cancel) {
+        client
+            .cancel_material_import_job(&job.id)
+            .await
+            .map_err(backend_error_to_string)?;
+        return Err("Import cancelled".to_string());
+    } else if policy == Some(ImportDuplicatePolicy::OpenExisting) {
+        mark_import_job_failed(
+            &client,
+            &job.id,
+            "duplicate_not_found",
+            "open_existing requires a duplicate material",
+            is_replay,
+        )
+        .await;
+        return Err("open_existing requires a duplicate material".to_string());
+    }
+
+    job = advance_import_job_to_parsing(&client, job)
+        .await
+        .map_err(backend_error_to_string)?;
+
+    let mut prepared = match prepare().await {
+        Ok(prepared) => prepared,
+        Err(message) => {
+            mark_import_job_failed(
+                &client,
+                &job.id,
+                "import_prepare_failed",
+                &message,
+                is_replay || retryable_import_message(&message),
+            )
+            .await;
+            return Err(message);
+        }
+    };
+
+    let final_file_hash = prepared.file_sha256.or(source_file_hash);
+    let final_content_hash = content_sha256(&prepared.article.content);
+    let final_duplicates = match client
+        .check_material_duplicates(&duplicate_check_for_source(
+            &source,
+            Some(prepared.article.content.clone()),
+            final_content_hash,
+            final_file_hash.clone(),
+        ))
+        .await
+    {
+        Ok(duplicates) => duplicates,
+        Err(error) => {
+            let message = backend_error_to_string(error);
+            mark_import_job_failed(
+                &client,
+                &job.id,
+                "duplicate_check_failed",
+                &message,
+                is_replay || retryable_import_message(&message),
+            )
+            .await;
+            return Err(message);
+        }
+    };
+    let duplicate = final_duplicates.matches.first();
+    if duplicate.is_some() && policy.is_none() {
+        mark_import_job_failed(
+            &client,
+            &job.id,
+            "duplicate_policy_required",
+            "duplicate material detected after parsing",
+            is_replay,
+        )
+        .await;
+        return Err(
+            "Duplicate material detected after parsing; duplicate_policy is required".to_string(),
+        );
+    }
+    if let (Some(duplicate), Some(policy)) = (duplicate, policy) {
+        if let Some(article) =
+            resolve_duplicate_without_commit(&client, job.clone(), duplicate, policy).await?
+        {
+            return Ok(article);
+        }
+    }
+
+    let (commit_kind, target_material_id) =
+        if let (Some(duplicate), Some(ImportDuplicatePolicy::Replace)) = (duplicate, policy) {
+            ("replace", duplicate.material_id.clone())
+        } else {
+            ("create", job.id.clone())
+        };
+    let mut commit = import_commit_state(policy, commit_kind, target_material_id);
+    job = begin_import_job_commit(&client, job, &commit)
+        .await
+        .map_err(backend_error_to_string)?;
+
+    let commit_result =
+        if let (Some(duplicate), Some(ImportDuplicatePolicy::Replace)) = (duplicate, policy) {
+            match client.get_material(&duplicate.material_id).await {
+                Ok(existing) => {
+                    prepared.article.id = duplicate.material_id.clone();
+                    prepared.article.metadata = metadata_for_replaced_material(
+                        &existing.metadata,
+                        &prepared.article.metadata,
+                        prepared.metadata.take(),
+                        &job.id,
+                    );
+                    for segment in &mut prepared.article.segments {
+                        segment.article_id = duplicate.material_id.clone();
+                    }
+                    client
+                        .patch_material_replacing_source_fields_with_file_hash(
+                            &duplicate.material_id,
+                            &patch_material_payload_from_article(&prepared.article),
+                            final_file_hash.as_deref(),
+                        )
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            prepared.article.id = job.id.clone();
+            for segment in &mut prepared.article.segments {
+                segment.article_id = job.id.clone();
+            }
+            let metadata = metadata_for_import_commit(prepared.metadata.take(), &job.id);
+            client
+                .create_material_with_options(
+                    &create_material_payload_from_article(&prepared.article, Some(metadata)),
+                    final_file_hash.as_deref(),
+                    (policy == Some(ImportDuplicatePolicy::KeepCopy)).then_some("keep_copy"),
+                )
+                .await
+        };
+
+    let article = match commit_result {
+        Ok(article) => article,
+        Err(error) => {
+            if let Some(existing) =
+                recover_completed_import_side_effect(&client, job.clone()).await?
+            {
+                return Ok(existing);
+            }
+            let retryable = is_replay || retryable_backend_error(&error);
+            let message = error.to_string();
+            mark_import_job_failed(
+                &client,
+                &job.id,
+                "import_commit_failed",
+                &message,
+                retryable,
+            )
+            .await;
+            return Err(backend_error_to_string(error));
+        }
+    };
+    commit.result_material_id = Some(article.id.clone());
+    let _ = persist_import_job_commit_state(&client, &job, &commit)
+        .await
+        .map_err(backend_error_to_string)?;
+    finish_import_job(&client, &job.id, &article.id)
+        .await
+        .map_err(backend_error_to_string)?;
+    Ok(article)
 }
 
 async fn persist_agent_task_backend_and_local(
@@ -196,21 +1958,9 @@ fn patch_material_payload_from_article(article: &Article) -> PatchMaterialReques
         book_type: article.book_type.clone(),
         translated: Some(article.translated),
         active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
-        metadata: None,
+        metadata: Some(article.metadata.clone()),
         segments: Some(article.segments.clone()),
     }
-}
-
-async fn create_backend_material_from_article(
-    app_handle: &AppHandle,
-    article: &Article,
-    metadata: Option<serde_json::Value>,
-) -> Result<Article, String> {
-    let client = backend_client_for_app(app_handle)?;
-    client
-        .create_material(&create_material_payload_from_article(article, metadata))
-        .await
-        .map_err(backend_error_to_string)
 }
 
 async fn replace_backend_article(
@@ -1451,7 +3201,7 @@ pub async fn save_config_cmd(
 pub async fn backend_check_session_cmd(
     app_handle: AppHandle,
 ) -> Result<BackendSessionCheck, String> {
-    let config = load_config(&app_handle)?.unwrap_or_default();
+    let mut config = load_config(&app_handle)?.unwrap_or_default();
     let backend_url = config
         .backend_url
         .as_ref()
@@ -1525,14 +3275,24 @@ pub async fn backend_check_session_cmd(
             user: Some(current.user),
             error: None,
         }),
-        Err(error) => Ok(BackendSessionCheck {
-            configured: true,
-            connected: true,
-            authenticated: false,
-            backend_url: Some(backend_url),
-            user: None,
-            error: Some(backend_error_to_string(error)),
-        }),
+        Err(error) => {
+            let message = if is_invalid_backend_token(&error) {
+                config.auth_token = None;
+                save_config(&app_handle, &config)?;
+                "登录已失效，请重新登录。".to_string()
+            } else {
+                backend_error_to_string(error)
+            };
+
+            Ok(BackendSessionCheck {
+                configured: true,
+                connected: true,
+                authenticated: false,
+                backend_url: Some(backend_url),
+                user: None,
+                error: Some(message),
+            })
+        }
     }
 }
 
@@ -1795,28 +3555,52 @@ pub async fn create_article(
     title: String,
     content: String,
     source_url: Option<String>,
+    import_job_id: Option<String>,
+    duplicate_policy: Option<String>,
 ) -> Result<Article, String> {
-    let id = Uuid::new_v4().to_string();
-    let created_at = chrono::Utc::now().to_rfc3339();
-
-    let segments = create_segments_from_content(&id, &content);
-
-    let article = Article {
-        id: id.clone(),
-        title: title.clone(),
-        content: content.clone(),
-        source_type: Some("article".to_string()),
-        source_url: source_url.clone(),
-        media_path: None,
-        book_path: None,
-        book_type: None,
-        created_at: created_at.clone(),
-        translated: false,
-        active_mind_map_artifact_id: None,
-        segments,
+    let source = MaterialImportSource {
+        source_kind: "article".to_string(),
+        source_uri: source_url.clone(),
+        content: Some(content.clone()),
+        file_path: None,
+        file_id: None,
+        title: Some(title.clone()),
+        metadata: serde_json::json!({ "source": "desktop_create_article" }),
     };
-
-    create_backend_material_from_article(&app_handle, &article, None).await
+    run_material_import(
+        &app_handle,
+        source,
+        ImportJobOptions {
+            import_job_id,
+            duplicate_policy,
+        },
+        || async move {
+            let id = Uuid::new_v4().to_string();
+            Ok(PreparedMaterialImport {
+                article: Article {
+                    id: id.clone(),
+                    title,
+                    content: content.clone(),
+                    source_type: Some("article".to_string()),
+                    source_url,
+                    media_path: None,
+                    book_path: None,
+                    book_type: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    translated: false,
+                    active_mind_map_artifact_id: None,
+                    segments: create_segments_from_content(&id, &content),
+                    metadata: serde_json::json!({}),
+                    tags: Vec::new(),
+                    reading_progress: None,
+                    archived_at: None,
+                },
+                metadata: None,
+                file_sha256: None,
+            })
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3030,12 +4814,43 @@ pub async fn delete_favorite_grammar_cmd(app_handle: AppHandle, id: String) -> R
 pub async fn import_youtube_video_cmd(
     app_handle: AppHandle,
     url: String,
+    import_job_id: Option<String>,
+    duplicate_policy: Option<String>,
 ) -> Result<Article, String> {
     require_external_tools_enabled("import_youtube_video_cmd")?;
-
-    let article = crate::youtube::import_youtube_video(app_handle.clone(), url).await?;
-
-    create_backend_material_from_article(&app_handle, &article, None).await
+    let source = MaterialImportSource {
+        source_kind: "youtube".to_string(),
+        source_uri: Some(url.clone()),
+        content: None,
+        file_path: None,
+        file_id: None,
+        title: None,
+        metadata: serde_json::json!({ "source": "desktop_import" }),
+    };
+    let import_handle = app_handle.clone();
+    run_material_import(
+        &app_handle,
+        source,
+        ImportJobOptions {
+            import_job_id,
+            duplicate_policy,
+        },
+        || async move {
+            let article = crate::youtube::import_youtube_video(import_handle, url).await?;
+            let hash = article
+                .media_path
+                .as_deref()
+                .map(Path::new)
+                .map(file_sha256)
+                .transpose()?;
+            Ok(PreparedMaterialImport {
+                article,
+                metadata: Some(serde_json::json!({ "source": "youtube" })),
+                file_sha256: hash,
+            })
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3043,105 +4858,121 @@ pub async fn import_local_video_cmd(
     app_handle: AppHandle,
     file_path: String,
     subtitle_path: Option<String>,
+    import_job_id: Option<String>,
+    duplicate_policy: Option<String>,
 ) -> Result<Article, String> {
-    let backend_client = backend_client_for_app(&app_handle)?;
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-
-    let videos_dir = app_data_dir.join("videos");
-    if !videos_dir.exists() {
-        std::fs::create_dir_all(&videos_dir)
-            .map_err(|e| format!("Failed to create videos dir: {}", e))?;
-    }
-
-    let src_path = std::path::Path::new(&file_path);
-    if !src_path.exists() {
+    let src_path = PathBuf::from(&file_path);
+    if !src_path.is_file() {
         return Err("Source file does not exist".to_string());
     }
-
     let file_name = src_path
         .file_name()
         .ok_or("Invalid file name")?
-        .to_string_lossy();
-
+        .to_string_lossy()
+        .into_owned();
     let ext = src_path
         .extension()
         .map(|e| e.to_string_lossy().to_string())
         .unwrap_or_else(|| "mp4".to_string());
-
-    let id = Uuid::new_v4().to_string();
-    let dest_name = format!("{}.{}", id, ext);
-    let dest_path = videos_dir.join(&dest_name);
-
-    std::fs::copy(src_path, &dest_path).map_err(|e| format!("Failed to copy file: {}", e))?;
-    let uploaded_file = backend_client
-        .upload_file_path(
-            src_path,
-            Some(serde_json::json!({
-                "kind": if is_audio_file_extension(&ext) { "audio" } else { "video" },
-                "source": "desktop_import",
-                "cached_path": dest_path.to_string_lossy(),
-            })),
-        )
-        .await
-        .map_err(backend_error_to_string)?;
-
-    let created_at = chrono::Utc::now().to_rfc3339();
     let is_audio = is_audio_file_extension(&ext);
-
-    // Initial content placeholder
-    let content = if is_audio {
-        format!("[Audio Import] {}", file_name)
-    } else {
-        format!("[Local Import] {}", file_name)
-    };
-
-    let mut article = Article {
-        id: id.clone(),
-        title: file_name.into_owned(),
-        content,
-        source_type: Some(if is_audio {
-            "audio".to_string()
-        } else {
-            "local_video".to_string()
+    let source_kind = if is_audio { "audio" } else { "video" };
+    let source = MaterialImportSource {
+        source_kind: source_kind.to_string(),
+        source_uri: Some(format!("file://{file_path}")),
+        content: None,
+        file_path: Some(src_path.clone()),
+        file_id: None,
+        title: Some(file_name.clone()),
+        metadata: serde_json::json!({
+            "source": "desktop_import",
+            "subtitle_path": subtitle_path.clone(),
         }),
-        source_url: Some(format!("file://{}", file_path)),
-        media_path: Some(dest_path.to_string_lossy().into_owned()),
-        book_path: None,
-        book_type: None,
-        created_at,
-        translated: false,
-        active_mind_map_artifact_id: None,
-        segments: Vec::new(),
     };
-
-    if let Some(subtitle_path) = subtitle_path {
-        let subtitle_path = Path::new(&subtitle_path);
-        import_subtitles_into_article(&mut article, subtitle_path)?;
-        let _ = backend_client
-            .upload_file_path(
-                subtitle_path,
-                Some(serde_json::json!({
-                    "kind": "subtitle",
-                    "source": "desktop_import",
-                    "material_id": article.id,
-                })),
-            )
-            .await
-            .map_err(backend_error_to_string)?;
-    }
-
-    create_backend_material_from_article(
+    let import_handle = app_handle.clone();
+    run_material_import(
         &app_handle,
-        &article,
-        Some(serde_json::json!({
-            "backend_file_id": uploaded_file.id,
-            "backend_download_url": uploaded_file.download_url,
-            "original_name": uploaded_file.original_name,
-            "cached_path": dest_path.to_string_lossy(),
-        })),
+        source,
+        ImportJobOptions {
+            import_job_id,
+            duplicate_policy,
+        },
+        || async move {
+            let backend_client = backend_client_for_app(&import_handle)?;
+            let app_data_dir = import_handle
+                .path()
+                .app_data_dir()
+                .map_err(|error| format!("Failed to get app data dir: {error}"))?;
+            let videos_dir = app_data_dir.join("videos");
+            std::fs::create_dir_all(&videos_dir)
+                .map_err(|error| format!("Failed to create videos dir: {error}"))?;
+            let id = Uuid::new_v4().to_string();
+            let dest_path = videos_dir.join(format!("{id}.{ext}"));
+            std::fs::copy(&src_path, &dest_path)
+                .map_err(|error| format!("Failed to copy file: {error}"))?;
+            let uploaded_file = backend_client
+                .upload_file_path(
+                    &src_path,
+                    Some(serde_json::json!({
+                        "kind": source_kind,
+                        "source": "desktop_import",
+                        "cached_path": dest_path.to_string_lossy(),
+                    })),
+                )
+                .await
+                .map_err(backend_error_to_string)?;
+            let content = if is_audio {
+                format!("[Audio Import] {file_name}")
+            } else {
+                format!("[Local Import] {file_name}")
+            };
+            let mut article = Article {
+                id: id.clone(),
+                title: file_name,
+                content,
+                source_type: Some(if is_audio {
+                    "audio".to_string()
+                } else {
+                    "local_video".to_string()
+                }),
+                source_url: Some(format!("file://{file_path}")),
+                media_path: Some(dest_path.to_string_lossy().into_owned()),
+                book_path: None,
+                book_type: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                translated: false,
+                active_mind_map_artifact_id: None,
+                segments: Vec::new(),
+                metadata: serde_json::json!({}),
+                tags: Vec::new(),
+                reading_progress: None,
+                archived_at: None,
+            };
+            if let Some(subtitle_path) = subtitle_path {
+                let subtitle_path = PathBuf::from(subtitle_path);
+                import_subtitles_into_article(&mut article, &subtitle_path)?;
+                backend_client
+                    .upload_file_path(
+                        &subtitle_path,
+                        Some(serde_json::json!({
+                            "kind": "subtitle",
+                            "source": "desktop_import",
+                            "material_id": article.id,
+                        })),
+                    )
+                    .await
+                    .map_err(backend_error_to_string)?;
+            }
+            Ok(PreparedMaterialImport {
+                article,
+                metadata: Some(serde_json::json!({
+                    "backend_file_id": uploaded_file.id,
+                    "backend_download_url": uploaded_file.download_url,
+                    "original_name": uploaded_file.original_name,
+                    "cached_path": dest_path.to_string_lossy(),
+                })),
+                file_sha256: Some(uploaded_file.sha256),
+            })
+        },
     )
     .await
 }
@@ -3151,7 +4982,10 @@ pub async fn import_article_subtitles_cmd(
     app_handle: AppHandle,
     article_id: String,
     subtitle_path: String,
+    import_job_id: Option<String>,
+    duplicate_policy: Option<String>,
 ) -> Result<Article, String> {
+    let is_replay = import_job_id.is_some();
     let backend_client = backend_client_for_app(&app_handle)?;
     let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
 
@@ -3159,11 +4993,89 @@ pub async fn import_article_subtitles_cmd(
         return Err("仅媒体素材支持导入字幕".to_string());
     }
 
-    let subtitle_path = Path::new(&subtitle_path);
-    import_subtitles_into_article(&mut article, subtitle_path)?;
-    let _uploaded_file = backend_client
+    let subtitle_path = PathBuf::from(&subtitle_path);
+    let file_hash = file_sha256(&subtitle_path)?;
+    let source_uri = format!("file://{}", subtitle_path.to_string_lossy());
+    let job_id = import_job_id
+        .as_deref()
+        .ok_or_else(|| "subtitle attachment requires a confirmed import preview".to_string())?;
+    validate_uuid(job_id, "import_job_id")?;
+    let mut job = backend_client
+        .get_material_import_job(job_id)
+        .await
+        .map_err(backend_error_to_string)?;
+    if job.source_kind != "subtitle" {
+        return Err("import_job_id belongs to a different source_kind".to_string());
+    }
+    if job.input_hash.as_deref() != Some(file_hash.as_str())
+        || job.source_uri.as_deref() != Some(source_uri.as_str())
+        || job
+            .metadata
+            .pointer("/resume_payload/target_material_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(article_id.as_str())
+        || job
+            .metadata
+            .pointer("/resume_payload/mode")
+            .and_then(serde_json::Value::as_str)
+            != Some("attach")
+    {
+        return Err("subtitle attachment does not match the confirmed preview".to_string());
+    }
+    let effective_duplicate_policy = material_import_effective_duplicate_policy(
+        duplicate_policy.as_deref(),
+        material_import_recorded_duplicate_policy(&job.metadata).as_deref(),
+    )?;
+    let policy = parse_duplicate_policy(effective_duplicate_policy.as_deref())?;
+    if let Some(policy) = policy {
+        let mut commit = material_import_commit_state_from_metadata(&job.metadata);
+        if commit.duplicate_policy.as_deref() != Some(policy.as_str()) {
+            commit.duplicate_policy = Some(policy.as_str().to_string());
+            job = persist_import_job_commit_state(&backend_client, &job, &commit)
+                .await
+                .map_err(backend_error_to_string)?;
+        }
+    }
+    if let Some(article) =
+        recover_completed_import_side_effect(&backend_client, job.clone()).await?
+    {
+        return Ok(article);
+    }
+    if metadata_has_subtitle_hash(&article.metadata, &file_hash) {
+        if job.status == "failed_retryable"
+            && job.error_code.as_deref() == Some("interrupted_commit")
+        {
+            let mut commit = import_commit_state(policy, "subtitle_attach", article.id.clone());
+            commit.result_material_id = Some(article.id.clone());
+            job = begin_import_job_commit(&backend_client, job, &commit)
+                .await
+                .map_err(backend_error_to_string)?;
+            finish_import_job(&backend_client, &job.id, &article.id)
+                .await
+                .map_err(backend_error_to_string)?;
+            return Ok(article);
+        }
+        let _ = backend_client.cancel_material_import_job(&job.id).await;
+        return Err("The same subtitle file is already attached to this material".to_string());
+    }
+    if let Err(error) = import_subtitles_into_article(&mut article, &subtitle_path) {
+        mark_import_job_failed(
+            &backend_client,
+            &job.id,
+            "subtitle_parse_failed",
+            &error,
+            is_replay,
+        )
+        .await;
+        return Err(error);
+    }
+    let mut commit = import_commit_state(policy, "subtitle_attach", article.id.clone());
+    job = begin_import_job_commit(&backend_client, job, &commit)
+        .await
+        .map_err(backend_error_to_string)?;
+    let uploaded_file = match backend_client
         .upload_file_path(
-            subtitle_path,
+            &subtitle_path,
             Some(serde_json::json!({
                 "kind": "subtitle",
                 "source": "desktop_import",
@@ -3171,9 +5083,63 @@ pub async fn import_article_subtitles_cmd(
             })),
         )
         .await
+    {
+        Ok(file) => file,
+        Err(error) => {
+            let message = error.to_string();
+            mark_import_job_failed(
+                &backend_client,
+                &job.id,
+                "subtitle_upload_failed",
+                &message,
+                is_replay || retryable_backend_error(&error),
+            )
+            .await;
+            return Err(backend_error_to_string(error));
+        }
+    };
+    if !article.metadata.is_object() {
+        article.metadata = serde_json::json!({});
+    }
+    let metadata = article
+        .metadata
+        .as_object_mut()
+        .expect("article metadata was normalized to an object");
+    metadata.insert(
+        "subtitle_file".to_string(),
+        serde_json::json!({
+            "backend_file_id": uploaded_file.id,
+            "backend_download_url": uploaded_file.download_url,
+            "original_name": uploaded_file.original_name,
+            "sha256": uploaded_file.sha256,
+        }),
+    );
+    metadata.insert(
+        "import_job_id".to_string(),
+        serde_json::json!(job.id.clone()),
+    );
+    let updated = match replace_backend_article(&app_handle, &article).await {
+        Ok(article) => article,
+        Err(error) => {
+            mark_import_job_failed(
+                &backend_client,
+                &job.id,
+                "subtitle_commit_failed",
+                &error,
+                is_replay || retryable_import_message(&error),
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    commit.result_material_id = Some(updated.id.clone());
+    let _ = persist_import_job_commit_state(&backend_client, &job, &commit)
+        .await
         .map_err(backend_error_to_string)?;
-
-    replace_backend_article(&app_handle, &article).await
+    finish_import_job(&backend_client, &job.id, &updated.id)
+        .await
+        .map_err(backend_error_to_string)?;
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -3181,28 +5147,53 @@ pub async fn import_srt_file_cmd(
     app_handle: AppHandle,
     file_path: String,
     title: Option<String>,
+    import_job_id: Option<String>,
+    duplicate_policy: Option<String>,
 ) -> Result<Article, String> {
-    let backend_client = backend_client_for_app(&app_handle)?;
-    let article = create_article_from_srt(std::path::Path::new(&file_path), title)?;
-    let uploaded_file = backend_client
-        .upload_file_path(
-            Path::new(&file_path),
-            Some(serde_json::json!({
-                "kind": "subtitle",
-                "source": "desktop_import",
-                "material_id": article.id,
-            })),
-        )
-        .await
-        .map_err(backend_error_to_string)?;
-    create_backend_material_from_article(
+    let source_path = PathBuf::from(&file_path);
+    let preview_article = create_article_from_srt(&source_path, title.clone())?;
+    let source = MaterialImportSource {
+        source_kind: "subtitle".to_string(),
+        source_uri: Some(format!("file://{file_path}")),
+        content: Some(preview_article.content.clone()),
+        file_path: Some(source_path.clone()),
+        file_id: None,
+        title: Some(preview_article.title),
+        metadata: serde_json::json!({ "subtitle_type": "srt" }),
+    };
+    let prepare_app = app_handle.clone();
+    run_material_import(
         &app_handle,
-        &article,
-        Some(serde_json::json!({
-            "backend_file_id": uploaded_file.id,
-            "backend_download_url": uploaded_file.download_url,
-            "original_name": uploaded_file.original_name,
-        })),
+        source,
+        ImportJobOptions {
+            import_job_id,
+            duplicate_policy,
+        },
+        || async move {
+            let backend_client = backend_client_for_app(&prepare_app)?;
+            let article = create_article_from_srt(&source_path, title)?;
+            let uploaded_file = backend_client
+                .upload_file_path(
+                    &source_path,
+                    Some(serde_json::json!({
+                        "kind": "subtitle",
+                        "source": "desktop_import",
+                        "material_id": article.id,
+                    })),
+                )
+                .await
+                .map_err(backend_error_to_string)?;
+            Ok(PreparedMaterialImport {
+                article,
+                metadata: Some(serde_json::json!({
+                    "backend_file_id": uploaded_file.id,
+                    "backend_download_url": uploaded_file.download_url,
+                    "original_name": uploaded_file.original_name,
+                    "subtitle_type": "srt",
+                })),
+                file_sha256: Some(uploaded_file.sha256),
+            })
+        },
     )
     .await
 }
@@ -3400,6 +5391,261 @@ fn is_audio_file_extension(ext: &str) -> bool {
     )
 }
 
+fn is_text_import_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "md" | "markdown" | "txt" | "docx"
+    )
+}
+
+fn normalize_imported_text(content: String) -> String {
+    content
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_string()
+}
+
+fn extract_docx_text(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).map_err(|e| format!("读取 DOCX 文件失败: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("解析 DOCX 压缩包失败: {}", e))?;
+    let mut document = archive
+        .by_name("word/document.xml")
+        .map_err(|_| "DOCX 文件缺少 word/document.xml".to_string())?;
+    let mut xml = String::new();
+    document
+        .read_to_string(&mut xml)
+        .map_err(|e| format!("读取 DOCX 正文失败: {}", e))?;
+
+    let paragraph_re = regex::Regex::new(r#"(?s)<w:p\b[^>]*>(.*?)</w:p>"#)
+        .map_err(|e| format!("DOCX 段落解析器初始化失败: {}", e))?;
+    let text_re = regex::Regex::new(r#"(?s)<w:t\b[^>]*>(.*?)</w:t>"#)
+        .map_err(|e| format!("DOCX 文本解析器初始化失败: {}", e))?;
+    let tab_re = regex::Regex::new(r#"<w:tab\s*/>"#)
+        .map_err(|e| format!("DOCX 制表符解析器初始化失败: {}", e))?;
+
+    let mut paragraphs = Vec::new();
+    for paragraph in paragraph_re.captures_iter(&xml) {
+        let Some(paragraph_xml) = paragraph.get(1).map(|capture| capture.as_str()) else {
+            continue;
+        };
+        // Preserve tab position when collecting text nodes below.
+        let paragraph_xml = tab_re.replace_all(paragraph_xml, "<w:t> </w:t>");
+        let text = text_re
+            .captures_iter(&paragraph_xml)
+            .filter_map(|capture| capture.get(1).map(|value| value.as_str()))
+            .map(|text| html_escape::decode_html_entities(text).to_string())
+            .collect::<Vec<_>>()
+            .join("");
+        let text = text.trim();
+        if !text.is_empty() {
+            paragraphs.push(text.to_string());
+        }
+    }
+
+    if paragraphs.is_empty() {
+        return Err("未能从 DOCX 文件中提取到正文".to_string());
+    }
+
+    Ok(paragraphs.join("\n\n"))
+}
+
+fn read_text_import_content(path: &Path, ext: &str) -> Result<String, String> {
+    let content = match ext.to_lowercase().as_str() {
+        "md" | "markdown" | "txt" => {
+            std::fs::read_to_string(path).map_err(|e| format!("读取文本文件失败: {}", e))?
+        }
+        "docx" => extract_docx_text(path)?,
+        _ => return Err(format!("不支持的文本文件格式: {}", ext)),
+    };
+    let content = normalize_imported_text(content);
+    if content.trim().is_empty() {
+        return Err("文本文件内容为空".to_string());
+    }
+    Ok(content)
+}
+
+#[cfg(test)]
+mod text_import_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_path(extension: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "openkoto-text-import-{}.{}",
+            Uuid::new_v4(),
+            extension
+        ))
+    }
+
+    #[test]
+    fn reads_utf8_bom_and_normalizes_crlf_for_md_and_txt() {
+        for extension in ["md", "txt"] {
+            let path = temp_path(extension);
+            std::fs::write(&path, b"\xEF\xBB\xBF  # Title\r\n\r\nBody\r")
+                .expect("write temporary text file");
+
+            let content = read_text_import_content(&path, extension).expect("read text file");
+            assert_eq!(content, "# Title\n\nBody");
+            std::fs::remove_file(path).expect("remove temporary text file");
+        }
+    }
+
+    #[test]
+    fn rejects_empty_text_with_clear_error() {
+        let path = temp_path("txt");
+        std::fs::write(&path, b"\xEF\xBB\xBF \r\n\t").expect("write temporary empty file");
+
+        let error = read_text_import_content(&path, "txt").expect_err("empty text must fail");
+        assert_eq!(error, "文本文件内容为空");
+        std::fs::remove_file(path).expect("remove temporary empty file");
+    }
+
+    #[test]
+    fn rejects_corrupted_docx_with_clear_error() {
+        let path = temp_path("docx");
+        std::fs::write(&path, b"not a zip archive").expect("write corrupted docx");
+
+        let error = read_text_import_content(&path, "docx").expect_err("corrupted docx must fail");
+        assert!(
+            error.starts_with("解析 DOCX 压缩包失败:"),
+            "unexpected error: {error}"
+        );
+        std::fs::remove_file(path).expect("remove corrupted docx");
+    }
+
+    #[test]
+    fn extracts_body_from_minimal_valid_docx() {
+        let path = temp_path("docx");
+        let file = std::fs::File::create(&path).expect("create temporary docx");
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("create document entry");
+        archive
+            .write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+                    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                      <w:body>
+                        <w:p><w:r><w:t>Hello &amp; world</w:t><w:tab/><w:t>again</w:t></w:r></w:p>
+                        <w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
+                      </w:body>
+                    </w:document>"#,
+            )
+            .expect("write document xml");
+        archive.finish().expect("finish temporary docx");
+
+        let content = read_text_import_content(&path, "docx").expect("read valid docx");
+        assert_eq!(content, "Hello & world again\n\nSecond paragraph");
+        std::fs::remove_file(path).expect("remove temporary docx");
+    }
+}
+
+#[tauri::command]
+pub async fn import_text_file_cmd(
+    app_handle: AppHandle,
+    file_path: String,
+    title: Option<String>,
+    import_job_id: Option<String>,
+    duplicate_policy: Option<String>,
+) -> Result<Article, String> {
+    let src_path = PathBuf::from(&file_path);
+
+    if !src_path.exists() {
+        return Err(format!("文件不存在: {}", file_path));
+    }
+
+    let ext = src_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .ok_or("无法识别文件格式")?;
+
+    if !is_text_import_extension(&ext) {
+        return Err(format!("不支持的文本文件格式: {}", ext));
+    }
+
+    let content = read_text_import_content(&src_path, &ext)?;
+    let file_name = src_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("未命名文本");
+    let article_title = title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| file_name.to_string());
+    let source_uri = format!("file://{file_path}");
+    let source = MaterialImportSource {
+        source_kind: "text_file".to_string(),
+        source_uri: Some(source_uri.clone()),
+        content: Some(content.clone()),
+        file_path: Some(src_path.clone()),
+        file_id: None,
+        title: Some(article_title.clone()),
+        metadata: serde_json::json!({ "text_file_type": ext.clone() }),
+    };
+    let prepare_app = app_handle.clone();
+    run_material_import(
+        &app_handle,
+        source,
+        ImportJobOptions {
+            import_job_id,
+            duplicate_policy,
+        },
+        || async move {
+            let backend_client = backend_client_for_app(&prepare_app)?;
+            let uploaded_file = backend_client
+                .upload_file_path(
+                    &src_path,
+                    Some(serde_json::json!({
+                        "kind": "text_file",
+                        "text_file_type": ext,
+                        "source": "desktop_import",
+                    })),
+                )
+                .await
+                .map_err(backend_error_to_string)?;
+            let id = Uuid::new_v4().to_string();
+            let article = Article {
+                id: id.clone(),
+                title: article_title,
+                content: content.clone(),
+                source_type: Some("text_file".to_string()),
+                source_url: Some(source_uri),
+                media_path: None,
+                book_path: None,
+                book_type: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                translated: false,
+                active_mind_map_artifact_id: None,
+                segments: create_segments_from_content(&id, &content),
+                metadata: serde_json::json!({}),
+                tags: Vec::new(),
+                reading_progress: None,
+                archived_at: None,
+            };
+            Ok(PreparedMaterialImport {
+                article,
+                metadata: Some(serde_json::json!({
+                    "backend_file_id": uploaded_file.id,
+                    "backend_download_url": uploaded_file.download_url,
+                    "original_name": uploaded_file.original_name,
+                    "text_file_type": ext,
+                })),
+                file_sha256: Some(uploaded_file.sha256),
+            })
+        },
+    )
+    .await
+}
+
 /// 确保书籍存储目录存在
 fn ensure_books_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app_handle
@@ -3422,11 +5668,10 @@ pub async fn import_book_cmd(
     app_handle: AppHandle,
     file_path: String,
     title: Option<String>,
+    import_job_id: Option<String>,
+    duplicate_policy: Option<String>,
 ) -> Result<Article, String> {
-    use std::path::Path;
-
-    let backend_client = backend_client_for_app(&app_handle)?;
-    let src_path = Path::new(&file_path);
+    let src_path = PathBuf::from(&file_path);
 
     // 验证文件存在
     if !src_path.exists() {
@@ -3453,76 +5698,85 @@ pub async fn import_book_cmd(
         .and_then(|n| n.to_str())
         .unwrap_or("未命名书籍");
 
-    let book_title = title.unwrap_or_else(|| file_name.to_string());
-
-    // 确保书籍目录存在
-    let books_dir = ensure_books_dir(&app_handle)?;
-
-    // 生成唯一 ID 和目标路径
-    let id = Uuid::new_v4().to_string();
-    let dest_name = format!("{}.{}", id, ext);
-    let dest_path = books_dir.join(&dest_name);
-
-    // 复制文件到应用数据目录
-    std::fs::copy(src_path, &dest_path).map_err(|e| format!("复制文件失败: {}", e))?;
-    let uploaded_file = backend_client
-        .upload_file_path(
-            src_path,
-            Some(serde_json::json!({
-                "kind": "book",
-                "book_type": book_type,
-                "source": "desktop_import",
-                "cached_path": dest_path.to_string_lossy(),
-            })),
-        )
-        .await
-        .map_err(backend_error_to_string)?;
-
-    let created_at = chrono::Utc::now().to_rfc3339();
-
-    // 读取 TXT 文件内容作为 content，EPUB/PDF 使用占位符
-    let content = match book_type {
-        "txt" => {
-            // 尝试读取 TXT 文件内容
-            std::fs::read_to_string(&dest_path)
-                .unwrap_or_else(|_| format!("[书籍已导入] {}", book_title))
-        }
-        "epub" => format!("[EPUB 书籍] {}", book_title),
-        "pdf" => format!("[PDF 书籍] {}", book_title),
-        _ => format!("[书籍已导入] {}", book_title),
+    let book_title = title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| file_name.to_string());
+    let source_uri = format!("file://{file_path}");
+    let source = MaterialImportSource {
+        source_kind: "book".to_string(),
+        source_uri: Some(source_uri.clone()),
+        content: None,
+        file_path: Some(src_path.clone()),
+        file_id: None,
+        title: Some(book_title.clone()),
+        metadata: serde_json::json!({ "book_type": book_type }),
     };
-
-    // 创建 Article 记录
-    let article = Article {
-        id: id.clone(),
-        title: book_title,
-        content,
-        source_type: Some("book".to_string()),
-        source_url: Some(format!("file://{}", file_path)),
-        media_path: None,
-        book_path: Some(dest_path.to_string_lossy().into_owned()),
-        book_type: Some(book_type.to_string()),
-        created_at,
-        translated: false,
-        active_mind_map_artifact_id: None,
-        segments: Vec::new(), // 书籍不预分段，由阅读器处理
-    };
-
-    println!(
-        "[ImportBook] 书籍导入成功: {} ({})",
-        article.title, book_type
-    );
-
-    create_backend_material_from_article(
+    let prepare_app = app_handle.clone();
+    let book_type = book_type.to_string();
+    run_material_import(
         &app_handle,
-        &article,
-        Some(serde_json::json!({
-            "backend_file_id": uploaded_file.id,
-            "backend_download_url": uploaded_file.download_url,
-            "original_name": uploaded_file.original_name,
-            "book_type": book_type,
-            "cached_path": dest_path.to_string_lossy(),
-        })),
+        source,
+        ImportJobOptions {
+            import_job_id,
+            duplicate_policy,
+        },
+        || async move {
+            let backend_client = backend_client_for_app(&prepare_app)?;
+            let books_dir = ensure_books_dir(&prepare_app)?;
+            let id = Uuid::new_v4().to_string();
+            let dest_path = books_dir.join(format!("{id}.{ext}"));
+            std::fs::copy(&src_path, &dest_path)
+                .map_err(|error| format!("复制文件失败: {error}"))?;
+            let uploaded_file = backend_client
+                .upload_file_path(
+                    &src_path,
+                    Some(serde_json::json!({
+                        "kind": "book",
+                        "book_type": book_type,
+                        "source": "desktop_import",
+                        "cached_path": dest_path.to_string_lossy(),
+                    })),
+                )
+                .await
+                .map_err(backend_error_to_string)?;
+            let content = match book_type.as_str() {
+                "txt" => std::fs::read_to_string(&dest_path)
+                    .unwrap_or_else(|_| format!("[书籍已导入] {book_title}")),
+                "epub" => format!("[EPUB 书籍] {book_title}"),
+                "pdf" => format!("[PDF 书籍] {book_title}"),
+                _ => format!("[书籍已导入] {book_title}"),
+            };
+            let article = Article {
+                id,
+                title: book_title,
+                content,
+                source_type: Some("book".to_string()),
+                source_url: Some(source_uri),
+                media_path: None,
+                book_path: Some(dest_path.to_string_lossy().into_owned()),
+                book_type: Some(book_type.clone()),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                translated: false,
+                active_mind_map_artifact_id: None,
+                segments: Vec::new(),
+                metadata: serde_json::json!({}),
+                tags: Vec::new(),
+                reading_progress: None,
+                archived_at: None,
+            };
+            Ok(PreparedMaterialImport {
+                article,
+                metadata: Some(serde_json::json!({
+                    "backend_file_id": uploaded_file.id,
+                    "backend_download_url": uploaded_file.download_url,
+                    "original_name": uploaded_file.original_name,
+                    "book_type": book_type,
+                    "cached_path": dest_path.to_string_lossy(),
+                })),
+                file_sha256: Some(uploaded_file.sha256),
+            })
+        },
     )
     .await
 }
@@ -3533,6 +5787,8 @@ pub async fn import_web_material_cmd(
     url: String,
     title: Option<String>,
     content: String,
+    import_job_id: Option<String>,
+    duplicate_policy: Option<String>,
 ) -> Result<Article, String> {
     require_external_tools_enabled("import_web_material_cmd")?;
 
@@ -3547,27 +5803,50 @@ pub async fn import_web_material_cmd(
         );
     }
 
-    let id = Uuid::new_v4().to_string();
-    let created_at = chrono::Utc::now().to_rfc3339();
     let final_title = title.unwrap_or_else(|| "Untitled Web Material".to_string());
-    let segments = create_segments_from_content(&id, &content);
-
-    let article = Article {
-        id: id.clone(),
-        title: final_title,
-        content,
-        source_type: Some("web".to_string()),
-        source_url: Some(url),
-        media_path: None,
-        book_path: None,
-        book_type: None,
-        created_at,
-        translated: false,
-        active_mind_map_artifact_id: None,
-        segments,
+    let source = MaterialImportSource {
+        source_kind: "url".to_string(),
+        source_uri: Some(url.clone()),
+        content: Some(content.clone()),
+        file_path: None,
+        file_id: None,
+        title: Some(final_title.clone()),
+        metadata: serde_json::json!({ "source": "web_import" }),
     };
-
-    create_backend_material_from_article(&app_handle, &article, None).await
+    run_material_import(
+        &app_handle,
+        source,
+        ImportJobOptions {
+            import_job_id,
+            duplicate_policy,
+        },
+        || async move {
+            let id = Uuid::new_v4().to_string();
+            Ok(PreparedMaterialImport {
+                article: Article {
+                    id: id.clone(),
+                    title: final_title,
+                    content: content.clone(),
+                    source_type: Some("web".to_string()),
+                    source_url: Some(url),
+                    media_path: None,
+                    book_path: None,
+                    book_type: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    translated: false,
+                    active_mind_map_artifact_id: None,
+                    segments: create_segments_from_content(&id, &content),
+                    metadata: serde_json::json!({}),
+                    tags: Vec::new(),
+                    reading_progress: None,
+                    archived_at: None,
+                },
+                metadata: None,
+                file_sha256: None,
+            })
+        },
+    )
+    .await
 }
 
 // File System Commands

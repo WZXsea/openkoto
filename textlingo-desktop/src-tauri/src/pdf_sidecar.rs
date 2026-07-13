@@ -43,12 +43,13 @@ pub fn resolve_pdf_sidecar_for_dir(
 
         for candidate in candidates {
             if candidate.join("openkoto_pdf_translator/pdf2zh.py").exists() {
-                let working_dir = candidate
-                    .canonicalize()
-                    .unwrap_or(candidate);
+                let working_dir = candidate.canonicalize().unwrap_or(candidate);
                 return Ok(PdfSidecarCommand {
                     program: "python".to_string(),
-                    args: vec!["-m".to_string(), "openkoto_pdf_translator.pdf2zh".to_string()],
+                    args: vec![
+                        "-m".to_string(),
+                        "openkoto_pdf_translator.pdf2zh".to_string(),
+                    ],
                     working_dir,
                 });
             }

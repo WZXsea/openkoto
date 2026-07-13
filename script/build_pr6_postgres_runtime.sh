@@ -39,11 +39,11 @@ copy_dylib_dependency() {
   dep_name="$(basename "$dep")"
 
   case "$dep" in
-    /opt/homebrew/*.dylib|/opt/homebrew/*/*.dylib|/opt/homebrew/*/*/*.dylib|/opt/homebrew/*/*/*/*.dylib)
+    /opt/homebrew/*.dylib|/opt/homebrew/*/*.dylib|/opt/homebrew/*/*/*.dylib|/opt/homebrew/*/*/*/*.dylib|/usr/local/*.dylib|/usr/local/*/*.dylib|/usr/local/*/*/*.dylib|/usr/local/*/*/*/*.dylib)
       source_path="$dep"
       ;;
     @loader_path/*.dylib|@rpath/*.dylib)
-      source_path="$(find /opt/homebrew/opt /opt/homebrew/Cellar -name "$dep_name" 2>/dev/null | head -1 || true)"
+      source_path="$(find /opt/homebrew/opt /opt/homebrew/Cellar /usr/local/opt /usr/local/Cellar -name "$dep_name" 2>/dev/null | head -1 || true)"
       ;;
     *)
       return 1
@@ -93,7 +93,7 @@ rewrite_macho_library_paths() {
     install_name_tool -add_rpath '@loader_path/..' "$macho_file" 2>/dev/null || true
     while IFS= read -r dep; do
       case "$dep" in
-        /opt/homebrew/*.dylib|/opt/homebrew/*/*.dylib|/opt/homebrew/*/*/*.dylib|/opt/homebrew/*/*/*/*.dylib)
+        /opt/homebrew/*.dylib|/opt/homebrew/*/*.dylib|/opt/homebrew/*/*/*.dylib|/opt/homebrew/*/*/*/*.dylib|/usr/local/*.dylib|/usr/local/*/*.dylib|/usr/local/*/*/*.dylib|/usr/local/*/*/*/*.dylib)
           install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$macho_file" 2>/dev/null || true
           ;;
       esac

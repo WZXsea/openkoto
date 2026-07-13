@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useCallback } from "react";
+import React, { useEffect, useRef, useCallback, useId } from "react";
+import { X } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 interface DialogProps {
@@ -13,9 +14,13 @@ interface DialogProps {
   title?: string;
   children: React.ReactNode;
   className?: string;
+  closeDisabled?: boolean;
 }
 
 import { createPortal } from "react-dom";
+
+let nextDialogId = 0;
+const openDialogIds = new Set<number>();
 
 export function Dialog({
   isOpen,
@@ -24,34 +29,55 @@ export function Dialog({
   onOpenChange,
   title,
   children,
-  className
+  className,
+  closeDisabled = false,
 }: DialogProps) {
   // 支持两种 API：旧的 isOpen/onClose 和新的 open/onOpenChange
   const isDialogOpen = open !== undefined ? open : isOpen;
   const handleClose = useCallback(() => {
+    if (closeDisabled) return;
     if (onOpenChange) {
       onOpenChange(false);
     } else if (onClose) {
       onClose();
     }
-  }, [onOpenChange, onClose]);
+  }, [closeDisabled, onOpenChange, onClose]);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const handleCloseRef = useRef(handleClose);
+  const titleId = useId();
+  const dialogId = useRef(++nextDialogId).current;
+
+  useEffect(() => {
+    handleCloseRef.current = handleClose;
+  }, [handleClose]);
 
   useEffect(() => {
     const handleEscapeKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") handleClose();
+      if (e.key !== "Escape") return;
+      if (dialogId !== Math.max(...openDialogIds)) return;
+      handleCloseRef.current();
     };
 
     if (isDialogOpen) {
+      openDialogIds.add(dialogId);
+      const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const previousBodyOverflow = document.body.style.overflow;
       document.addEventListener("keydown", handleEscapeKey);
       document.body.style.overflow = "hidden";
+      dialogRef.current?.focus();
+      return () => {
+        openDialogIds.delete(dialogId);
+        document.removeEventListener("keydown", handleEscapeKey);
+        document.body.style.overflow = previousBodyOverflow;
+        previouslyFocused?.focus();
+      };
     }
 
     return () => {
+      openDialogIds.delete(dialogId);
       document.removeEventListener("keydown", handleEscapeKey);
-      document.body.style.overflow = "unset";
     };
-  }, [isDialogOpen, handleClose]);
+  }, [dialogId, isDialogOpen]);
 
   if (!isDialogOpen) return null;
 
@@ -67,6 +93,11 @@ export function Dialog({
       {/* Dialog - 弹窗主体，使用主题变量替代硬编码颜色 */}
       <div
         ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        aria-label={title ? undefined : "Dialog"}
+        tabIndex={-1}
         className={cn(
           // 使用 popover 主题变量，确保与当前主题匹配
           "relative z-[101] w-full max-w-lg rounded-xl bg-popover border border-border",
@@ -78,7 +109,7 @@ export function Dialog({
         {title && (
           <div className="mb-4">
             {/* 标题使用主题前景色 */}
-            <h2 className="text-xl font-semibold text-popover-foreground">{title}</h2>
+            <h2 id={titleId} className="text-xl font-semibold text-popover-foreground">{title}</h2>
           </div>
         )}
         {children}
@@ -86,23 +117,11 @@ export function Dialog({
         {/* Close button - 关闭按钮使用主题兼容的颜色 */}
         <button
           onClick={handleClose}
+          disabled={closeDisabled}
           className="absolute top-4 right-4 text-muted-foreground hover:text-popover-foreground transition-colors"
           aria-label="Close"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
+          <X size={20} />
         </button>
       </div>
     </div>,

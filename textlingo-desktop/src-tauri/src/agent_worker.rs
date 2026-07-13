@@ -1250,7 +1250,8 @@ fn schedule_backend_artifact_link(
 ) {
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = sync_backend_active_mind_map_artifact(&app_handle, &artifact, task).await
+        if let Err(error) =
+            sync_backend_active_mind_map_artifact(&app_handle, &artifact, task).await
         {
             {
                 let mut guard = logs.lock().unwrap();

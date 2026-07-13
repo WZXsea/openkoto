@@ -8,14 +8,15 @@ fn tauri_manifest_dir() -> &'static Path {
 #[test]
 fn tauri_security_config_has_csp_and_narrow_asset_scope() {
     let config_path = tauri_manifest_dir().join("tauri.conf.json");
-    let config: Value =
-        serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+    let config: Value = serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
 
     let csp = config["app"]["security"]["csp"]
         .as_str()
         .expect("CSP must be a non-null string");
     assert!(!csp.trim().is_empty());
     assert_ne!(csp.trim(), "null");
+    assert!(csp.contains("media-src 'self' http://127.0.0.1:19420"));
+    assert!(csp.contains("connect-src 'self' http://127.0.0.1:19421"));
 
     let scope = config["app"]["security"]["assetProtocol"]["scope"]
         .as_array()

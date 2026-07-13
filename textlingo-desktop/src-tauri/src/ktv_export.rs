@@ -409,7 +409,10 @@ fn build_vocabulary_inline_reading_parts(
         }
 
         cursor = start + word.len();
-        parts.push(InlineReadingPart::Annotated { text: word, reading });
+        parts.push(InlineReadingPart::Annotated {
+            text: word,
+            reading,
+        });
         candidates.remove(candidate_index);
     }
 
@@ -417,7 +420,10 @@ fn build_vocabulary_inline_reading_parts(
         parts.push(InlineReadingPart::Plain(text[cursor..].to_string()));
     }
 
-    if parts.iter().any(|part| matches!(part, InlineReadingPart::Annotated { .. })) {
+    if parts
+        .iter()
+        .any(|part| matches!(part, InlineReadingPart::Annotated { .. }))
+    {
         Some(parts)
     } else {
         None
@@ -428,7 +434,10 @@ fn format_inline_reading(text: &str, reading_text: Option<&str>) -> Option<Strin
     let normalized_text = text.trim();
     let normalized_reading = reading_text?.trim();
 
-    if normalized_text.is_empty() || normalized_reading.is_empty() || normalized_text == normalized_reading {
+    if normalized_text.is_empty()
+        || normalized_reading.is_empty()
+        || normalized_text == normalized_reading
+    {
         return None;
     }
 

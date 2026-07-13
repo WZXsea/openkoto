@@ -26,6 +26,13 @@
     "model": "模型",
     "quickSwitch": "快速切换"
   },
+  "account": {
+    "menuLabel": "账户",
+    "signedIn": "已登录",
+    "switch": "切换账户",
+    "logout": "退出登录",
+    "loggingOut": "正在退出"
+  },
   "assistant": {
     "mode": {
       "quick": "快问",
@@ -345,6 +352,25 @@
       "themeName": "主题风格",
       "themeMode": "显示模式"
     },
+    "fonts": {
+      "uiFont": "界面字体",
+      "readerFont": "阅读字体",
+      "uiFontInput": "界面字体族",
+      "readerFontInput": "阅读字体族",
+      "custom": "自定义",
+      "customInput": "自定义 font-family",
+      "inputPlaceholder": "例如 \"PingFang SC\", sans-serif",
+      "uiHelp": "作用于导航、按钮、弹窗和大多数界面文字。",
+      "readerHelp": "作用于文章正文、纯文本和 EPUB 阅读区域。",
+      "preview": "The quick brown fox jumps over OpenKoto. 中文字体预览。",
+      "themeDefault": "跟随主题默认",
+      "systemSans": "系统无衬线",
+      "inter": "Inter",
+      "helvetica": "Helvetica / Arial",
+      "chineseSans": "中文无衬线",
+      "serif": "衬线字体",
+      "chineseSerif": "中文仿宋/楷体"
+    },
     "models": {
       "siliconflow": {
         "deepseek-v3": "DeepSeek V3",
@@ -580,7 +606,7 @@
   },
   "dropImport": {
     "hint": "松开以导入",
-    "types": "PDF / EPUB / 视频 / 音频 / 字幕",
+    "types": "PDF / EPUB / MD / TXT / DOCX / 视频 / 音频 / 字幕",
     "importing": "正在导入 {{count}} 个文件…",
     "done": "已导入 {{count}} 个",
     "unsupported": "不支持的文件类型: {{name}}",
@@ -627,12 +653,12 @@
   },
   "bookImport": {
     "title": "阅读素材",
-    "hint": "支持论文、书籍、小说等，支持pdf、txt、epub等格式，用于文章文献的多语言无障碍阅读、学习等。",
+    "hint": "支持论文、书籍、小说等，支持 PDF、EPUB 等格式，用于文章文献的多语言无障碍阅读、学习等。",
     "fileLabel": "书籍文件",
-    "filePlaceholder": "选择 EPUB、TXT 或 PDF 文件...",
+    "filePlaceholder": "选择 EPUB 或 PDF 文件...",
     "titleLabel": "书籍标题",
     "titlePlaceholder": "留空则使用文件名",
-    "description": "支持 EPUB、TXT 和 PDF 格式。EPUB 支持复杂排版，TXT 适合纯文本，PDF 保持原始排版。",
+    "description": "支持 EPUB 和 PDF 格式。EPUB 支持复杂排版，PDF 保持原始排版。Markdown、TXT、DOCX 请使用文本文件入口。",
     "import": "导入书籍",
     "importing": "导入中...",
     "fileFilterName": "电子书",
@@ -640,6 +666,24 @@
       "fileRequired": "请选择文件",
       "selectFailed": "选择文件失败",
       "unsupportedFormat": "不支持的文件格式"
+    }
+  },
+  "textFileImport": {
+    "title": "文本文件",
+    "hint": "导入本地文本内容，并转成可逐句精读、划词和生成学习候选的文章素材。",
+    "fileLabel": "文本文件",
+    "filePlaceholder": "选择 Markdown、TXT 或 DOCX 文件...",
+    "selectFileTitle": "选择文本文件",
+    "description": "支持 .md、.markdown、.txt 和 .docx。PDF/EPUB 请继续使用阅读素材入口。",
+    "titleLabel": "标题",
+    "titlePlaceholder": "留空则使用文件名",
+    "import": "导入文本",
+    "importing": "导入中...",
+    "fileFilterName": "文本文件",
+    "errors": {
+      "fileRequired": "请选择文本文件",
+      "selectFailed": "选择文件失败",
+      "unsupportedFormat": "不支持的文本文件格式"
     }
   },
   "epubReader": {

@@ -40,6 +40,9 @@ export interface AppConfig {
   target_language: string;
   interface_language: string;
   batch_translation_concurrency?: number;
+  // Optional font-family overrides
+  ui_font_family?: string;
+  reader_font_family?: string;
   // Backend API URL for services like webpage fetching
   backend_url?: string;
   // Auth token for backend API
@@ -268,8 +271,12 @@ export type TauriCommand = {
   get_artifact_cmd: (articleId: string, artifactId: string) => Promise<Artifact>;
   get_agent_worker_status_cmd: () => Promise<AgentWorkerStatusSnapshot>;
   stop_agent_worker_cmd: () => Promise<void>;
-  import_article_subtitles_cmd: (articleId: string, subtitlePath: string) => Promise<Article>;
-  import_srt_file_cmd: (filePath: string, title?: string) => Promise<Article>;
+  import_article_subtitles_cmd: (articleId: string, subtitlePath: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  import_srt_file_cmd: (filePath: string, title?: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  import_text_file_cmd: (filePath: string, title?: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  import_book_cmd: (filePath: string, title?: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  import_web_material_cmd: (url: string, title: string | undefined, content: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  material_library_resume_import_job_cmd: (id: string, duplicatePolicy?: string) => Promise<Article>;
   prepare_ktv_segments_cmd: (articleId: string, languageHint?: string) => Promise<Article>;
   export_ktv_video_cmd: (articleId: string, outputPath: string, config: KtvExportConfig) => Promise<KtvExportResult>;
 };

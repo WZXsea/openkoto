@@ -45,7 +45,7 @@ Built with **Tauri + React + Rust**, it runs locally on your machine for **fast 
 
 | Version | Description | Link |
 |---------|-------------|------|
-| **Desktop** | **Recommended** 🖥️ Native performance, local data, Mac/Windows/Linux | [Download Latest Release](https://github.com/hikariming/OpenKoto/releases) |
+| **Desktop** | **Recommended** 🖥️ Native performance, local data, macOS (Apple Silicon/Intel) | [Download Latest Release](https://github.com/hikariming/OpenKoto/releases) |
 | Web | Convenient online access, no installation required | [https://openkoto.app](https://openkoto.app) |
 | Source Code | 🆓 Fully open source, Apache 2.0 License | [GitHub Repository](https://github.com/hikariming/OpenKoto) |
 
@@ -73,7 +73,11 @@ Built with **Tauri + React + Rust**, it runs locally on your machine for **fast 
 ## Coming Soon
 
 - 📚 Personalized vocabulary and grammar exercise system
-- 🎥 YouTube video learning support
+
+## WZX PR-7 macOS build
+The standalone `0.7.0` Apple Silicon prerelease includes the local Axum backend, PostgreSQL 16, Node.js, unified material imports, search, and persistent reading progress. See [macOS installation and data notes](docs/INSTALL_MACOS.md) before installing.
+
+[Download the WZX PR-7 prerelease](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.7.0-pr7-material-workbench)
 
 ## Getting Started
 
@@ -149,7 +153,7 @@ We welcome contributions! Please feel free to submit PRs or open issues.
 
 ## Current Version
 
-**v0.1.4** (Development)
+**v0.7.0** (WZX PR-7 prerelease)
 
 ## Related Projects by the Author
 
