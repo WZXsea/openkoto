@@ -380,6 +380,33 @@ pub struct UpdateLearningItemRequest {
     pub review_state: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptedFavoriteType {
+    Vocabulary,
+    Grammar,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptLearningItemRequest {
+    pub favorite_type: AcceptedFavoriteType,
+    #[serde(default)]
+    pub pack_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AcceptedFavorite {
+    Vocabulary { id: String, pack_ids: Vec<String> },
+    Grammar { id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptLearningItemResponse {
+    pub learning_item: LearningItem,
+    pub favorite: AcceptedFavorite,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateLearningItemFromSelectionRequest {
     pub material_id: String,
@@ -1007,6 +1034,21 @@ impl BackendClient {
         Ok(())
     }
 
+    pub async fn accept_learning_item(
+        &self,
+        id: &str,
+        payload: &AcceptLearningItemRequest,
+    ) -> Result<AcceptLearningItemResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/learning-items/{id}/accept")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
     pub async fn list_word_packs(&self) -> Result<Vec<WordPack>, BackendClientError> {
         let response = self
             .client
@@ -1516,6 +1558,48 @@ mod tests {
             serde_json::from_str(r#"{"deleted":true}"#).unwrap();
 
         assert!(response.deleted);
+    }
+
+    #[test]
+    fn learning_item_acceptance_contract_matches_backend() {
+        let request = AcceptLearningItemRequest {
+            favorite_type: AcceptedFavoriteType::Vocabulary,
+            pack_ids: vec!["pack-a".to_string()],
+        };
+        let serialized = serde_json::to_value(request).unwrap();
+        assert_eq!(serialized["favorite_type"], "vocabulary");
+        assert_eq!(serialized["pack_ids"][0], "pack-a");
+
+        let response: AcceptLearningItemResponse = serde_json::from_value(serde_json::json!({
+            "learning_item": {
+                "id": "item-1",
+                "material_id": null,
+                "segment_id": null,
+                "item_type": "word",
+                "text": "mitigate",
+                "source_sentence": "This can mitigate risk.",
+                "collocations": [],
+                "examples": [],
+                "tags": [],
+                "status": "accepted",
+                "priority": 0,
+                "review_state": {},
+                "created_at": "2026-07-13T00:00:00Z",
+                "updated_at": "2026-07-13T00:00:00Z"
+            },
+            "favorite": {
+                "type": "vocabulary",
+                "id": "learning-item-item-1",
+                "pack_ids": ["pack-a"]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(response.learning_item.status, "accepted");
+        assert!(matches!(
+            response.favorite,
+            AcceptedFavorite::Vocabulary { ref pack_ids, .. } if pack_ids == &["pack-a"]
+        ));
     }
 
     #[test]

@@ -159,7 +159,7 @@ describe("VideoSubtitlePlayer", () => {
     fireEvent.ended(video);
     expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({
       reader_kind: "media",
-      locator: { kind: "time", current_time: 100, duration: 100 },
+      locator: { version: 1, kind: "time", current_time: 100, duration: 100 },
       progress_ratio: 1,
       status: "completed",
     }));

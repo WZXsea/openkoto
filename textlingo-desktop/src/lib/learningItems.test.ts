@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  acceptLearningItem,
   createLearningItem,
   createLearningItemFromSelection,
   deleteLearningItem,
@@ -57,13 +58,19 @@ describe("learningItems API helper", () => {
       },
     });
 
-    await updateLearningItem("item-1", { status: "accepted", meaning_in_context: "reduce" });
+    await updateLearningItem("item-1", { meaning_in_context: "reduce" });
     expect(invokeMock).toHaveBeenCalledWith("update_learning_item_cmd", {
       id: "item-1",
-      payload: { status: "accepted", meaning_in_context: "reduce" },
+      payload: { meaning_in_context: "reduce" },
     });
 
     await deleteLearningItem("item-1");
     expect(invokeMock).toHaveBeenCalledWith("delete_learning_item_cmd", { id: "item-1" });
+
+    await acceptLearningItem("item-1", { favorite_type: "vocabulary", pack_ids: ["pack-a"] });
+    expect(invokeMock).toHaveBeenCalledWith("accept_learning_item_cmd", {
+      id: "item-1",
+      payload: { favorite_type: "vocabulary", pack_ids: ["pack-a"] },
+    });
   });
 });

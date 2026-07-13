@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Archive, Check, Loader2, Plus, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
 
 import {
+  acceptLearningItem,
   createLearningItemFromSelection,
   deleteLearningItem,
   listLearningItems,
@@ -169,30 +170,11 @@ export function LearningCandidateBox({
   const handleAcceptItem = async (item: LearningItem, packIds: string[]) => {
     setSavingItemId(item.id);
     try {
-      if (item.item_type === "grammar") {
-        await invoke("add_favorite_grammar_cmd", {
-          point: item.text,
-          explanation: item.meaning_in_context || item.definition_zh || item.definition_en || item.source_sentence || item.text,
-          example: item.source_sentence || null,
-          sourceArticleId: item.material_id || article.id,
-          sourceArticleTitle: item.source_material_title || article.title,
-        });
-      } else {
-        await invoke("add_favorite_vocabulary_cmd", {
-          word: item.text,
-          meaning: item.meaning_in_context || item.definition_zh || item.definition_en || item.text,
-          usage: "",
-          explanation: item.definition_en || item.meaning_in_context || null,
-          example: firstExampleText(item) || item.source_sentence || null,
-          reading: null,
-          sourceArticleId: item.material_id || article.id,
-          sourceArticleTitle: item.source_material_title || article.title,
-          packIds,
-        });
-      }
-
-      const updated = await updateLearningItem(item.id, { status: "accepted" });
-      upsertLocalItem(updated);
+      const result = await acceptLearningItem(item.id, {
+        favorite_type: item.item_type === "grammar" ? "grammar" : "vocabulary",
+        pack_ids: item.item_type === "grammar" ? [] : packIds,
+      });
+      upsertLocalItem(result.learning_item);
       setFilter("accepted");
       onSuccess("已加入本地词包");
     } catch (error) {
@@ -379,15 +361,4 @@ function findMatchingVocabulary(vocabulary: VocabularyItem[], text: string) {
 
 function normalize(value: string) {
   return value.trim().toLowerCase();
-}
-
-function firstExampleText(item: LearningItem) {
-  for (const example of item.examples || []) {
-    if (typeof example === "string") return example;
-    if (example && typeof example === "object" && "text" in example) {
-      const text = (example as { text?: unknown }).text;
-      if (typeof text === "string" && text.trim()) return text;
-    }
-  }
-  return null;
 }

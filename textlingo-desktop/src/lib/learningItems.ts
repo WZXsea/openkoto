@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AcceptLearningItemInput,
+  AcceptLearningItemResponse,
   CreateLearningItemFromSelectionInput,
   CreateLearningItemInput,
   LearningItem,
@@ -30,4 +32,11 @@ export function updateLearningItem(
 
 export function deleteLearningItem(id: string): Promise<void> {
   return invoke<void>("delete_learning_item_cmd", { id });
+}
+
+export function acceptLearningItem(
+  id: string,
+  payload: AcceptLearningItemInput,
+): Promise<AcceptLearningItemResponse> {
+  return invoke<AcceptLearningItemResponse>("accept_learning_item_cmd", { id, payload });
 }

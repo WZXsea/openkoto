@@ -171,6 +171,10 @@ pub fn build_router(state: AppState) -> Router {
             post(learning_items::bulk_learning_item_status),
         )
         .route(
+            "/learning-items/{id}/accept",
+            post(learning_items::accept_learning_item),
+        )
+        .route(
             "/learning-items/{id}",
             get(learning_items::get_learning_item)
                 .patch(learning_items::patch_learning_item)

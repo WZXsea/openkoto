@@ -3,9 +3,10 @@ use std::{fs, path::PathBuf};
 use openkoto_desktop_lib::{
     commands::{
         build_article_overview, collect_article_evidence, read_article_window,
-        save_mind_map_artifact_in_dir, search_article_segments, update_agent_task_progress_in_dir,
+        save_legacy_mind_map_artifact_in_dir, search_article_segments,
+        update_legacy_agent_task_progress_in_dir,
     },
-    storage::save_agent_task_in_dir,
+    storage::save_legacy_agent_task_in_dir,
     types::{
         AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Article, ArticleSegment,
         ArtifactType,
@@ -158,9 +159,9 @@ fn article_get_evidence_returns_requested_items_in_input_order() {
 fn task_report_progress_updates_stored_task() {
     let data_dir = temp_data_dir("progress");
     let task = sample_task();
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
-    let updated = update_agent_task_progress_in_dir(
+    let updated = update_legacy_agent_task_progress_in_dir(
         &data_dir,
         &task.id,
         "reading".to_string(),
@@ -179,7 +180,7 @@ fn task_report_progress_updates_stored_task() {
 fn artifact_save_persists_mind_map_payload() {
     let data_dir = temp_data_dir("artifact-save");
 
-    let artifact = save_mind_map_artifact_in_dir(
+    let artifact = save_legacy_mind_map_artifact_in_dir(
         &data_dir,
         "task-1",
         "article-1",

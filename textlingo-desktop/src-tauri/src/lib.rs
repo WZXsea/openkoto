@@ -3,6 +3,7 @@ pub mod agent_worker;
 mod ai_service;
 pub mod backend_client;
 pub mod commands;
+pub mod data_backup;
 pub mod feature_gate;
 pub mod ffmpeg;
 pub mod ktv_export;
@@ -12,6 +13,7 @@ pub mod moonshot;
 pub mod packaged_backend;
 pub mod pdf_sidecar;
 pub mod platform;
+pub mod source_locator;
 pub mod storage;
 mod subtitle_extraction;
 pub mod subtitle_import;
@@ -20,7 +22,10 @@ pub mod video_server;
 mod youtube;
 
 // Re-exports
-use agent_worker::{mark_running_tasks_interrupted_in_dir, AgentWorkerManager};
+use agent_worker::{
+    mark_running_tasks_interrupted_in_dir, recover_worker_checkpoints_from_backend,
+    AgentWorkerManager,
+};
 use ai_service::AIServiceCache;
 use tauri::Manager;
 
@@ -86,6 +91,7 @@ pub fn run() {
             commands::create_learning_item_cmd,
             commands::create_learning_item_from_selection_cmd,
             commands::update_learning_item_cmd,
+            commands::accept_learning_item_cmd,
             commands::delete_learning_item_cmd,
             commands::fetch_url_content,
             video_server::get_resource_server_info_cmd,
@@ -175,6 +181,13 @@ pub fn run() {
                 }
 
                 packaged_backend::start_packaged_backend_if_enabled(app_handle.clone()).await;
+                if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+                    if let Err(error) =
+                        recover_worker_checkpoints_from_backend(&app_handle, &app_data_dir).await
+                    {
+                        eprintln!("[AgentWorker] Failed to recover Backend task state: {error}");
+                    }
+                }
 
                 // 启动资源服务器 (视频 + 书籍)
                 match app_handle.path().app_data_dir() {

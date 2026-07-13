@@ -4,9 +4,10 @@ use crate::agent_worker::{
 };
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
 use crate::backend_client::{
-    BackendClient, BackendClientError, BackendHealthResponse, BackendUser,
-    CreateLearningItemFromSelectionRequest, CreateLearningItemRequest, CreateMaterialRequest,
-    LearningItem, ListLearningItemsRequest, PatchMaterialRequest, UpdateLearningItemRequest,
+    AcceptLearningItemRequest, AcceptLearningItemResponse, BackendClient, BackendClientError,
+    BackendHealthResponse, BackendUser, CreateLearningItemFromSelectionRequest,
+    CreateLearningItemRequest, CreateMaterialRequest, LearningItem, ListLearningItemsRequest,
+    PatchMaterialRequest, UpdateLearningItemRequest,
 };
 use crate::feature_gate::require_external_tools_enabled;
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
@@ -16,12 +17,9 @@ use crate::storage::{
     ensure_app_dirs,
     ensure_favorites_dirs,
     list_favorite_vocabularies,
-    load_agent_task,
     load_config,
     load_favorite_vocabulary,
     load_word_pack,
-    save_agent_task,
-    save_artifact,
     save_config,
     // 收藏夹存储函数
     save_favorite_vocabulary,
@@ -1842,22 +1840,20 @@ where
     Ok(article)
 }
 
-async fn persist_agent_task_backend_and_local(
+async fn persist_agent_task_backend(
     app_handle: &AppHandle,
     task: &AgentTask,
 ) -> Result<AgentTask, String> {
-    save_agent_task(app_handle, task)?;
     backend_client_for_app(app_handle)?
         .save_agent_task(task)
         .await
         .map_err(backend_error_to_string)
 }
 
-async fn persist_artifact_backend_and_local(
+async fn persist_artifact_backend(
     app_handle: &AppHandle,
     artifact: &Artifact,
 ) -> Result<Artifact, String> {
-    save_artifact(app_handle, artifact)?;
     backend_client_for_app(app_handle)?
         .save_artifact(artifact)
         .await
@@ -1919,7 +1915,6 @@ async fn ensure_backend_task_references_artifact(
         task.finished_at = Some(now);
     }
 
-    save_agent_task(app_handle, &task)?;
     client
         .save_agent_task(&task)
         .await
@@ -2305,7 +2300,7 @@ async fn complete_builtin_agent_turn(
     task.updated_at = now.clone();
     task.started_at = Some(task.started_at.unwrap_or_else(|| now.clone()));
     task.finished_at = Some(now);
-    let task = persist_agent_task_backend_and_local(app_handle, &task).await?;
+    let task = persist_agent_task_backend(app_handle, &task).await?;
 
     let _ = app_handle.emit(&format!("assistant-agent-progress://{}", task.id), &task);
     let _ = app_handle.emit(&format!("assistant-agent-result://{}", task.id), &payload);
@@ -2432,14 +2427,14 @@ pub fn collect_article_evidence(
     ArticleEvidenceResult { items }
 }
 
-pub fn update_agent_task_progress_in_dir(
+pub fn update_legacy_agent_task_progress_in_dir(
     data_dir: &std::path::Path,
     task_id: &str,
     stage: String,
     progress: f64,
     message: Option<String>,
 ) -> Result<AgentTask, String> {
-    let mut task = crate::storage::load_agent_task_in_dir(data_dir, task_id)?;
+    let mut task = crate::storage::load_legacy_agent_task_in_dir(data_dir, task_id)?;
     task.status = AgentTaskStatus::Running;
     task.stage = Some(stage);
     task.progress = progress.clamp(0.0, 1.0);
@@ -2448,11 +2443,11 @@ pub fn update_agent_task_progress_in_dir(
     if task.started_at.is_none() {
         task.started_at = Some(task.updated_at.clone());
     }
-    crate::storage::save_agent_task_in_dir(data_dir, &task)?;
+    crate::storage::save_legacy_agent_task_in_dir(data_dir, &task)?;
     Ok(task)
 }
 
-pub fn save_mind_map_artifact_in_dir(
+pub fn save_legacy_mind_map_artifact_in_dir(
     data_dir: &std::path::Path,
     task_id: &str,
     article_id: &str,
@@ -2469,7 +2464,7 @@ pub fn save_mind_map_artifact_in_dir(
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    crate::storage::save_artifact_in_dir(data_dir, &artifact)?;
+    crate::storage::save_legacy_artifact_in_dir(data_dir, &artifact)?;
     Ok(artifact)
 }
 
@@ -2526,12 +2521,32 @@ pub async fn task_report_progress_cmd(
     progress: f64,
     message: Option<String>,
 ) -> Result<AgentTask, String> {
-    let data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    let task = update_agent_task_progress_in_dir(&data_dir, &task_id, stage, progress, message)?;
-    persist_agent_task_backend_and_local(&app_handle, &task).await
+    let client = backend_client_for_app(&app_handle)?;
+    let mut task = client
+        .get_agent_task(&task_id)
+        .await
+        .map_err(backend_error_to_string)?;
+    if matches!(
+        task.status,
+        AgentTaskStatus::Succeeded
+            | AgentTaskStatus::Failed
+            | AgentTaskStatus::Cancelled
+            | AgentTaskStatus::Interrupted
+    ) {
+        return Ok(task);
+    }
+    task.status = AgentTaskStatus::Running;
+    task.stage = Some(stage);
+    task.progress = progress.clamp(0.0, 1.0);
+    task.message = message;
+    task.updated_at = chrono::Utc::now().to_rfc3339();
+    if task.started_at.is_none() {
+        task.started_at = Some(task.updated_at.clone());
+    }
+    client
+        .save_agent_task(&task)
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[tauri::command]
@@ -2541,14 +2556,26 @@ pub async fn artifact_save_cmd(
     article_id: String,
     content: serde_json::Value,
 ) -> Result<Artifact, String> {
-    let data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    let artifact = save_mind_map_artifact_in_dir(&data_dir, &task_id, &article_id, content)?;
-    ensure_backend_task_references_artifact(&app_handle, &task_id, &article_id, &artifact.id)
-        .await?;
-    let artifact = persist_artifact_backend_and_local(&app_handle, &artifact).await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let artifact = Artifact {
+        id: Uuid::new_v4().to_string(),
+        task_id,
+        article_id: article_id.clone(),
+        artifact_type: ArtifactType::MindMap,
+        version: "1".to_string(),
+        content,
+        metadata: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let artifact = persist_artifact_backend(&app_handle, &artifact).await?;
+    ensure_backend_task_references_artifact(
+        &app_handle,
+        &artifact.task_id,
+        &article_id,
+        &artifact.id,
+    )
+    .await?;
     let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
     article.active_mind_map_artifact_id = Some(artifact.id.clone());
     let _ = replace_backend_article(&app_handle, &article).await?;
@@ -2590,17 +2617,17 @@ pub async fn create_mind_map_task_cmd(
         started_at: None,
         finished_at: None,
     };
-    persist_agent_task_backend_and_local(&app_handle, &task).await?;
+    let task = persist_agent_task_backend(&app_handle, &task).await?;
     if let Err(error) =
         worker_manager.submit_mind_map_task(&app_handle, &task, &article, &provider_config)
     {
-        let mut failed_task = load_agent_task(&app_handle, &task.id)?;
+        let mut failed_task = task.clone();
         failed_task.status = AgentTaskStatus::Failed;
         failed_task.error = Some(error.clone());
         failed_task.stage = Some("failed_to_start".to_string());
         failed_task.updated_at = chrono::Utc::now().to_rfc3339();
         failed_task.finished_at = Some(failed_task.updated_at.clone());
-        persist_agent_task_backend_and_local(&app_handle, &failed_task).await?;
+        persist_agent_task_backend(&app_handle, &failed_task).await?;
         return Err(error);
     }
     backend_client_for_app(&app_handle)?
@@ -2645,7 +2672,7 @@ pub async fn run_agent_turn_cmd(
         started_at: None,
         finished_at: None,
     };
-    persist_agent_task_backend_and_local(&app_handle, &task).await?;
+    let task = persist_agent_task_backend(&app_handle, &task).await?;
 
     let current_material = material_summary_from_article(&article);
     let available_materials = articles
@@ -2671,13 +2698,13 @@ pub async fn run_agent_turn_cmd(
         available_materials,
         &provider_config,
     ) {
-        let mut failed_task = load_agent_task(&app_handle, &task.id)?;
+        let mut failed_task = task.clone();
         failed_task.status = AgentTaskStatus::Failed;
         failed_task.error = Some(error.clone());
         failed_task.stage = Some("failed_to_start".to_string());
         failed_task.updated_at = chrono::Utc::now().to_rfc3339();
         failed_task.finished_at = Some(failed_task.updated_at.clone());
-        persist_agent_task_backend_and_local(&app_handle, &failed_task).await?;
+        persist_agent_task_backend(&app_handle, &failed_task).await?;
         return Err(error);
     }
 
@@ -3709,6 +3736,19 @@ pub async fn update_learning_item_cmd(
 ) -> Result<LearningItem, String> {
     backend_client_for_app(&app_handle)?
         .patch_learning_item(&id, &payload)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn accept_learning_item_cmd(
+    app_handle: AppHandle,
+    id: String,
+    payload: AcceptLearningItemRequest,
+) -> Result<AcceptLearningItemResponse, String> {
+    validate_uuid(&id, "id")?;
+    backend_client_for_app(&app_handle)?
+        .accept_learning_item(&id, &payload)
         .await
         .map_err(backend_error_to_string)
 }

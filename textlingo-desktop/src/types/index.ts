@@ -133,6 +133,20 @@ export interface CreateLearningItemFromSelectionInput {
     tags?: string[];
 }
 
+export interface AcceptLearningItemInput {
+    favorite_type: "vocabulary" | "grammar";
+    pack_ids?: string[];
+}
+
+export type AcceptedFavorite =
+    | { type: "vocabulary"; id: string; pack_ids: string[] }
+    | { type: "grammar"; id: string };
+
+export interface AcceptLearningItemResponse {
+    learning_item: LearningItem;
+    favorite: AcceptedFavorite;
+}
+
 export type AgentTaskType =
     | "mind_map_generate"
     | "assistant_agent_turn"

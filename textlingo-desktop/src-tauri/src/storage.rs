@@ -9,8 +9,13 @@ use tauri::{AppHandle, Manager};
 
 const CONFIG_FILE: &str = "config.json";
 const ARTICLES_DIR: &str = "articles";
-const AGENT_TASKS_DIR: &str = "agent_tasks";
-const ARTIFACTS_DIR: &str = "artifacts/articles";
+// Online task and artifact records live in Backend/PostgreSQL. These files are
+// only worker-local recovery checkpoints and must never be used as UI/API data.
+const WORKER_CHECKPOINTS_DIR: &str = "agent_worker_checkpoints";
+const WORKER_TASK_CHECKPOINTS_DIR: &str = "agent_worker_checkpoints/tasks";
+const WORKER_ARTIFACT_CHECKPOINTS_DIR: &str = "agent_worker_checkpoints/artifacts";
+const LEGACY_AGENT_TASKS_DIR: &str = "agent_tasks";
+const LEGACY_ARTIFACTS_DIR: &str = "artifacts/articles";
 
 fn validate_id(id: &str, label: &str) -> Result<(), String> {
     validate_storage_id(id).map_err(|error| format!("Invalid {label}: {error}"))
@@ -55,15 +60,22 @@ pub fn get_app_data_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
 pub fn ensure_app_dirs(app_handle: &AppHandle) -> Result<(), String> {
     let data_dir = get_app_data_dir(app_handle)?;
     let articles_dir = data_dir.join(ARTICLES_DIR);
-    let agent_tasks_dir = data_dir.join(AGENT_TASKS_DIR);
-    let artifacts_dir = data_dir.join(ARTIFACTS_DIR);
+    let worker_checkpoints_dir = data_dir.join(WORKER_CHECKPOINTS_DIR);
+    let worker_task_checkpoints_dir = data_dir.join(WORKER_TASK_CHECKPOINTS_DIR);
+    let worker_artifact_checkpoints_dir = data_dir.join(WORKER_ARTIFACT_CHECKPOINTS_DIR);
 
     fs::create_dir_all(&articles_dir)
         .map_err(|e| format!("Failed to create articles directory: {}", e))?;
-    fs::create_dir_all(&agent_tasks_dir)
-        .map_err(|e| format!("Failed to create agent tasks directory: {}", e))?;
-    fs::create_dir_all(&artifacts_dir)
-        .map_err(|e| format!("Failed to create artifacts directory: {}", e))?;
+    fs::create_dir_all(&worker_checkpoints_dir)
+        .map_err(|e| format!("Failed to create worker checkpoint directory: {}", e))?;
+    fs::create_dir_all(&worker_task_checkpoints_dir)
+        .map_err(|e| format!("Failed to create worker task checkpoint directory: {}", e))?;
+    fs::create_dir_all(&worker_artifact_checkpoints_dir).map_err(|e| {
+        format!(
+            "Failed to create worker artifact checkpoint directory: {}",
+            e
+        )
+    })?;
 
     Ok(())
 }
@@ -160,35 +172,99 @@ fn ensure_dir(path: &Path, name: &str) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| format!("Failed to create {}: {}", name, e))
 }
 
-pub fn save_agent_task_in_dir(data_dir: &Path, task: &AgentTask) -> Result<(), String> {
-    let dir = data_dir.join(AGENT_TASKS_DIR);
+pub fn save_legacy_agent_task_in_dir(data_dir: &Path, task: &AgentTask) -> Result<(), String> {
+    save_task_in_dir(data_dir, LEGACY_AGENT_TASKS_DIR, task, "legacy agent task")
+}
+
+pub fn save_worker_task_checkpoint_in_dir(data_dir: &Path, task: &AgentTask) -> Result<(), String> {
+    save_task_in_dir(
+        data_dir,
+        WORKER_TASK_CHECKPOINTS_DIR,
+        task,
+        "worker task checkpoint",
+    )
+}
+
+fn save_task_in_dir(
+    data_dir: &Path,
+    directory: &str,
+    task: &AgentTask,
+    label: &str,
+) -> Result<(), String> {
+    let dir = data_dir.join(directory);
     ensure_dir(&dir, "agent task directory")?;
     validate_id(&task.id, "agent task id")?;
     let content = serde_json::to_string(task)
         .map_err(|e| format!("Failed to serialize agent task: {}", e))?;
     fs::write(
-        data_json_file_path(data_dir, AGENT_TASKS_DIR, &task.id, "agent task id")?,
+        data_json_file_path(data_dir, directory, &task.id, "agent task id")?,
         content,
     )
-    .map_err(|e| format!("Failed to save agent task: {}", e))?;
+    .map_err(|e| format!("Failed to save {label}: {}", e))?;
     Ok(())
 }
 
-pub fn load_agent_task_in_dir(data_dir: &Path, task_id: &str) -> Result<AgentTask, String> {
-    let path = data_json_file_path(data_dir, AGENT_TASKS_DIR, task_id, "agent task id")?;
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read agent task: {}", e))?;
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse agent task: {}", e))
+pub fn load_legacy_agent_task_in_dir(data_dir: &Path, task_id: &str) -> Result<AgentTask, String> {
+    load_task_in_dir(
+        data_dir,
+        LEGACY_AGENT_TASKS_DIR,
+        task_id,
+        "legacy agent task",
+    )
 }
 
-pub fn list_agent_tasks_in_dir(data_dir: &Path) -> Result<Vec<String>, String> {
-    let dir = data_dir.join(AGENT_TASKS_DIR);
+pub fn load_worker_task_checkpoint_in_dir(
+    data_dir: &Path,
+    task_id: &str,
+) -> Result<AgentTask, String> {
+    load_task_in_dir(
+        data_dir,
+        WORKER_TASK_CHECKPOINTS_DIR,
+        task_id,
+        "worker task checkpoint",
+    )
+}
+
+fn load_task_in_dir(
+    data_dir: &Path,
+    directory: &str,
+    task_id: &str,
+    label: &str,
+) -> Result<AgentTask, String> {
+    let path = data_json_file_path(data_dir, directory, task_id, "agent task id")?;
+    let content = fs::read_to_string(path).map_err(|e| format!("Failed to read {label}: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse {label}: {}", e))
+}
+
+pub fn list_legacy_agent_tasks_in_dir(data_dir: &Path) -> Result<Vec<String>, String> {
+    list_tasks_in_dir(data_dir, LEGACY_AGENT_TASKS_DIR, "legacy agent task")
+}
+
+pub fn list_worker_task_checkpoints_in_dir(data_dir: &Path) -> Result<Vec<String>, String> {
+    list_tasks_in_dir(
+        data_dir,
+        WORKER_TASK_CHECKPOINTS_DIR,
+        "worker task checkpoint",
+    )
+}
+
+pub fn persist_worker_task_checkpoint_after_backend(
+    data_dir: &Path,
+    backend_result: Result<AgentTask, String>,
+) -> Result<AgentTask, String> {
+    let task = backend_result?;
+    save_worker_task_checkpoint_in_dir(data_dir, &task)?;
+    Ok(task)
+}
+
+fn list_tasks_in_dir(data_dir: &Path, directory: &str, label: &str) -> Result<Vec<String>, String> {
+    let dir = data_dir.join(directory);
     if !dir.exists() {
         return Ok(Vec::new());
     }
 
     let entries =
-        fs::read_dir(dir).map_err(|e| format!("Failed to read agent task directory: {}", e))?;
+        fs::read_dir(dir).map_err(|e| format!("Failed to read {label} directory: {}", e))?;
     let mut ids: Vec<String> = entries
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().is_file())
@@ -199,56 +275,115 @@ pub fn list_agent_tasks_in_dir(data_dir: &Path) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
-pub fn save_agent_task(app_handle: &AppHandle, task: &AgentTask) -> Result<(), String> {
+pub fn save_legacy_agent_task(app_handle: &AppHandle, task: &AgentTask) -> Result<(), String> {
     let data_dir = get_app_data_dir(app_handle)?;
-    save_agent_task_in_dir(&data_dir, task)
+    save_legacy_agent_task_in_dir(&data_dir, task)
 }
 
-pub fn load_agent_task(app_handle: &AppHandle, task_id: &str) -> Result<AgentTask, String> {
+pub fn load_legacy_agent_task(app_handle: &AppHandle, task_id: &str) -> Result<AgentTask, String> {
     let data_dir = get_app_data_dir(app_handle)?;
-    load_agent_task_in_dir(&data_dir, task_id)
+    load_legacy_agent_task_in_dir(&data_dir, task_id)
 }
 
-pub fn save_artifact_in_dir(data_dir: &Path, artifact: &Artifact) -> Result<(), String> {
+pub fn save_legacy_artifact_in_dir(data_dir: &Path, artifact: &Artifact) -> Result<(), String> {
+    save_artifact_in_directory(data_dir, LEGACY_ARTIFACTS_DIR, artifact, "legacy artifact")
+}
+
+pub fn save_worker_artifact_checkpoint_in_dir(
+    data_dir: &Path,
+    artifact: &Artifact,
+) -> Result<(), String> {
+    save_artifact_in_directory(
+        data_dir,
+        WORKER_ARTIFACT_CHECKPOINTS_DIR,
+        artifact,
+        "worker artifact checkpoint",
+    )
+}
+
+fn save_artifact_in_directory(
+    data_dir: &Path,
+    directory: &str,
+    artifact: &Artifact,
+    label: &str,
+) -> Result<(), String> {
     validate_id(&artifact.article_id, "artifact article id")?;
     validate_id(&artifact.id, "artifact id")?;
-    let dir = data_dir.join(ARTIFACTS_DIR).join(&artifact.article_id);
+    let dir = data_dir.join(directory).join(&artifact.article_id);
     ensure_dir(&dir, "artifact directory")?;
     let content = serde_json::to_string(artifact)
         .map_err(|e| format!("Failed to serialize artifact: {}", e))?;
     fs::write(dir.join(format!("{}.json", artifact.id)), content)
-        .map_err(|e| format!("Failed to save artifact: {}", e))?;
+        .map_err(|e| format!("Failed to save {label}: {}", e))?;
     Ok(())
 }
 
-pub fn load_artifact_in_dir(
+pub fn load_legacy_artifact_in_dir(
     data_dir: &Path,
     article_id: &str,
     artifact_id: &str,
 ) -> Result<Artifact, String> {
+    load_artifact_in_directory(
+        data_dir,
+        LEGACY_ARTIFACTS_DIR,
+        article_id,
+        artifact_id,
+        "legacy artifact",
+    )
+}
+
+pub fn load_worker_artifact_checkpoint_in_dir(
+    data_dir: &Path,
+    article_id: &str,
+    artifact_id: &str,
+) -> Result<Artifact, String> {
+    load_artifact_in_directory(
+        data_dir,
+        WORKER_ARTIFACT_CHECKPOINTS_DIR,
+        article_id,
+        artifact_id,
+        "worker artifact checkpoint",
+    )
+}
+
+pub fn persist_worker_artifact_checkpoint_after_backend(
+    data_dir: &Path,
+    backend_result: Result<Artifact, String>,
+) -> Result<Artifact, String> {
+    let artifact = backend_result?;
+    save_worker_artifact_checkpoint_in_dir(data_dir, &artifact)?;
+    Ok(artifact)
+}
+
+fn load_artifact_in_directory(
+    data_dir: &Path,
+    directory: &str,
+    article_id: &str,
+    artifact_id: &str,
+    label: &str,
+) -> Result<Artifact, String> {
     validate_id(article_id, "artifact article id")?;
     validate_id(artifact_id, "artifact id")?;
     let path = data_dir
-        .join(ARTIFACTS_DIR)
+        .join(directory)
         .join(article_id)
         .join(format!("{}.json", artifact_id));
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read artifact: {}", e))?;
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse artifact: {}", e))
+    let content = fs::read_to_string(path).map_err(|e| format!("Failed to read {label}: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse {label}: {}", e))
 }
 
-pub fn save_artifact(app_handle: &AppHandle, artifact: &Artifact) -> Result<(), String> {
+pub fn save_legacy_artifact(app_handle: &AppHandle, artifact: &Artifact) -> Result<(), String> {
     let data_dir = get_app_data_dir(app_handle)?;
-    save_artifact_in_dir(&data_dir, artifact)
+    save_legacy_artifact_in_dir(&data_dir, artifact)
 }
 
-pub fn load_artifact(
+pub fn load_legacy_artifact(
     app_handle: &AppHandle,
     article_id: &str,
     artifact_id: &str,
 ) -> Result<Artifact, String> {
     let data_dir = get_app_data_dir(app_handle)?;
-    load_artifact_in_dir(&data_dir, article_id, artifact_id)
+    load_legacy_artifact_in_dir(&data_dir, article_id, artifact_id)
 }
 
 pub fn update_article_active_mind_map_artifact_in_dir(

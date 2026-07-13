@@ -94,8 +94,12 @@ describe("LearningCandidateBox", () => {
       if (command === "list_word_packs_cmd") {
         return Promise.resolve([{ id: "pack-1", name: "未分组", is_system: true }]);
       }
-      if (command === "add_favorite_vocabulary_cmd") {
-        return Promise.resolve({ id: "fav-1" });
+      if (command === "accept_learning_item_cmd") {
+        currentItem = { ...currentItem, status: "accepted", updated_at: "2026-03-08T00:00:02Z" };
+        return Promise.resolve({
+          learning_item: currentItem,
+          favorite: { type: "vocabulary", id: "learning-item-item-1", pack_ids: ["pack-1"] },
+        });
       }
       return Promise.resolve(null);
     });
@@ -156,21 +160,13 @@ describe("LearningCandidateBox", () => {
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
-        "add_favorite_vocabulary_cmd",
-        expect.objectContaining({
-          word: "mitigate",
-          sourceArticleId: "article-1",
-          sourceArticleTitle: "Academic Reading",
-          packIds: ["pack-1"],
-        })
-      );
-      expect(invokeMock).toHaveBeenCalledWith(
-        "update_learning_item_cmd",
-        expect.objectContaining({
+        "accept_learning_item_cmd",
+        {
           id: "item-1",
-          payload: { status: "accepted" },
-        })
+          payload: { favorite_type: "vocabulary", pack_ids: ["pack-1"] },
+        }
       );
+      expect(invokeMock).not.toHaveBeenCalledWith("add_favorite_vocabulary_cmd", expect.anything());
     });
   });
 });

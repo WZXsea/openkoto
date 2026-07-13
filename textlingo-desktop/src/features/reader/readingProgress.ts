@@ -1,31 +1,13 @@
 import { useCallback, useEffect, useRef } from "react";
 
+import { SOURCE_LOCATOR_VERSION, type SourceLocatorV1 } from "./sourceLocator";
+
 export const READING_PROGRESS_COMPLETION_THRESHOLD = 0.98;
 
 export type ReaderKind = "article" | "pdf" | "epub" | "txt" | "media";
 export type ReadingProgressStatus = "reading" | "completed";
 
-export type ReadingProgressLocator =
-  | {
-    kind: "segment";
-    segment_order: number;
-    total_segments: number;
-    segment_id?: string;
-  }
-  | {
-    kind: "page";
-    page: number;
-    total_pages: number;
-  }
-  | {
-    kind: "epub_cfi";
-    cfi: string;
-  }
-  | {
-    kind: "time";
-    current_time: number;
-    duration: number;
-  };
+export type ReadingProgressLocator = SourceLocatorV1;
 
 export interface ReadingProgressUpdate {
   reader_kind: ReaderKind;
@@ -75,6 +57,7 @@ export function getInitialProgressForReader(
 
 export function createSegmentLocator(position: number, total: number, segmentId?: string): ReadingProgressLocator {
   return {
+    version: SOURCE_LOCATOR_VERSION,
     kind: "segment",
     segment_order: Math.max(0, Math.trunc(position)),
     total_segments: Math.max(1, Math.trunc(total)),
@@ -88,6 +71,7 @@ export function getSegmentPositionFromLocator(locator: ReadingProgressLocator | 
 
 export function createPageLocator(pageNumber: number, totalPages: number): ReadingProgressLocator {
   return {
+    version: SOURCE_LOCATOR_VERSION,
     kind: "page",
     page: Math.max(1, Math.trunc(pageNumber)),
     total_pages: Math.max(1, Math.trunc(totalPages)),
@@ -104,15 +88,16 @@ export function getPageNumberFromProgress(progressRatio: number | undefined, tot
 }
 
 export function createEpubCfiLocator(cfi: string): ReadingProgressLocator {
-  return { kind: "epub_cfi", cfi };
+  return { version: SOURCE_LOCATOR_VERSION, kind: "epub_cfi", cfi };
 }
 
 export function getEpubCfiFromLocator(locator: ReadingProgressLocator | undefined): string | undefined {
-  return locator?.kind === "epub_cfi" ? locator.cfi : undefined;
+  return locator?.kind === "epub_cfi" || locator?.kind === "cfi" ? locator.cfi : undefined;
 }
 
 export function createMediaTimeLocator(currentTime: number, duration: number): ReadingProgressLocator {
   return {
+    version: SOURCE_LOCATOR_VERSION,
     kind: "time",
     current_time: Math.max(0, currentTime),
     duration: Math.max(0, duration),
@@ -120,7 +105,7 @@ export function createMediaTimeLocator(currentTime: number, duration: number): R
 }
 
 export function getMediaTimeFromLocator(locator: ReadingProgressLocator | undefined): number | undefined {
-  return locator?.kind === "time" ? locator.current_time : undefined;
+  return locator?.kind === "time" || locator?.kind === "time_range" ? locator.current_time : undefined;
 }
 
 export function useReadingProgressReporter(

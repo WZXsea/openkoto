@@ -67,6 +67,15 @@ cleanup_verify_database() {
   :
 }
 
+prepare_agent_worker() {
+  info "building agent worker before Desktop Rust checks"
+  npm --prefix textlingo-desktop run build:agent-worker
+  for worker_file in index.js assistantTask.js mindMapTask.js protocol.js runtime.js; do
+    test -f "textlingo-desktop/agent-worker/dist/${worker_file}" \
+      || fail "agent worker build is missing textlingo-desktop/agent-worker/dist/${worker_file}"
+  done
+}
+
 require_file "openkoto-backend/migrations/20260710000700_material_library.sql"
 require_file "openkoto-backend/migrations/20260711000800_material_text_file_source_type.sql"
 require_file "openkoto-backend/src/material_library.rs"
@@ -148,6 +157,7 @@ cargo check --locked --manifest-path openkoto-backend/Cargo.toml
 info "running backend tests"
 cargo test --locked --manifest-path openkoto-backend/Cargo.toml
 
+prepare_agent_worker
 info "checking Desktop Rust compilation"
 cargo check --locked --manifest-path textlingo-desktop/src-tauri/Cargo.toml
 info "running Desktop Rust tests"
@@ -158,8 +168,8 @@ if [ "$SKIP_FRONTEND" -eq 0 ]; then
   npm --prefix textlingo-desktop run typecheck
   info "running frontend tests"
   npm --prefix textlingo-desktop test -- --run
-  info "building frontend and agent worker"
-  npm --prefix textlingo-desktop run build:all
+  info "building frontend (agent worker was prepared before Desktop Rust checks)"
+  npm --prefix textlingo-desktop run build
 
   if [ "$SKIP_E2E" -eq 0 ]; then
     info "running Playwright material-workbench flow"

@@ -1,8 +1,10 @@
 use crate::backend_client::{BackendClient, PatchMaterialRequest};
-use crate::commands::save_mind_map_artifact_in_dir;
 use crate::moonshot::moonshot_base_url;
 use crate::storage::{
-    list_agent_tasks_in_dir, load_agent_task_in_dir, load_config, save_agent_task_in_dir,
+    list_legacy_agent_tasks_in_dir, list_worker_task_checkpoints_in_dir, load_config,
+    load_legacy_agent_task_in_dir, load_worker_task_checkpoint_in_dir,
+    persist_worker_artifact_checkpoint_after_backend, persist_worker_task_checkpoint_after_backend,
+    save_legacy_agent_task_in_dir, save_legacy_artifact_in_dir, save_worker_task_checkpoint_in_dir,
 };
 use crate::types::{
     AgentTask, AgentTaskStatus, Article, Artifact, AssistantConversationMessage, MaterialSummary,
@@ -17,6 +19,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
+use uuid::Uuid;
 
 const WORKER_HEALTH_TIMEOUT_SECONDS: i64 = 45;
 const WORKER_LOG_LIMIT: usize = 100;
@@ -339,6 +342,15 @@ impl AgentWorkerManager {
             .path()
             .app_data_dir()
             .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        if let Err(error) = tauri::async_runtime::block_on(recover_worker_checkpoints_from_backend(
+            app_handle, &data_dir,
+        )) {
+            self.record_log(
+                WorkerLogLevel::Warn,
+                "recovery",
+                format!("failed to recover worker checkpoints: {error}"),
+            );
+        }
         spawn_stdout_listener(
             stdout,
             app_handle.clone(),
@@ -364,26 +376,15 @@ impl AgentWorkerManager {
         provider_config: &RuntimeProviderConfig,
     ) -> Result<(), String> {
         self.ensure_started(app_handle)?;
-        let mut persisted_task = task.clone();
-        persisted_task.status = AgentTaskStatus::Running;
-        persisted_task.stage = Some("queued".to_string());
-        persisted_task.updated_at = Utc::now().to_rfc3339();
-        if persisted_task.started_at.is_none() {
-            persisted_task.started_at = Some(persisted_task.updated_at.clone());
-        }
-        let session_id = self.runtime_state.lock().unwrap().worker_session_id.clone();
-        if persisted_task.worker_session_id.is_none() {
-            persisted_task.worker_session_id = session_id;
-        }
-        save_agent_task_in_dir(
-            &app_handle
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("Failed to get app data dir: {}", e))?,
-            &persisted_task,
-        )?;
+        let data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        // The command has already received this snapshot from Backend. The
+        // checkpoint is only a restart-recovery record for this worker process.
+        save_worker_task_checkpoint_in_dir(&data_dir, task)?;
 
-        let request = build_mind_map_worker_request(&persisted_task, article, provider_config);
+        let request = build_mind_map_worker_request(task, article, provider_config);
         self.record_log(
             WorkerLogLevel::Info,
             "task",
@@ -413,27 +414,14 @@ impl AgentWorkerManager {
         provider_config: &RuntimeProviderConfig,
     ) -> Result<(), String> {
         self.ensure_started(app_handle)?;
-        let mut persisted_task = task.clone();
-        persisted_task.status = AgentTaskStatus::Running;
-        persisted_task.stage = Some("queued".to_string());
-        persisted_task.updated_at = Utc::now().to_rfc3339();
-        if persisted_task.started_at.is_none() {
-            persisted_task.started_at = Some(persisted_task.updated_at.clone());
-        }
-        let session_id = self.runtime_state.lock().unwrap().worker_session_id.clone();
-        if persisted_task.worker_session_id.is_none() {
-            persisted_task.worker_session_id = session_id;
-        }
-        save_agent_task_in_dir(
-            &app_handle
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("Failed to get app data dir: {}", e))?,
-            &persisted_task,
-        )?;
+        let data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        save_worker_task_checkpoint_in_dir(&data_dir, task)?;
 
         let request = build_assistant_worker_request(
-            &persisted_task.id,
+            &task.id,
             provider_config,
             user_message,
             conversation,
@@ -715,9 +703,28 @@ pub fn apply_worker_event_in_dir(
     runtime_state: &mut WorkerRuntimeState,
     event: WorkerEvent,
 ) -> Result<Option<Artifact>, String> {
+    // Legacy fixture helper. Production event processing fetches the current
+    // Backend task and calls apply_worker_event_to_task before checkpointing.
+    let Some(task_id) = worker_event_task_id(&event).map(ToOwned::to_owned) else {
+        apply_worker_runtime_event(runtime_state, &event)?;
+        return Ok(None);
+    };
+    let mut task = load_legacy_agent_task_in_dir(data_dir, &task_id)?;
+    let artifact = apply_worker_event_to_task(&mut task, runtime_state, &event)?;
+    if let Some(artifact) = artifact.as_ref() {
+        save_legacy_artifact_in_dir(data_dir, artifact)?;
+    }
+    save_legacy_agent_task_in_dir(data_dir, &task)?;
+    Ok(artifact)
+}
+
+fn apply_worker_runtime_event(
+    runtime_state: &mut WorkerRuntimeState,
+    event: &WorkerEvent,
+) -> Result<(), String> {
     match event {
         WorkerEvent::WorkerReady { payload } => {
-            runtime_state.worker_session_id = Some(payload.worker_session_id);
+            runtime_state.worker_session_id = Some(payload.worker_session_id.clone());
             runtime_state.last_heartbeat_at = Some(
                 DateTime::parse_from_rfc3339(&payload.timestamp)
                     .map_err(|e| format!("Failed to parse ready timestamp: {}", e))?
@@ -726,10 +733,34 @@ pub fn apply_worker_event_in_dir(
             if runtime_state.started_at.is_none() {
                 runtime_state.started_at = runtime_state.last_heartbeat_at;
             }
-            Ok(None)
         }
+        WorkerEvent::WorkerHeartbeat { payload } => {
+            runtime_state.worker_session_id = Some(payload.worker_session_id.clone());
+            runtime_state.last_heartbeat_at = Some(
+                DateTime::parse_from_rfc3339(&payload.timestamp)
+                    .map_err(|e| format!("Failed to parse heartbeat timestamp: {}", e))?
+                    .with_timezone(&Utc),
+            );
+            if runtime_state.started_at.is_none() {
+                runtime_state.started_at = runtime_state.last_heartbeat_at;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn apply_worker_event_to_task(
+    task: &mut AgentTask,
+    runtime_state: &mut WorkerRuntimeState,
+    event: &WorkerEvent,
+) -> Result<Option<Artifact>, String> {
+    apply_worker_runtime_event(runtime_state, event)?;
+    match event {
         WorkerEvent::TaskStarted { payload } => {
-            let mut task = load_agent_task_in_dir(data_dir, &payload.task_id)?;
+            if payload.task_id != task.id || is_terminal_task_status(&task.status) {
+                return Ok(None);
+            }
             task.status = AgentTaskStatus::Running;
             task.stage = Some("started".to_string());
             task.message = Some("Agent task started".to_string());
@@ -745,36 +776,16 @@ pub fn apply_worker_event_in_dir(
             if task.worker_session_id.is_none() {
                 task.worker_session_id = runtime_state.worker_session_id.clone();
             }
-            save_agent_task_in_dir(data_dir, &task)?;
-            Ok(None)
-        }
-        WorkerEvent::WorkerHeartbeat { payload } => {
-            runtime_state.worker_session_id = Some(payload.worker_session_id);
-            runtime_state.last_heartbeat_at = Some(
-                DateTime::parse_from_rfc3339(&payload.timestamp)
-                    .map_err(|e| format!("Failed to parse heartbeat timestamp: {}", e))?
-                    .with_timezone(&Utc),
-            );
-            if runtime_state.started_at.is_none() {
-                runtime_state.started_at = runtime_state.last_heartbeat_at;
-            }
             Ok(None)
         }
         WorkerEvent::TaskProgress { payload } => {
-            let mut task = load_agent_task_in_dir(data_dir, &payload.task_id)?;
-            if matches!(
-                task.status,
-                AgentTaskStatus::Succeeded
-                    | AgentTaskStatus::Failed
-                    | AgentTaskStatus::Cancelled
-                    | AgentTaskStatus::Interrupted
-            ) {
+            if payload.task_id != task.id || is_terminal_task_status(&task.status) {
                 return Ok(None);
             }
             task.status = AgentTaskStatus::Running;
             task.progress = payload.progress.clamp(0.0, 1.0);
-            task.stage = Some(payload.stage);
-            task.message = payload.message;
+            task.stage = Some(payload.stage.clone());
+            task.message = payload.message.clone();
             task.updated_at = Utc::now().to_rfc3339();
             if task.started_at.is_none() {
                 task.started_at = Some(task.updated_at.clone());
@@ -782,12 +793,13 @@ pub fn apply_worker_event_in_dir(
             if task.worker_session_id.is_none() {
                 task.worker_session_id = runtime_state.worker_session_id.clone();
             }
-            save_agent_task_in_dir(data_dir, &task)?;
             Ok(None)
         }
         WorkerEvent::TaskLog { .. } => Ok(None),
         WorkerEvent::TaskResult { payload } => {
-            let mut task = load_agent_task_in_dir(data_dir, &payload.task_id)?;
+            if payload.task_id != task.id || is_terminal_task_status(&task.status) {
+                return Ok(None);
+            }
             task.status = AgentTaskStatus::Succeeded;
             task.progress = 1.0;
             task.stage = Some("done".to_string());
@@ -807,26 +819,23 @@ pub fn apply_worker_event_in_dir(
             let artifact = if payload.artifact_type == "article_answer" {
                 None
             } else {
-                let artifact = save_mind_map_artifact_in_dir(
-                    data_dir,
-                    &task.id,
-                    &task.article_id,
-                    payload.content,
-                )?;
+                let artifact =
+                    new_mind_map_artifact(&task.id, &task.article_id, payload.content.clone());
                 if !task.artifact_ids.iter().any(|id| id == &artifact.id) {
                     task.artifact_ids.push(artifact.id.clone());
                 }
                 Some(artifact)
             };
-            save_agent_task_in_dir(data_dir, &task)?;
             Ok(artifact)
         }
         WorkerEvent::TaskError { payload } => {
-            let mut task = load_agent_task_in_dir(data_dir, &payload.task_id)?;
+            if payload.task_id != task.id || is_terminal_task_status(&task.status) {
+                return Ok(None);
+            }
             task.status = AgentTaskStatus::Failed;
-            task.error = Some(match payload.details {
+            task.error = Some(match payload.details.as_deref() {
                 Some(details) => format!("{}: {}", payload.message, details),
-                None => payload.message,
+                None => payload.message.clone(),
             });
             task.updated_at = Utc::now().to_rfc3339();
             task.finished_at = Some(task.updated_at.clone());
@@ -834,9 +843,34 @@ pub fn apply_worker_event_in_dir(
             if task.started_at.is_none() {
                 task.started_at = Some(task.updated_at.clone());
             }
-            save_agent_task_in_dir(data_dir, &task)?;
             Ok(None)
         }
+        WorkerEvent::WorkerReady { .. } | WorkerEvent::WorkerHeartbeat { .. } => Ok(None),
+    }
+}
+
+fn is_terminal_task_status(status: &AgentTaskStatus) -> bool {
+    matches!(
+        status,
+        AgentTaskStatus::Succeeded
+            | AgentTaskStatus::Failed
+            | AgentTaskStatus::Cancelled
+            | AgentTaskStatus::Interrupted
+    )
+}
+
+fn new_mind_map_artifact(task_id: &str, article_id: &str, content: Value) -> Artifact {
+    let now = Utc::now().to_rfc3339();
+    Artifact {
+        id: Uuid::new_v4().to_string(),
+        task_id: task_id.to_string(),
+        article_id: article_id.to_string(),
+        artifact_type: crate::types::ArtifactType::MindMap,
+        version: "1".to_string(),
+        content,
+        metadata: None,
+        created_at: now.clone(),
+        updated_at: now,
     }
 }
 
@@ -855,11 +889,20 @@ fn extract_open_material_id(content: &Value) -> Option<String> {
 pub fn mark_running_tasks_interrupted_in_dir(
     data_dir: &std::path::Path,
 ) -> Result<Vec<String>, String> {
-    let task_ids = list_agent_tasks_in_dir(data_dir)?;
+    let mut task_ids = list_worker_task_checkpoints_in_dir(data_dir)?;
+    for task_id in list_legacy_agent_tasks_in_dir(data_dir)? {
+        if !task_ids.iter().any(|existing| existing == &task_id) {
+            task_ids.push(task_id);
+        }
+    }
     let mut interrupted = Vec::new();
 
     for task_id in task_ids {
-        let mut task = load_agent_task_in_dir(data_dir, &task_id)?;
+        let (mut task, legacy_source) = match load_worker_task_checkpoint_in_dir(data_dir, &task_id)
+        {
+            Ok(task) => (task, false),
+            Err(_) => (load_legacy_agent_task_in_dir(data_dir, &task_id)?, true),
+        };
         if matches!(
             task.status,
             AgentTaskStatus::Running | AgentTaskStatus::Queued
@@ -869,7 +912,10 @@ pub fn mark_running_tasks_interrupted_in_dir(
             if task.finished_at.is_none() {
                 task.finished_at = Some(task.updated_at.clone());
             }
-            save_agent_task_in_dir(data_dir, &task)?;
+            save_worker_task_checkpoint_in_dir(data_dir, &task)?;
+            if legacy_source {
+                save_legacy_agent_task_in_dir(data_dir, &task)?;
+            }
             interrupted.push(task.id.clone());
         }
     }
@@ -1152,52 +1198,38 @@ fn spawn_stdout_listener(
                 push_worker_log(&mut guard, level, "worker", message);
             }
 
-            let artifact = {
+            let persisted = {
                 let mut state = runtime_state.lock().unwrap();
-                match apply_worker_event_in_dir(&data_dir, &mut state, event.clone()) {
-                    Ok(artifact) => artifact,
-                    Err(error) => {
-                        {
-                            let mut guard = logs.lock().unwrap();
-                            push_worker_log(
-                                &mut guard,
-                                WorkerLogLevel::Error,
-                                "stdout",
-                                format!("failed to apply worker event: {}", error),
-                            );
-                        }
-                        emit_status_snapshot(&app_handle, &runtime_state, &logs);
-                        eprintln!("[AgentWorker] Failed to apply worker event: {}", error);
-                        continue;
+                tauri::async_runtime::block_on(sync_worker_event_backend(
+                    &app_handle,
+                    &data_dir,
+                    &mut state,
+                    &event,
+                ))
+            };
+            let persisted = match persisted {
+                Ok(persisted) => persisted,
+                Err(error) => {
+                    {
+                        let mut guard = logs.lock().unwrap();
+                        push_worker_log(
+                            &mut guard,
+                            WorkerLogLevel::Error,
+                            "stdout",
+                            format!("failed to persist worker event: {}", error),
+                        );
                     }
+                    emit_status_snapshot(&app_handle, &runtime_state, &logs);
+                    eprintln!("[AgentWorker] Failed to persist worker event: {}", error);
+                    continue;
                 }
             };
 
-            let task_snapshot = worker_event_task_id(&event)
-                .and_then(|task_id| load_agent_task_in_dir(&data_dir, task_id).ok());
-            if let Some(task) = task_snapshot.clone() {
-                schedule_backend_task_snapshot(
-                    &app_handle,
-                    task,
-                    logs.clone(),
-                    runtime_state.clone(),
-                );
-            }
-            if let Some(saved_artifact) = artifact.clone() {
-                schedule_backend_artifact_link(
-                    &app_handle,
-                    saved_artifact,
-                    task_snapshot,
-                    logs.clone(),
-                    runtime_state.clone(),
-                );
-            }
-
             emit_worker_event(
                 &app_handle,
-                &data_dir,
                 &event,
-                artifact.as_ref(),
+                persisted.task.as_ref(),
+                persisted.artifact.as_ref(),
                 &runtime_state,
                 &logs,
             );
@@ -1217,113 +1249,121 @@ fn worker_event_task_id(event: &WorkerEvent) -> Option<&str> {
     }
 }
 
-fn schedule_backend_task_snapshot(
-    app_handle: &AppHandle,
-    task: AgentTask,
-    logs: Arc<Mutex<Vec<WorkerLogEntry>>>,
-    runtime_state: Arc<Mutex<WorkerRuntimeState>>,
-) {
-    let app_handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = sync_backend_agent_task(&app_handle, &task).await {
-            {
-                let mut guard = logs.lock().unwrap();
-                push_worker_log(
-                    &mut guard,
-                    WorkerLogLevel::Warn,
-                    "backend",
-                    format!("failed to sync agent task: {}", error),
-                );
-            }
-            emit_status_snapshot(&app_handle, &runtime_state, &logs);
-            eprintln!("[AgentWorker] Failed to sync agent task: {}", error);
-        }
-    });
-}
-
-fn schedule_backend_artifact_link(
-    app_handle: &AppHandle,
-    artifact: Artifact,
+#[derive(Default)]
+struct PersistedWorkerEvent {
     task: Option<AgentTask>,
-    logs: Arc<Mutex<Vec<WorkerLogEntry>>>,
-    runtime_state: Arc<Mutex<WorkerRuntimeState>>,
-) {
-    let app_handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            sync_backend_active_mind_map_artifact(&app_handle, &artifact, task).await
-        {
-            {
-                let mut guard = logs.lock().unwrap();
-                push_worker_log(
-                    &mut guard,
-                    WorkerLogLevel::Warn,
-                    "backend",
-                    format!("failed to sync mind map artifact link: {}", error),
-                );
-            }
-            emit_status_snapshot(&app_handle, &runtime_state, &logs);
-            eprintln!(
-                "[AgentWorker] Failed to sync mind map artifact link: {}",
-                error
-            );
-        }
-    });
+    artifact: Option<Artifact>,
 }
 
-async fn sync_backend_agent_task(app_handle: &AppHandle, task: &AgentTask) -> Result<(), String> {
+async fn sync_worker_event_backend(
+    app_handle: &AppHandle,
+    data_dir: &Path,
+    runtime_state: &mut WorkerRuntimeState,
+    event: &WorkerEvent,
+) -> Result<PersistedWorkerEvent, String> {
+    if worker_event_task_id(event).is_none() {
+        apply_worker_runtime_event(runtime_state, event)?;
+        return Ok(PersistedWorkerEvent::default());
+    }
     let config = load_config(app_handle)?.unwrap_or_default();
     let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
-    client
-        .save_agent_task(task)
+    let task_id = worker_event_task_id(event).expect("checked above");
+    let mut task = client
+        .get_agent_task(task_id)
         .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-}
+        .map_err(|error| error.to_string())?;
+    let artifact = apply_worker_event_to_task(&mut task, runtime_state, event)?;
 
-async fn sync_backend_active_mind_map_artifact(
-    app_handle: &AppHandle,
-    artifact: &Artifact,
-    task: Option<AgentTask>,
-) -> Result<(), String> {
-    let config = load_config(app_handle)?.unwrap_or_default();
-    let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
-    if let Some(task) = task {
+    let artifact = match artifact {
+        Some(artifact) => {
+            let artifact = client
+                .save_artifact(&artifact)
+                .await
+                .map_err(|error| error.to_string())?;
+            Some(artifact)
+        }
+        None => None,
+    };
+    let task = client
+        .save_agent_task(&task)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(artifact) = artifact.as_ref() {
+        let mut article = client
+            .get_material(&artifact.article_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        article.active_mind_map_artifact_id = Some(artifact.id.clone());
         client
-            .save_agent_task(&task)
+            .patch_material(
+                &article.id,
+                &PatchMaterialRequest {
+                    title: Some(article.title.clone()),
+                    content: Some(article.content.clone()),
+                    source_type: article.source_type.clone(),
+                    source_url: article.source_url.clone(),
+                    media_path: article.media_path.clone(),
+                    book_path: article.book_path.clone(),
+                    book_type: article.book_type.clone(),
+                    translated: Some(article.translated),
+                    active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
+                    metadata: None,
+                    segments: Some(article.segments.clone()),
+                },
+            )
             .await
             .map_err(|error| error.to_string())?;
     }
-    client
-        .save_artifact(artifact)
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut article = client
-        .get_material(&artifact.article_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    article.active_mind_map_artifact_id = Some(artifact.id.clone());
+    let task = persist_worker_task_checkpoint_after_backend(data_dir, Ok(task))?;
+    let artifact = match artifact {
+        Some(artifact) => Some(persist_worker_artifact_checkpoint_after_backend(
+            data_dir,
+            Ok(artifact),
+        )?),
+        None => None,
+    };
+    Ok(PersistedWorkerEvent {
+        task: Some(task),
+        artifact,
+    })
+}
 
-    client
-        .patch_material(
-            &article.id,
-            &PatchMaterialRequest {
-                title: Some(article.title.clone()),
-                content: Some(article.content.clone()),
-                source_type: article.source_type.clone(),
-                source_url: article.source_url.clone(),
-                media_path: article.media_path.clone(),
-                book_path: article.book_path.clone(),
-                book_type: article.book_type.clone(),
-                translated: Some(article.translated),
-                active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
-                metadata: None,
-                segments: Some(article.segments.clone()),
-            },
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+pub async fn recover_worker_checkpoints_from_backend(
+    app_handle: &AppHandle,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let task_ids = list_worker_task_checkpoints_in_dir(data_dir)?;
+    if task_ids.is_empty() {
+        return Ok(());
+    }
+
+    let config = load_config(app_handle)?.unwrap_or_default();
+    let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
+    for task_id in task_ids {
+        let checkpoint = load_worker_task_checkpoint_in_dir(data_dir, &task_id)?;
+        if is_terminal_task_status(&checkpoint.status)
+            && !matches!(checkpoint.status, AgentTaskStatus::Interrupted)
+        {
+            continue;
+        }
+        let mut task = client
+            .get_agent_task(&task_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !is_terminal_task_status(&task.status) {
+            task.status = AgentTaskStatus::Interrupted;
+            task.stage = Some("worker_restarted".to_string());
+            task.error = Some("Agent worker restarted before the task completed".to_string());
+            task.updated_at = Utc::now().to_rfc3339();
+            task.finished_at = Some(task.updated_at.clone());
+            task = client
+                .save_agent_task(&task)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        persist_worker_task_checkpoint_after_backend(data_dir, Ok(task))?;
+    }
+    Ok(())
 }
 
 fn spawn_stderr_listener(
@@ -1351,8 +1391,8 @@ fn spawn_stderr_listener(
 
 fn emit_worker_event(
     app_handle: &AppHandle,
-    data_dir: &Path,
     event: &WorkerEvent,
+    task: Option<&AgentTask>,
     artifact: Option<&Artifact>,
     runtime_state: &Arc<Mutex<WorkerRuntimeState>>,
     logs: &Arc<Mutex<Vec<WorkerLogEntry>>>,
@@ -1361,13 +1401,13 @@ fn emit_worker_event(
         WorkerEvent::WorkerReady { .. } => {
             emit_status_snapshot(app_handle, runtime_state, logs);
         }
-        WorkerEvent::TaskStarted { payload } => {
-            if let Ok(task) = load_agent_task_in_dir(data_dir, &payload.task_id) {
+        WorkerEvent::TaskStarted { payload: _ } => {
+            if let Some(task) = task {
                 let _ = app_handle.emit("agent-task-updated", &task);
             }
         }
         WorkerEvent::TaskProgress { payload } => {
-            if let Ok(task) = load_agent_task_in_dir(data_dir, &payload.task_id) {
+            if let Some(task) = task {
                 let progress_event = match task.task_type {
                     crate::types::AgentTaskType::AssistantAgentTurn => {
                         format!("assistant-agent-progress://{}", payload.task_id)
@@ -1382,7 +1422,7 @@ fn emit_worker_event(
             let _ = app_handle.emit(&format!("agent-task-log://{}", payload.task_id), payload);
         }
         WorkerEvent::TaskResult { payload } => {
-            if let Ok(task) = load_agent_task_in_dir(data_dir, &payload.task_id) {
+            if let Some(task) = task {
                 match task.task_type {
                     crate::types::AgentTaskType::AssistantAgentTurn => {
                         let _ = app_handle.emit(
@@ -1408,7 +1448,7 @@ fn emit_worker_event(
             }
         }
         WorkerEvent::TaskError { payload } => {
-            if let Ok(task) = load_agent_task_in_dir(data_dir, &payload.task_id) {
+            if let Some(task) = task {
                 let error_event = match task.task_type {
                     crate::types::AgentTaskType::AssistantAgentTurn => {
                         format!("assistant-agent-error://{}", payload.task_id)

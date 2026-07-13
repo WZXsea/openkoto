@@ -2,11 +2,11 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
@@ -190,6 +190,33 @@ pub struct DeleteLearningItemResponse {
     pub deleted: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptedFavoriteType {
+    Vocabulary,
+    Grammar,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcceptLearningItemRequest {
+    pub favorite_type: AcceptedFavoriteType,
+    #[serde(default)]
+    pub pack_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AcceptedFavoriteDto {
+    Vocabulary { id: String, pack_ids: Vec<String> },
+    Grammar { id: String },
+}
+
+#[derive(Debug, Serialize)]
+pub struct AcceptLearningItemResponse {
+    pub learning_item: LearningItemDto,
+    pub favorite: AcceptedFavoriteDto,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct LearningItemRecord {
     id: Uuid,
@@ -300,6 +327,7 @@ pub async fn create_learning_item(
     AuthenticatedUser { user }: AuthenticatedUser,
     ApiJson(payload): ApiJson<CreateLearningItemRequest>,
 ) -> Result<Json<LearningItemDto>, AppError> {
+    reject_direct_acceptance(payload.status.as_deref())?;
     let values = values_from_create_request(&state.pool, user.id, payload).await?;
     let record = insert_or_fetch_learning_item(&state.pool, user.id, values).await?;
 
@@ -376,11 +404,77 @@ pub async fn patch_learning_item(
     Path(id): Path<Uuid>,
     ApiJson(payload): ApiJson<PatchLearningItemRequest>,
 ) -> Result<Json<LearningItemDto>, AppError> {
+    reject_direct_acceptance(payload.status.as_deref())?;
     let existing = fetch_learning_item(&state.pool, user.id, id).await?;
     let values = values_from_patch_request(&state.pool, user.id, existing, payload).await?;
     let record = update_learning_item(&state.pool, user.id, values).await?;
 
     Ok(Json(record_to_dto(record)))
+}
+
+pub async fn accept_learning_item(
+    State(state): State<AppState>,
+    AuthenticatedUser { user }: AuthenticatedUser,
+    Path(id): Path<Uuid>,
+    ApiJson(payload): ApiJson<AcceptLearningItemRequest>,
+) -> Result<Json<AcceptLearningItemResponse>, AppError> {
+    let mut tx = state.pool.begin().await?;
+    let item = fetch_learning_item_for_update(&mut tx, user.id, id).await?;
+
+    if !matches!(item.status.as_str(), "candidate" | "accepted") {
+        return Err(AppError::conflict(
+            "learning_item_not_acceptable",
+            "learning item must be candidate or accepted",
+        ));
+    }
+
+    validate_accepted_favorite_type(&item, payload.favorite_type)?;
+    let pack_ids = dedupe_pack_ids(&payload.pack_ids);
+    if payload.favorite_type == AcceptedFavoriteType::Grammar && !pack_ids.is_empty() {
+        return Err(AppError::bad_request(
+            "grammar_pack_ids_not_supported",
+            "pack_ids are only supported for vocabulary favorites",
+        ));
+    }
+
+    let favorite = match payload.favorite_type {
+        AcceptedFavoriteType::Vocabulary => {
+            let pack_ids = resolve_acceptance_pack_ids(&mut tx, user.id, pack_ids).await?;
+            let favorite_id = upsert_accepted_vocabulary(&mut tx, user.id, &item).await?;
+            replace_accepted_vocabulary_pack_links(&mut tx, user.id, &favorite_id, &pack_ids)
+                .await?;
+            AcceptedFavoriteDto::Vocabulary {
+                id: favorite_id,
+                pack_ids,
+            }
+        }
+        AcceptedFavoriteType::Grammar => {
+            let favorite_id = upsert_accepted_grammar(&mut tx, user.id, &item).await?;
+            AcceptedFavoriteDto::Grammar { id: favorite_id }
+        }
+    };
+
+    sqlx::query(
+        r#"
+        UPDATE learning_items
+        SET status = 'accepted',
+            accepted_at = COALESCE(accepted_at, NOW()),
+            updated_at = CASE WHEN status = 'accepted' THEN updated_at ELSE NOW() END
+        WHERE id = $1 AND user_id = $2
+        "#,
+    )
+    .bind(id)
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
+
+    let accepted_item = fetch_learning_item_in_transaction(&mut tx, user.id, id).await?;
+    tx.commit().await?;
+
+    Ok(Json(AcceptLearningItemResponse {
+        learning_item: record_to_dto(accepted_item),
+        favorite,
+    }))
 }
 
 pub async fn bulk_learning_item_status(
@@ -389,6 +483,7 @@ pub async fn bulk_learning_item_status(
     ApiJson(payload): ApiJson<BulkLearningItemStatusRequest>,
 ) -> Result<Json<BulkLearningItemStatusResponse>, AppError> {
     validate_status(&payload.status)?;
+    reject_direct_acceptance(Some(&payload.status))?;
     if payload.ids.is_empty() {
         return Ok(Json(BulkLearningItemStatusResponse {
             updated: 0,
@@ -680,6 +775,306 @@ async fn update_learning_item(
     fetch_learning_item(pool, user_id, updated_id).await
 }
 
+async fn fetch_learning_item_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    id: Uuid,
+) -> Result<LearningItemRecord, AppError> {
+    let query = format!("{} FOR UPDATE OF li", learning_item_select("SELECT"));
+    sqlx::query_as::<_, LearningItemRecord>(&query)
+        .bind(user_id)
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(learning_item_not_found)
+}
+
+async fn fetch_learning_item_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    id: Uuid,
+) -> Result<LearningItemRecord, AppError> {
+    let query = learning_item_select("SELECT");
+    sqlx::query_as::<_, LearningItemRecord>(&query)
+        .bind(user_id)
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(learning_item_not_found)
+}
+
+fn validate_accepted_favorite_type(
+    item: &LearningItemRecord,
+    favorite_type: AcceptedFavoriteType,
+) -> Result<(), AppError> {
+    let type_matches = match favorite_type {
+        AcceptedFavoriteType::Grammar => item.item_type == "grammar",
+        AcceptedFavoriteType::Vocabulary => item.item_type != "grammar",
+    };
+    if !type_matches {
+        return Err(AppError::bad_request(
+            "learning_item_favorite_type_mismatch",
+            "favorite_type does not match the learning item type",
+        ));
+    }
+
+    Ok(())
+}
+
+fn dedupe_pack_ids(pack_ids: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    pack_ids
+        .iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .filter(|id| seen.insert(id.clone()))
+        .collect()
+}
+
+async fn resolve_acceptance_pack_ids(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    mut pack_ids: Vec<String>,
+) -> Result<Vec<String>, AppError> {
+    const DEFAULT_PACK_ID: &str = "system-ungrouped";
+
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"
+        INSERT INTO word_packs (
+            user_id, id, name, description, cover_url, author, language_from, language_to,
+            tags, version, created_at, updated_at, is_system
+        )
+        VALUES ($1, $2, '未分组', '系统默认合集', NULL, 'OpenKoto', NULL, NULL,
+                '["system"]'::jsonb, '1.0.0', $3, $3, TRUE)
+        ON CONFLICT (user_id, id) DO NOTHING
+        "#,
+    )
+    .bind(user_id)
+    .bind(DEFAULT_PACK_ID)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+
+    if pack_ids.is_empty() {
+        pack_ids.push(DEFAULT_PACK_ID.to_string());
+    }
+
+    let existing = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT id
+        FROM word_packs
+        WHERE user_id = $1 AND id = ANY($2)
+        FOR KEY SHARE
+        "#,
+    )
+    .bind(user_id)
+    .bind(&pack_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let missing = pack_ids
+        .iter()
+        .filter(|id| !existing.iter().any(|existing_id| existing_id == *id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(AppError::not_found(
+            "word_pack_not_found",
+            format!("word pack not found: {}", missing.join(", ")),
+        ));
+    }
+
+    pack_ids.sort();
+    Ok(pack_ids)
+}
+
+async fn upsert_accepted_vocabulary(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    item: &LearningItemRecord,
+) -> Result<String, AppError> {
+    ensure_no_opposite_favorite(tx, user_id, item.id, AcceptedFavoriteType::Vocabulary).await?;
+
+    let favorite_id = format!("learning-item-{}", item.id);
+    let meaning = accepted_item_meaning(item);
+    let explanation = item
+        .definition_en
+        .as_deref()
+        .or(item.meaning_in_context.as_deref());
+    let example = first_example_text(&item.examples).or_else(|| {
+        (!item.source_sentence.trim().is_empty()).then(|| item.source_sentence.trim().to_string())
+    });
+    let source_article_id = item.material_id.map(|id| id.to_string());
+    let now = Utc::now();
+    let due_date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let created_at = now.to_rfc3339();
+
+    sqlx::query_scalar::<_, String>(
+        r#"
+        INSERT INTO favorite_vocabularies (
+            user_id, id, learning_item_id, word, meaning, usage, explanation, example, reading,
+            source_article_id, source_article_title, srs_state, ease_factor, repetitions,
+            interval_days, due_date, last_reviewed_at, review_count, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, '', $6, $7, NULL, $8, $9, 'new', 2.5, 0, 0,
+                $10, NULL, 0, $11)
+        ON CONFLICT (user_id, learning_item_id) DO UPDATE
+        SET word = EXCLUDED.word,
+            meaning = EXCLUDED.meaning,
+            explanation = EXCLUDED.explanation,
+            example = EXCLUDED.example,
+            source_article_id = EXCLUDED.source_article_id,
+            source_article_title = EXCLUDED.source_article_title
+        RETURNING id
+        "#,
+    )
+    .bind(user_id)
+    .bind(&favorite_id)
+    .bind(item.id)
+    .bind(item.text.trim())
+    .bind(meaning)
+    .bind(explanation)
+    .bind(example)
+    .bind(source_article_id)
+    .bind(&item.source_material_title)
+    .bind(due_date)
+    .bind(created_at)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(AppError::from)
+}
+
+async fn replace_accepted_vocabulary_pack_links(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    vocabulary_id: &str,
+    pack_ids: &[String],
+) -> Result<(), AppError> {
+    sqlx::query(
+        r#"
+        DELETE FROM favorite_vocabulary_packs
+        WHERE user_id = $1 AND vocabulary_id = $2
+        "#,
+    )
+    .bind(user_id)
+    .bind(vocabulary_id)
+    .execute(&mut **tx)
+    .await?;
+
+    for pack_id in pack_ids {
+        sqlx::query(
+            r#"
+            INSERT INTO favorite_vocabulary_packs (user_id, vocabulary_id, pack_id)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(user_id)
+        .bind(vocabulary_id)
+        .bind(pack_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn upsert_accepted_grammar(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    item: &LearningItemRecord,
+) -> Result<String, AppError> {
+    ensure_no_opposite_favorite(tx, user_id, item.id, AcceptedFavoriteType::Grammar).await?;
+
+    let favorite_id = format!("learning-item-{}", item.id);
+    let explanation = accepted_item_meaning(item);
+    let example = first_example_text(&item.examples).or_else(|| {
+        (!item.source_sentence.trim().is_empty()).then(|| item.source_sentence.trim().to_string())
+    });
+    let source_article_id = item.material_id.map(|id| id.to_string());
+
+    sqlx::query_scalar::<_, String>(
+        r#"
+        INSERT INTO favorite_grammars (
+            user_id, id, learning_item_id, point, explanation, example, source_article_id,
+            source_article_title, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (user_id, learning_item_id) DO UPDATE
+        SET point = EXCLUDED.point,
+            explanation = EXCLUDED.explanation,
+            example = EXCLUDED.example,
+            source_article_id = EXCLUDED.source_article_id,
+            source_article_title = EXCLUDED.source_article_title
+        RETURNING id
+        "#,
+    )
+    .bind(user_id)
+    .bind(&favorite_id)
+    .bind(item.id)
+    .bind(item.text.trim())
+    .bind(explanation)
+    .bind(example)
+    .bind(source_article_id)
+    .bind(&item.source_material_title)
+    .bind(Utc::now().to_rfc3339())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(AppError::from)
+}
+
+async fn ensure_no_opposite_favorite(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    learning_item_id: Uuid,
+    favorite_type: AcceptedFavoriteType,
+) -> Result<(), AppError> {
+    let table_name = match favorite_type {
+        AcceptedFavoriteType::Vocabulary => "favorite_grammars",
+        AcceptedFavoriteType::Grammar => "favorite_vocabularies",
+    };
+    let query = format!(
+        "SELECT EXISTS(SELECT 1 FROM {table_name} WHERE user_id = $1 AND learning_item_id = $2)"
+    );
+    let exists = sqlx::query_scalar::<_, bool>(&query)
+        .bind(user_id)
+        .bind(learning_item_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    if exists {
+        return Err(AppError::conflict(
+            "learning_item_favorite_conflict",
+            "learning item is already linked to another favorite type",
+        ));
+    }
+
+    Ok(())
+}
+
+fn accepted_item_meaning(item: &LearningItemRecord) -> String {
+    item.meaning_in_context
+        .as_deref()
+        .or(item.definition_zh.as_deref())
+        .or(item.definition_en.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(item.text.as_str())
+        .trim()
+        .to_string()
+}
+
+fn first_example_text(examples: &Value) -> Option<String> {
+    examples.as_array().and_then(|values| {
+        values.iter().find_map(|value| {
+            value
+                .as_str()
+                .or_else(|| value.get("text").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+    })
+}
+
 async fn fetch_learning_item(
     pool: &PgPool,
     user_id: Uuid,
@@ -885,6 +1280,17 @@ fn validate_status(status: &str) -> Result<(), AppError> {
         return Err(AppError::bad_request(
             "invalid_learning_item",
             "learning item status must be candidate, accepted, rejected, or archived",
+        ));
+    }
+
+    Ok(())
+}
+
+fn reject_direct_acceptance(status: Option<&str>) -> Result<(), AppError> {
+    if status == Some("accepted") {
+        return Err(AppError::bad_request(
+            "atomic_acceptance_required",
+            "accepted status must be created through the learning item accept endpoint",
         ));
     }
 

@@ -155,7 +155,7 @@ describe("PdfReader", () => {
 
     fireEvent.change(screen.getByRole("slider"), { target: { value: "5" } });
     expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({
-      locator: { kind: "page", page: 5, total_pages: 5 },
+      locator: { version: 1, kind: "page", page: 5, total_pages: 5 },
       progress_ratio: 1,
       status: "completed",
     }));

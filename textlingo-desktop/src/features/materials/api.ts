@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type { Article } from "../../types";
-import type { ReadingProgressUpdate } from "../reader";
+import { parseSourceLocator, type ReadingProgressUpdate } from "../reader";
 import type {
   DuplicateMatch,
   MaterialImportJob,
@@ -84,19 +84,16 @@ function asDuplicateMatch(match: TauriDuplicateMatch): DuplicateMatch {
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function asReadingProgress(progress: TauriReadingProgress | null): ReadingProgressUpdate | undefined {
+  const locator = parseSourceLocator(progress?.locator);
   if (!progress
     || !["article", "pdf", "epub", "txt", "media"].includes(String(progress.reader_kind))
-    || !isRecord(progress.locator)
+    || !locator
     || typeof progress.progress_ratio !== "number"
     || !Number.isFinite(progress.progress_ratio)) return undefined;
   return {
     reader_kind: progress.reader_kind as ReadingProgressUpdate["reader_kind"],
-    locator: progress.locator as ReadingProgressUpdate["locator"],
+    locator,
     progress_ratio: Math.min(1, Math.max(0, progress.progress_ratio)),
     status: progress.status === "completed" ? "completed" : "reading",
   };

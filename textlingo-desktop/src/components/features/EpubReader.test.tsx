@@ -61,7 +61,7 @@ describe("EpubReader", () => {
     });
     expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({
       reader_kind: "epub",
-      locator: { kind: "epub_cfi", cfi: "epubcfi(/6/4!/4/1:0)" },
+      locator: { version: 1, kind: "epub_cfi", cfi: "epubcfi(/6/4!/4/1:0)" },
       progress_ratio: 0.5,
       status: "reading",
     }));

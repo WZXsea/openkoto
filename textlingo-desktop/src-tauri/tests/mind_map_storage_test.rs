@@ -2,8 +2,8 @@ use std::{fs, path::PathBuf};
 
 use openkoto_desktop_lib::{
     storage::{
-        load_agent_task_in_dir, load_artifact_in_dir, save_agent_task_in_dir, save_artifact_in_dir,
-        update_article_active_mind_map_artifact_in_dir,
+        load_legacy_agent_task_in_dir, load_legacy_artifact_in_dir, save_legacy_agent_task_in_dir,
+        save_legacy_artifact_in_dir, update_article_active_mind_map_artifact_in_dir,
     },
     types::{
         AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Article, Artifact, ArtifactType,
@@ -86,8 +86,8 @@ fn saves_and_loads_agent_task_in_data_dir() {
     let data_dir = temp_data_dir("agent-task");
     let task = sample_task();
 
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
-    let restored = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
+    let restored = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
 
     assert_eq!(restored.id, task.id);
     assert_eq!(restored.article_id, task.article_id);
@@ -99,8 +99,9 @@ fn saves_and_loads_artifact_in_data_dir() {
     let data_dir = temp_data_dir("artifact");
     let artifact = sample_artifact();
 
-    save_artifact_in_dir(&data_dir, &artifact).unwrap();
-    let restored = load_artifact_in_dir(&data_dir, &artifact.article_id, &artifact.id).unwrap();
+    save_legacy_artifact_in_dir(&data_dir, &artifact).unwrap();
+    let restored =
+        load_legacy_artifact_in_dir(&data_dir, &artifact.article_id, &artifact.id).unwrap();
 
     assert_eq!(restored.id, artifact.id);
     assert!(matches!(restored.artifact_type, ArtifactType::MindMap));
@@ -144,7 +145,7 @@ fn storage_rejects_agent_task_path_traversal() {
     let data_dir = temp_data_dir("agent-task-traversal");
     fs::write(data_dir.join("config.json"), "{}").unwrap();
 
-    let error = load_agent_task_in_dir(&data_dir, "../config").unwrap_err();
+    let error = load_legacy_agent_task_in_dir(&data_dir, "../config").unwrap_err();
 
     assert!(error.contains("Invalid agent task id"));
     assert!(data_dir.join("config.json").exists());
@@ -156,7 +157,7 @@ fn storage_rejects_artifact_article_id_path_traversal() {
     let mut artifact = sample_artifact();
     artifact.article_id = "../outside".to_string();
 
-    let error = save_artifact_in_dir(&data_dir, &artifact).unwrap_err();
+    let error = save_legacy_artifact_in_dir(&data_dir, &artifact).unwrap_err();
 
     assert!(error.contains("Invalid artifact article id"));
     assert!(!data_dir.join("artifacts/outside").exists());

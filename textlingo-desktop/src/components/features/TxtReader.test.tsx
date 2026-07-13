@@ -23,7 +23,7 @@ describe("TxtReader", () => {
     fireEvent.click(screen.getByTitle("下一页"));
     expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({
       reader_kind: "txt",
-      locator: { kind: "page", page: 3, total_pages: 3 },
+      locator: { version: 1, kind: "page", page: 3, total_pages: 3 },
       progress_ratio: 1,
       status: "completed",
     }));

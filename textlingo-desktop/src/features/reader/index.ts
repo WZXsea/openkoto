@@ -24,6 +24,14 @@ export type {
   ReadingProgressStatus,
   ReadingProgressUpdate,
 } from "./readingProgress";
+export {
+  SOURCE_LOCATOR_VERSION,
+  assertValidSourceLocator,
+  createTextRangeLocator,
+  parseSourceLocator,
+  withLocatorVersion,
+} from "./sourceLocator";
+export type { SourceLocatorV1, TextQuoteSelector } from "./sourceLocator";
 
 export const readerFeature = {
   id: "reader",

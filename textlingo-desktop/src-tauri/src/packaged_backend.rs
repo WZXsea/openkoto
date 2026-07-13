@@ -15,6 +15,7 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::{
+    data_backup::{create_upgrade_backup_if_needed, set_private_file_permissions},
     logging::{LogLevel, LogStore},
     storage::{load_config, save_config},
 };
@@ -209,6 +210,21 @@ async fn start_packaged_backend(app_handle: AppHandle) -> Result<PackagedBackend
     }
     cleanup_recorded_runtime_processes(&backend_dir, &backend_binary)?;
     ensure_packaged_backend_port_available()?;
+    if let Some(backup_dir) = create_upgrade_backup_if_needed(
+        &app_data_dir,
+        &backend_dir,
+        recorded_sha256.as_deref(),
+        &backend_sha256,
+    )? {
+        LogStore::global().push(
+            LogLevel::Info,
+            "backup",
+            format!(
+                "created validated pre-upgrade backup at {}",
+                backup_dir.display()
+            ),
+        );
+    }
     let secret = read_or_create_secret(&backend_dir.join("jwt_secret"))?;
     let bind_addr = PACKAGED_BACKEND_BIND.to_string();
     let database_runtime = prepare_database_runtime(&app_handle, &backend_dir).await?;
@@ -892,6 +908,7 @@ fn read_or_create_secret(path: &Path) -> Result<String, String> {
             .map_err(|error| format!("failed to read backend jwt secret: {error}"))?;
         let value = value.trim().to_string();
         if value.as_bytes().len() >= 32 {
+            set_private_file_permissions(path)?;
             return Ok(value);
         }
     }
@@ -903,6 +920,7 @@ fn read_or_create_secret(path: &Path) -> Result<String, String> {
     }
     fs::write(path, &secret)
         .map_err(|error| format!("failed to write backend jwt secret: {error}"))?;
+    set_private_file_permissions(path)?;
     Ok(secret)
 }
 

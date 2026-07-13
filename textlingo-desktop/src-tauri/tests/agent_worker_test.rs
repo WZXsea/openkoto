@@ -7,7 +7,9 @@ use openkoto_desktop_lib::{
         push_worker_log, resolve_runtime_provider_config, worker_bundle_is_fresh,
         worker_event_log_entry, WorkerHealth, WorkerLogEntry, WorkerLogLevel, WorkerRuntimeState,
     },
-    storage::{load_agent_task_in_dir, load_artifact_in_dir, save_agent_task_in_dir},
+    storage::{
+        load_legacy_agent_task_in_dir, load_legacy_artifact_in_dir, save_legacy_agent_task_in_dir,
+    },
     types::{
         AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Article,
         AssistantConversationMessage, MaterialSummary, ModelConfig,
@@ -356,10 +358,10 @@ fn worker_health_turns_unhealthy_after_timeout() {
 fn running_tasks_can_be_marked_interrupted_after_restart() {
     let data_dir = temp_data_dir("interrupt");
     let task = sample_task(AgentTaskStatus::Running);
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let interrupted = mark_running_tasks_interrupted_in_dir(&data_dir).unwrap();
-    let stored = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
 
     assert_eq!(interrupted, vec![task.id]);
     assert!(matches!(stored.status, AgentTaskStatus::Interrupted));
@@ -407,7 +409,7 @@ fn result_events_persist_artifact_and_complete_task() {
     let data_dir = temp_data_dir("result");
     let task = sample_task(AgentTaskStatus::Running);
     save_article_fixture(&data_dir, &sample_article());
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let event = parse_worker_event_line(
         &serde_json::json!({
@@ -433,11 +435,11 @@ fn result_events_persist_artifact_and_complete_task() {
     )
     .unwrap();
 
-    let stored_task = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored_task = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
     assert!(matches!(stored_task.status, AgentTaskStatus::Succeeded));
     assert_eq!(stored_task.artifact_ids.len(), 1);
 
-    let artifact = load_artifact_in_dir(
+    let artifact = load_legacy_artifact_in_dir(
         &data_dir,
         &stored_task.article_id,
         &stored_task.artifact_ids[0],
@@ -452,7 +454,7 @@ fn assistant_result_events_complete_task_without_persisting_artifacts() {
     let data_dir = temp_data_dir("assistant-result");
     let task = sample_assistant_task(AgentTaskStatus::Running);
     save_article_fixture(&data_dir, &sample_article());
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let event = parse_worker_event_line(
         &serde_json::json!({
@@ -485,7 +487,7 @@ fn assistant_result_events_complete_task_without_persisting_artifacts() {
     )
     .unwrap();
 
-    let stored_task = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored_task = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
     assert!(matches!(stored_task.status, AgentTaskStatus::Succeeded));
     assert!(stored_task.artifact_ids.is_empty());
     assert_eq!(stored_task.message.as_deref(), Some("Agent turn completed"));
@@ -496,7 +498,7 @@ fn assistant_result_events_complete_task_without_persisting_artifacts() {
 fn task_started_event_marks_task_running() {
     let data_dir = temp_data_dir("task-started");
     let task = sample_task(AgentTaskStatus::Queued);
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let event = parse_worker_event_line(
         &serde_json::json!({
@@ -523,7 +525,7 @@ fn task_started_event_marks_task_running() {
     )
     .unwrap();
 
-    let stored_task = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored_task = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
     assert!(matches!(stored_task.status, AgentTaskStatus::Running));
     assert_eq!(stored_task.stage.as_deref(), Some("started"));
     assert_eq!(stored_task.worker_session_id.as_deref(), Some("worker-1"));
@@ -536,7 +538,7 @@ fn progress_events_do_not_reopen_completed_tasks() {
     task.progress = 1.0;
     task.stage = Some("done".to_string());
     task.finished_at = Some("2026-03-07T00:00:02Z".to_string());
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let event = parse_worker_event_line(
         &serde_json::json!({
@@ -555,7 +557,7 @@ fn progress_events_do_not_reopen_completed_tasks() {
 
     apply_worker_event_in_dir(&data_dir, &mut WorkerRuntimeState::default(), event).unwrap();
 
-    let stored_task = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored_task = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
     assert!(matches!(stored_task.status, AgentTaskStatus::Succeeded));
     assert_eq!(stored_task.stage.as_deref(), Some("done"));
 }

@@ -52,7 +52,7 @@ describe("readingProgress", () => {
 
     vi.advanceTimersByTime(500);
     expect(onProgressChange).toHaveBeenCalledTimes(1);
-    expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({ locator: { kind: "page", page: 3, total_pages: 10 } }));
+    expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({ locator: { version: 1, kind: "page", page: 3, total_pages: 10 } }));
 
     result.current.reportProgress(createReadingProgressUpdate("txt", createPageLocator(10, 10), 1), true);
     expect(onProgressChange).toHaveBeenCalledTimes(2);
@@ -69,7 +69,7 @@ describe("readingProgress", () => {
 
     result.current.reportProgress(createReadingProgressUpdate("txt", createPageLocator(4, 10), 0.4));
     unmount();
-    expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({ locator: { kind: "page", page: 4, total_pages: 10 } }));
+    expect(onProgressChange).toHaveBeenLastCalledWith(expect.objectContaining({ locator: { version: 1, kind: "page", page: 4, total_pages: 10 } }));
   });
 
   it("flushes a pending update through the callback that reported it", () => {
@@ -85,14 +85,14 @@ describe("readingProgress", () => {
     rerender({ onProgressChange: onMaterialBProgress });
 
     expect(onMaterialAProgress).toHaveBeenCalledWith(expect.objectContaining({
-      locator: { kind: "page", page: 2, total_pages: 10 },
+      locator: { version: 1, kind: "page", page: 2, total_pages: 10 },
     }));
     expect(onMaterialBProgress).not.toHaveBeenCalled();
 
     result.current.reportProgress(createReadingProgressUpdate("pdf", createPageLocator(3, 10), 0.3));
     vi.advanceTimersByTime(500);
     expect(onMaterialBProgress).toHaveBeenCalledWith(expect.objectContaining({
-      locator: { kind: "page", page: 3, total_pages: 10 },
+      locator: { version: 1, kind: "page", page: 3, total_pages: 10 },
     }));
   });
 });
