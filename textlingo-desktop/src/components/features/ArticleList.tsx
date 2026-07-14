@@ -67,6 +67,7 @@ interface ArticleListProps {
   viewMode: "list" | "card";
   filters?: MaterialFilters;
   onFiltersChange?: (filters: MaterialFilters) => void;
+  showContinueReading?: boolean;
   /** Kept for the legacy route while per-material maintenance remains available. */
   onUpdate?: () => void;
 }
@@ -125,6 +126,7 @@ export function ArticleList({
   viewMode,
   filters: controlledFilters,
   onFiltersChange,
+  showContinueReading = true,
   onUpdate,
 }: ArticleListProps) {
   const { t } = useTranslation();
@@ -230,7 +232,7 @@ export function ArticleList({
 
   return (
     <section className="min-w-0 space-y-5 pb-8" aria-label={t("materials.workbench", "素材工作台")} data-view-mode={viewMode}>
-      {continueReading.length > 0 && (
+      {showContinueReading && continueReading.length > 0 && (
         <section aria-labelledby="continue-reading-title">
           <div className="mb-2 flex items-center justify-between gap-3">
             <h2 id="continue-reading-title" className="text-sm font-semibold">{t("materials.continueReading", "继续阅读")}</h2>

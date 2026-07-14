@@ -219,6 +219,10 @@ pub fn build_router(state: AppState) -> Router {
             get(learning_activity::get_daily_learning_review),
         )
         .route(
+            "/learning-review/activity-heatmap",
+            get(learning_activity::get_activity_heatmap),
+        )
+        .route(
             "/agent-tasks/{id}",
             get(learning::get_agent_task).put(learning::upsert_agent_task),
         )

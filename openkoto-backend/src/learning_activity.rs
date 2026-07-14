@@ -17,6 +17,9 @@ use crate::{
     routes::AppState,
 };
 
+const DEFAULT_ACTIVITY_HEATMAP_DAYS: i64 = 84;
+const MAX_ACTIVITY_HEATMAP_DAYS: i64 = 366;
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct LearningActivityEventDto {
     pub id: Uuid,
@@ -75,6 +78,35 @@ pub struct LearningReviewDto {
 pub struct DailyReviewQuery {
     pub date: Option<String>,
     pub timezone_offset_minutes: Option<i32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ActivityHeatmapQuery {
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub timezone_offset_minutes: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivityHeatmapDayDto {
+    pub date: String,
+    pub read_materials: i64,
+    pub learning_actions: i64,
+    pub activity_score: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivityHeatmapDto {
+    pub start_date: String,
+    pub end_date: String,
+    pub days: Vec<ActivityHeatmapDayDto>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ActivityHeatmapRow {
+    event_date: NaiveDate,
+    read_materials: i64,
+    learning_actions: i64,
 }
 
 pub async fn list_learning_activity_events(
@@ -166,6 +198,73 @@ pub async fn get_daily_learning_review(
         event_counts,
         unique_learning_items,
         events,
+    }))
+}
+
+pub async fn get_activity_heatmap(
+    State(state): State<AppState>,
+    AuthenticatedUser { user }: AuthenticatedUser,
+    Query(query): Query<ActivityHeatmapQuery>,
+) -> Result<Json<ActivityHeatmapDto>, AppError> {
+    let timezone_offset_minutes = validate_timezone_offset(query.timezone_offset_minutes)?;
+    let local_today =
+        (Utc::now() + Duration::minutes(i64::from(timezone_offset_minutes))).date_naive();
+    let end_date = query
+        .end_date
+        .as_deref()
+        .map(parse_date)
+        .transpose()?
+        .unwrap_or(local_today);
+    let start_date = match query.start_date.as_deref().map(parse_date).transpose()? {
+        Some(start_date) => start_date,
+        None => end_date
+            .checked_sub_signed(Duration::days(DEFAULT_ACTIVITY_HEATMAP_DAYS - 1))
+            .ok_or_else(|| {
+                AppError::bad_request(
+                    "invalid_activity_heatmap_range",
+                    "activity heatmap date range is out of bounds",
+                )
+            })?,
+    };
+    validate_activity_heatmap_range(start_date, end_date)?;
+
+    let (start, _) = date_bounds(start_date, timezone_offset_minutes);
+    let (_, end) = date_bounds(end_date, timezone_offset_minutes);
+    let rows =
+        fetch_activity_heatmap_rows(&state.pool, user.id, start, end, timezone_offset_minutes)
+            .await?;
+    let mut rows_by_date = rows
+        .into_iter()
+        .map(|row| (row.event_date, row))
+        .collect::<BTreeMap<_, _>>();
+    let mut days =
+        Vec::with_capacity((end_date.signed_duration_since(start_date).num_days() + 1) as usize);
+    let mut date = start_date;
+    loop {
+        let row = rows_by_date.remove(&date);
+        let read_materials = row.as_ref().map_or(0, |row| row.read_materials);
+        let learning_actions = row.as_ref().map_or(0, |row| row.learning_actions);
+        days.push(ActivityHeatmapDayDto {
+            date: date.to_string(),
+            read_materials,
+            learning_actions,
+            activity_score: read_materials + learning_actions,
+        });
+        if date == end_date {
+            break;
+        }
+        date = date.succ_opt().ok_or_else(|| {
+            AppError::bad_request(
+                "invalid_activity_heatmap_range",
+                "activity heatmap date range is out of bounds",
+            )
+        })?;
+    }
+
+    Ok(Json(ActivityHeatmapDto {
+        start_date: start_date.to_string(),
+        end_date: end_date.to_string(),
+        days,
     }))
 }
 
@@ -439,6 +538,46 @@ async fn fetch_summary(
     ))
 }
 
+async fn fetch_activity_heatmap_rows(
+    pool: &PgPool,
+    user_id: Uuid,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    timezone_offset_minutes: i32,
+) -> Result<Vec<ActivityHeatmapRow>, AppError> {
+    sqlx::query_as::<_, ActivityHeatmapRow>(
+        r#"
+        SELECT
+            (
+                occurred_at AT TIME ZONE 'UTC'
+                + ($4::INTEGER * INTERVAL '1 minute')
+            )::DATE AS event_date,
+            COUNT(DISTINCT material_id) FILTER (
+                WHERE event_type = 'read' AND material_id IS NOT NULL
+            )::BIGINT AS read_materials,
+            COUNT(*) FILTER (
+                WHERE event_type IN (
+                    'create', 'accept', 'reject', 'archive', 'restore',
+                    'organize', 'local_preview', 'merge'
+                )
+            )::BIGINT AS learning_actions
+        FROM learning_activity_events
+        WHERE user_id = $1
+          AND occurred_at >= $2
+          AND occurred_at < $3
+        GROUP BY event_date
+        ORDER BY event_date
+        "#,
+    )
+    .bind(user_id)
+    .bind(start)
+    .bind(end)
+    .bind(timezone_offset_minutes)
+    .fetch_all(pool)
+    .await
+    .map_err(AppError::from)
+}
+
 fn validate_event_type(event_type: &str) -> Result<(), AppError> {
     if !matches!(
         event_type,
@@ -502,6 +641,26 @@ fn validate_timezone_offset(value: Option<i32>) -> Result<i32, AppError> {
     Ok(value)
 }
 
+fn validate_activity_heatmap_range(
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> Result<(), AppError> {
+    if start_date > end_date {
+        return Err(AppError::bad_request(
+            "invalid_activity_heatmap_range",
+            "start_date must be on or before end_date",
+        ));
+    }
+    let days = end_date.signed_duration_since(start_date).num_days() + 1;
+    if days > MAX_ACTIVITY_HEATMAP_DAYS {
+        return Err(AppError::bad_request(
+            "activity_heatmap_range_too_large",
+            "activity heatmap range must not exceed 366 days",
+        ));
+    }
+    Ok(())
+}
+
 fn date_bounds(date: NaiveDate, timezone_offset_minutes: i32) -> (DateTime<Utc>, DateTime<Utc>) {
     let local_start = date.and_hms_opt(0, 0, 0).expect("midnight is valid");
     let utc_start = DateTime::<Utc>::from_naive_utc_and_offset(
@@ -540,4 +699,32 @@ pub(crate) fn reading_event_metadata(
         "progress_ratio": progress_ratio,
         "status": status,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_heatmap_range_is_inclusive_and_capped() {
+        let start = NaiveDate::from_ymd_opt(2025, 7, 15).unwrap();
+        let maximum_end = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let too_large_end = NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+
+        assert!(validate_activity_heatmap_range(start, maximum_end).is_ok());
+        assert!(matches!(
+            validate_activity_heatmap_range(start, too_large_end),
+            Err(AppError::BadRequest {
+                code: "activity_heatmap_range_too_large",
+                ..
+            })
+        ));
+        assert!(matches!(
+            validate_activity_heatmap_range(maximum_end, start),
+            Err(AppError::BadRequest {
+                code: "invalid_activity_heatmap_range",
+                ..
+            })
+        ));
+    }
 }

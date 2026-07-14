@@ -148,7 +148,8 @@ test.describe("Learning candidate flow", () => {
     });
 
     await page.goto("http://127.0.0.1:1420/");
-    await page.getByText("Academic Reading").click();
+    await expect(page.getByRole("heading", { name: "Academic Reading" })).toBeVisible();
+    await page.getByRole("button", { name: "开始阅读" }).click();
 
     const segment = page.getByText("Macrophages can mitigate inflammatory damage.");
     await expect(segment).toBeVisible();

@@ -16,6 +16,11 @@ for candidate in "$tauri_version" "$desktop_cargo_version" "$backend_cargo_versi
   fi
 done
 
+if [ -n "${EXPECTED_VERSION:-}" ] && [ "$package_version" != "$EXPECTED_VERSION" ]; then
+  echo "[release][error] expected version $EXPECTED_VERSION, found $package_version" >&2
+  exit 1
+fi
+
 if [ -n "${OPENKOTO_RELEASE_TAG:-}" ]; then
   case "$OPENKOTO_RELEASE_TAG" in
     v*) tag_version="${OPENKOTO_RELEASE_TAG#v}" ;;

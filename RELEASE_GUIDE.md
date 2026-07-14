@@ -2,6 +2,16 @@
 
 This guide describes the current OpenKoto Desktop packaging and release process.
 
+## 0.9.0 PR-11 Packaging
+
+Version `0.9.0` adds the reading-first home, responsive left navigation, dedicated
+material library, source-aware reader return, and twelve-week activity heatmap.
+
+The WZX Apple Silicon prerelease is published from the verified
+`wzx/pr11-reading-home-shell` branch with the descriptive tag
+`wzx-v0.9.0-pr11-reading-home-shell`. The package must pass the PR-11 gate, packaged
+runtime smoke, checksum verification, and local upgrade validation before upload.
+
 ## 0.8.0 PR-10 Packaging
 
 Version `0.8.0` adds the canonical learning-item state machine, the learning workbench,
@@ -27,8 +37,8 @@ GitHub Actions currently builds macOS packages for Apple Silicon and Intel. Wind
 The build workflow is triggered when you push a tag starting with `v`.
 
 ```bash
-git tag v0.8.0
-git push origin v0.8.0
+git tag v0.9.0
+git push origin v0.9.0
 ```
 
 ### 2. Monitor Build
@@ -52,8 +62,8 @@ npm run tauri:build:packaged
 ```
 The output will be in `src-tauri/target/release/bundle/dmg`.
 
-Run the PR-10 acceptance gate, which chains the earlier regression gates, from the repository root:
+Run the PR-11 acceptance gate, which chains the earlier regression gates, from the repository root:
 
 ```bash
-bash script/verify_pr10_learning_domain.sh --full --run-pr9
+bash script/verify_pr11_reading_home.sh --full
 ```

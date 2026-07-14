@@ -74,10 +74,10 @@ Built with **Tauri + React + Rust**, it runs locally on your machine for **fast 
 
 - 📚 Personalized vocabulary and grammar exercise system
 
-## WZX PR-10 macOS build
-The standalone `0.8.0` Apple Silicon prerelease adds the canonical learning-item state machine, candidate workbench, compatibility migration, activity events, and local review to the existing material and annotation workspaces. See [macOS installation and data notes](docs/INSTALL_MACOS.md) before installing.
+## WZX PR-11 macOS build
+The standalone `0.9.0` Apple Silicon prerelease adds a reading-first home, responsive app shell, dedicated material library, source-aware reader return, and a twelve-week activity heatmap to the canonical learning and annotation workspaces. See [macOS installation and data notes](docs/INSTALL_MACOS.md) before installing.
 
-[Download the WZX PR-10 prerelease](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.8.0-pr10-learning-workbench)
+[Download the WZX PR-11 prerelease](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.9.0-pr11-reading-home-shell)
 
 ## Getting Started
 
@@ -153,7 +153,7 @@ We welcome contributions! Please feel free to submit PRs or open issues.
 
 ## Current Version
 
-**v0.8.0** (WZX PR-10 prerelease)
+**v0.9.0** (WZX PR-11 prerelease)
 
 ## Related Projects by the Author
 

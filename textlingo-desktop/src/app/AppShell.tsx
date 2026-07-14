@@ -5,7 +5,6 @@ import { BookOpen, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { AccountMenu } from "../components/features/AccountMenu";
-import { ApiQuickSwitcher } from "../components/features/ApiQuickSwitcher";
 import { BackendConnectionGate } from "../components/features/BackendConnectionGate";
 import { DropImportOverlay, type DropImportStatus } from "../components/features/DropImportOverlay";
 import { NewMaterialDialog } from "../components/features/NewMaterialDialog";
@@ -21,7 +20,7 @@ import { isPhase1CapabilityEnabled } from "../lib/phase1Capabilities";
 import type { Article, AppConfig, BackendSessionCheck } from "../lib/tauri";
 import type { Annotation } from "../types";
 import { useAppStore } from "./appStore";
-import { getAppNavigationItem } from "./navigation";
+import { APP_NAVIGATION_ITEMS } from "./navigation";
 import { AppRoutes } from "./routes";
 
 const STARTUP_INVOKE_TIMEOUT_MS = 8_000;
@@ -84,12 +83,6 @@ async function waitForPackagedBackend(): Promise<PackagedBackendStartupStatus | 
 
 export function AppShell() {
   const { t } = useTranslation();
-  const favoritesNavItem = getAppNavigationItem("favorites");
-  const FavoritesIcon = favoritesNavItem.icon;
-  const annotationsNavItem = getAppNavigationItem("annotations");
-  const AnnotationsIcon = annotationsNavItem.icon;
-  const learningNavItem = getAppNavigationItem("learning");
-  const LearningIcon = learningNavItem.icon;
   const store = useAppStore();
   const {
     dismissOnboarding,
@@ -122,9 +115,7 @@ export function AppShell() {
   const isBackendAuthenticated = Boolean(backendStatus?.authenticated);
   const canUseKtvExport = isPhase1CapabilityEnabled("ktvExport");
   const canCheckForUpdates = isPhase1CapabilityEnabled("updateCheck");
-  const isFavoritesActive = store.activeScreen === "favorites";
-  const isAnnotationsActive = store.activeScreen === "annotations";
-  const isLearningActive = store.activeScreen === "learning";
+  const sidebarItems = APP_NAVIGATION_ITEMS.filter((item) => item.id !== "favorites");
 
   const clearDropStatusTimer = useCallback(() => {
     if (dropStatusTimer.current) {
@@ -273,6 +264,7 @@ export function AppShell() {
   ]);
 
   const dropActionsRef = useRef({
+    activeScreen: store.activeScreen,
     loadData,
     openArticle,
     scheduleStatusClear,
@@ -281,12 +273,13 @@ export function AppShell() {
 
   useEffect(() => {
     dropActionsRef.current = {
+      activeScreen: store.activeScreen,
       loadData,
       openArticle,
       scheduleStatusClear,
       t,
     };
-  }, [loadData, openArticle, scheduleStatusClear, t]);
+  }, [loadData, openArticle, scheduleStatusClear, store.activeScreen, t]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -394,7 +387,7 @@ export function AppShell() {
           if (!isDropActive()) return;
           if (imported.length === 1 && errors.length === 0) {
             const article = freshArticles.find((item) => item.id === imported[0].id) ?? imported[0];
-            dropActions.openArticle(article, { returnScreen: "home" });
+            dropActions.openArticle(article, { returnScreen: dropActions.activeScreen === "materials" ? "materials" : "home" });
           }
           setDropStatus({ ok: imported.length, errors });
           dropActions.scheduleStatusClear();
@@ -437,7 +430,7 @@ export function AppShell() {
 
   const handleSelectArticle = useCallback((article: Article) => {
     openArticle(article, {
-      returnScreen: store.activeScreen === "favorites" || store.activeScreen === "learning"
+      returnScreen: store.activeScreen === "materials" || store.activeScreen === "favorites" || store.activeScreen === "learning" || store.activeScreen === "annotations"
         ? store.activeScreen
         : "home",
     });
@@ -501,8 +494,15 @@ export function AppShell() {
     );
   }
 
+  const navigateTo = (screen: "home" | "materials" | "learning" | "annotations") => {
+    if (screen === "home") store.goHome();
+    else if (screen === "materials") store.openMaterials();
+    else if (screen === "learning") store.openLearning();
+    else store.openAnnotations();
+  };
+
   return (
-    <div className="h-screen flex flex-col bg-background text-foreground">
+    <div className="h-screen flex bg-background text-foreground">
       <DropImportOverlay
         isDragging={isDragging}
         isImporting={isImporting}
@@ -511,61 +511,47 @@ export function AppShell() {
       />
 
       {!store.selectedArticle && (
-        <header className="flex items-center justify-between px-6 py-4 border-b border-border bg-card/50 backdrop-blur-sm supports-[backdrop-filter]:bg-card/50">
-          <div className="flex items-center gap-3 cursor-pointer hover:opacity-80 transition-opacity" onClick={store.goHome}>
-            <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-primary text-primary-foreground">
-              <BookOpen size={20} />
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold">{t("app.title")}</h1>
-              <p className="text-xs text-muted-foreground">{t("app.subtitle")}</p>
-            </div>
+        <aside className="flex w-[72px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar/75 px-2 py-4 text-sidebar-foreground backdrop-blur-sm md:w-56 md:px-3" aria-label="主导航">
+          <button type="button" onClick={store.goHome} className="mb-7 flex items-center gap-3 rounded-xl px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring md:px-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground"><BookOpen size={18} /></span>
+            <span className="hidden min-w-0 md:block"><span className="block truncate text-sm font-semibold">{t("app.title")}</span><span className="block truncate text-[11px] text-muted-foreground">专注阅读与学习</span></span>
+          </button>
+
+          <nav className="space-y-1">
+            {sidebarItems.map((item) => {
+              const Icon = item.icon;
+              const active = item.id === "learning"
+                ? store.activeScreen === "learning" || store.activeScreen === "favorites"
+                : store.activeScreen === item.id;
+              const label = t(item.labelKey, item.fallbackLabel);
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-current={active ? "page" : undefined}
+                  aria-label={label}
+                  title={label}
+                  onClick={() => navigateTo(item.id as "home" | "materials" | "learning" | "annotations")}
+                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring ${active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"}`}
+                >
+                  <Icon size={18} className="shrink-0" /><span className="hidden md:inline">{label}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <Button onClick={store.startCreateMaterial} className="mt-5 gap-2 md:justify-start" size="sm" aria-label={t("header.newMaterial", "导入素材")} title={t("header.newMaterial", "导入素材")}><Plus size={16} /><span className="hidden md:inline">{t("header.newMaterial", "导入素材")}</span></Button>
+
+          <div className="mt-auto space-y-1 overflow-hidden border-t border-sidebar-border pt-3">
+            {!hasConfig && <p className="hidden px-3 pb-2 text-[11px] leading-4 text-muted-foreground md:block">{t("header.localReadingReady")}</p>}
+            <SettingsButton onSave={handleArticleUpdate} compact />
+            <AccountMenu user={backendStatus.user} backendUrl={backendStatus.backend_url} isLoggingOut={isLoggingOut} onLogout={handleBackendLogout} onSwitchAccount={handleBackendLogout} compact />
+            <p className="hidden px-3 pt-2 text-[10px] text-muted-foreground md:block">OpenKoto v{__APP_VERSION__}</p>
           </div>
-
-          <div className="flex items-center gap-3">
-            {!hasConfig && (
-              <div className="px-3 py-1.5 bg-yellow-500/10 border border-yellow-500/50 rounded-lg text-yellow-600 dark:text-yellow-400 text-sm">
-                {t("header.localReadingReady")}
-              </div>
-            )}
-
-            <Button
-              variant={isFavoritesActive ? "default" : "secondary"}
-              onClick={store.openFavorites}
-              className="gap-2"
-            >
-              <FavoritesIcon size={16} className={isFavoritesActive ? "fill-current" : ""} />
-              {t(favoritesNavItem.labelKey, favoritesNavItem.fallbackLabel)}
-            </Button>
-
-            <Button
-              variant={isAnnotationsActive ? "default" : "secondary"}
-              onClick={store.openAnnotations}
-              className="gap-2"
-            >
-              <AnnotationsIcon size={16} />
-              {t(annotationsNavItem.labelKey, annotationsNavItem.fallbackLabel)}
-            </Button>
-
-            <Button
-              variant={isLearningActive ? "default" : "secondary"}
-              onClick={store.openLearning}
-              className="gap-2"
-            >
-              <LearningIcon size={16} />
-              {t(learningNavItem.labelKey, learningNavItem.fallbackLabel)}
-            </Button>
-
-            <Button onClick={store.startCreateMaterial} className="gap-2">
-              <Plus size={16} />
-              {t("header.newMaterial")}
-            </Button>
-            <SettingsButton onSave={handleArticleUpdate} />
-          </div>
-        </header>
+        </aside>
       )}
 
-      <main className="flex-1 overflow-hidden">
+      <main className="min-w-0 flex-1 overflow-hidden">
         <NewMaterialDialog
           isOpen={store.isEditDialogOpen}
           onClose={store.closeMaterialDialog}
@@ -586,6 +572,8 @@ export function AppShell() {
           selectedArticle={store.selectedArticle}
           selectedIndex={store.selectedIndex}
           viewMode={store.viewMode}
+          materialFilters={store.materialFilters}
+          materialsScrollTop={store.materialsScrollTop}
           onArticleUpdate={handleArticleUpdate}
           onBackFromFavorites={store.backFromFavorites}
           onBackToList={store.backToReaderList}
@@ -593,31 +581,20 @@ export function AppShell() {
           onDeleteArticle={handleDeleteArticle}
           onEditArticle={store.startEditMaterial}
           onNewMaterial={store.startCreateMaterial}
+          onOpenFavorites={store.openFavorites}
+          onOpenLearning={store.openLearning}
+          onOpenMaterials={store.openMaterials}
           onNextArticle={store.openNextArticle}
           onNavigateAnnotationSource={handleNavigateAnnotationSource}
           onOpenKtvExport={store.openKtvExport}
           onPreviousArticle={store.openPreviousArticle}
           onRefresh={loadData}
           onSelectArticle={handleSelectArticle}
+          onMaterialFiltersChange={store.setMaterialFilters}
+          onMaterialsScrollTopChange={store.setMaterialsScrollTop}
           onViewModeChange={store.setViewMode}
         />
       </main>
-
-      <footer className="px-6 py-3 border-t border-border bg-card/50 text-xs text-muted-foreground">
-        <div className="flex items-center justify-between gap-3">
-          <p>OpenKoto v{__APP_VERSION__}</p>
-          <div className="flex min-w-0 items-center gap-3">
-            <AccountMenu
-              user={backendStatus.user}
-              backendUrl={backendStatus.backend_url}
-              isLoggingOut={isLoggingOut}
-              onLogout={handleBackendLogout}
-              onSwitchAccount={handleBackendLogout}
-            />
-            <ApiQuickSwitcher config={store.config} onConfigChange={() => { void loadData(); }} />
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }

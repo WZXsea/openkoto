@@ -1962,9 +1962,10 @@ export function SettingsDialog({ isOpen, onClose, onSave }: SettingsDialogProps)
 interface SettingsButtonProps {
   onOpen?: () => void;
   onSave?: () => void;
+  compact?: boolean;
 }
 
-export function SettingsButton({ onOpen, onSave }: SettingsButtonProps) {
+export function SettingsButton({ onOpen, onSave, compact = false }: SettingsButtonProps) {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
 
@@ -1979,10 +1980,11 @@ export function SettingsButton({ onOpen, onSave }: SettingsButtonProps) {
         variant="ghost"
         size="sm"
         onClick={handleOpen}
-        className="gap-2 text-foreground"
+        className={`w-full gap-2 text-foreground ${compact ? "justify-center md:justify-start" : ""}`}
+        aria-label={t("header.settings")}
       >
         <Settings size={16} />
-        {t("header.settings")}
+        <span className={compact ? "hidden md:inline" : undefined}>{t("header.settings")}</span>
       </Button>
       <SettingsDialog
         isOpen={isOpen}

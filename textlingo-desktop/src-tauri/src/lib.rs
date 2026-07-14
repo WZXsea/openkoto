@@ -97,6 +97,7 @@ pub fn run() {
             commands::migrate_legacy_learning_items_cmd,
             commands::list_learning_activity_events_cmd,
             commands::get_daily_learning_review_cmd,
+            commands::get_learning_activity_heatmap_cmd,
             commands::get_material_learning_review_cmd,
             commands::record_local_preview_cmd,
             commands::list_annotations_cmd,

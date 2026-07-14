@@ -144,8 +144,8 @@ done
 require_pattern 'id: "learning"' textlingo-desktop/src/app/navigation.ts
 require_pattern 'activeScreen === "learning"' textlingo-desktop/src/app/routes.tsx
 
-info "checking 0.8.0 release version"
-EXPECTED_VERSION=0.8.0 bash script/verify_release_version.sh
+info "checking release version consistency"
+bash script/verify_release_version.sh
 
 if [ "$RUN_FULL" -eq 1 ]; then
   info "running Backend checks and tests"

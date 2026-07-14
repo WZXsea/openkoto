@@ -3,8 +3,9 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type { Article, AppConfig } from "../lib/tauri";
 import type { Annotation } from "../types";
 import type { AppScreen, MaterialViewMode } from "./navigation";
+import { DEFAULT_MATERIAL_FILTERS, type MaterialFilters } from "../features/materials/types";
 
-type ReaderReturnScreen = "home" | "favorites" | "annotations" | "learning";
+type ReaderReturnScreen = "home" | "materials" | "favorites" | "annotations" | "learning";
 
 export function useAppStore() {
   const [articles, setArticles] = useState<Article[]>([]);
@@ -14,6 +15,8 @@ export function useAppStore() {
   const [editingArticle, setEditingArticle] = useState<Article | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [viewMode, setViewMode] = useState<MaterialViewMode>("card");
+  const [materialFilters, setMaterialFilters] = useState<MaterialFilters>(DEFAULT_MATERIAL_FILTERS);
+  const [materialsScrollTop, setMaterialsScrollTop] = useState(0);
   const [activeScreen, setActiveScreen] = useState<AppScreen>("home");
   const [readerReturnScreen, setReaderReturnScreen] = useState<ReaderReturnScreen>("home");
   const [activeAnnotation, setActiveAnnotation] = useState<Annotation | null>(null);
@@ -76,6 +79,13 @@ export function useAppStore() {
     setActiveScreen("favorites");
   }, []);
 
+  const openMaterials = useCallback(() => {
+    setSelectedArticle(null);
+    setActiveAnnotation(null);
+    setReaderReturnScreen("materials");
+    setActiveScreen("materials");
+  }, []);
+
   const openAnnotations = useCallback(() => {
     setSelectedArticle(null);
     setActiveAnnotation(null);
@@ -91,8 +101,8 @@ export function useAppStore() {
   }, []);
 
   const backFromFavorites = useCallback(() => {
-    setReaderReturnScreen("home");
-    setActiveScreen("home");
+    setReaderReturnScreen("learning");
+    setActiveScreen("learning");
   }, []);
 
   const backToReaderList = useCallback(() => {
@@ -160,6 +170,8 @@ export function useAppStore() {
     hasDismissedOnboarding,
     isEditDialogOpen,
     isLoading,
+    materialFilters,
+    materialsScrollTop,
     openArticle,
     openArticleById,
     openAnnotationSource,
@@ -167,6 +179,7 @@ export function useAppStore() {
     openFavorites,
     openKtvExport,
     openLearning,
+    openMaterials,
     openNextArticle,
     openPreviousArticle,
     prependArticleIfMissing,
@@ -178,6 +191,8 @@ export function useAppStore() {
     setArticles,
     setConfig,
     setIsLoading,
+    setMaterialFilters,
+    setMaterialsScrollTop,
     setShowOnboarding,
     setViewMode,
     showOnboarding,

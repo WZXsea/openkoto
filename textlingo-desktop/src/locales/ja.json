@@ -22,6 +22,10 @@
     "learningWorkbench": "学習ワークベンチ",
     "newMaterial": "新規素材"
   },
+  "navigation": {
+    "home": "ホーム",
+    "materials": "素材ライブラリ"
+  },
   "footer": {
     "provider": "プロバイダー",
     "model": "モデル",

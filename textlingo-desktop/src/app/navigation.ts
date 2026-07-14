@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
-import { BookCheck, BookOpen, Highlighter, Star } from "lucide-react";
+import { BookCheck, BookOpen, Highlighter, House, Library } from "lucide-react";
 
-export type AppScreen = "home" | "favorites" | "annotations" | "learning" | "reader" | "ktv-export";
+export type AppScreen = "home" | "materials" | "favorites" | "annotations" | "learning" | "reader" | "ktv-export";
 export type MaterialViewMode = "list" | "card";
 
 export interface AppNavigationItem {
@@ -14,27 +14,33 @@ export interface AppNavigationItem {
 export const APP_NAVIGATION_ITEMS: AppNavigationItem[] = [
   {
     id: "home",
-    labelKey: "articleList.title",
-    fallbackLabel: "我的素材",
-    icon: BookOpen,
+    labelKey: "navigation.home",
+    fallbackLabel: "首页",
+    icon: House,
   },
   {
-    id: "favorites",
-    labelKey: "header.favorites",
-    fallbackLabel: "收藏夹",
-    icon: Star,
-  },
-  {
-    id: "annotations",
-    labelKey: "header.annotations",
-    fallbackLabel: "批注",
-    icon: Highlighter,
+    id: "materials",
+    labelKey: "navigation.materials",
+    fallbackLabel: "素材库",
+    icon: Library,
   },
   {
     id: "learning",
     labelKey: "header.learningWorkbench",
-    fallbackLabel: "学习工作台",
+    fallbackLabel: "学习",
     icon: BookCheck,
+  },
+  {
+    id: "annotations",
+    labelKey: "header.annotations",
+    fallbackLabel: "笔记",
+    icon: Highlighter,
+  },
+  {
+    id: "favorites",
+    labelKey: "header.favorites",
+    fallbackLabel: "词包与已收录",
+    icon: BookOpen,
   },
 ];
 
@@ -43,7 +49,7 @@ export function getAppNavigationItem(id: AppNavigationItem["id"]) {
 }
 
 export function isLibraryScreen(screen: AppScreen) {
-  return screen === "home" || screen === "favorites" || screen === "annotations" || screen === "learning";
+  return screen === "home" || screen === "materials" || screen === "favorites" || screen === "annotations" || screen === "learning";
 }
 
 export function isReaderScreen(screen: AppScreen) {

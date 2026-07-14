@@ -590,6 +590,32 @@ pub struct DailyLearningReviewRequest {
     pub timezone_offset_minutes: Option<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LearningActivityHeatmapRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone_offset_minutes: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LearningActivityHeatmapDay {
+    pub date: String,
+    pub read_materials: i64,
+    pub learning_actions: i64,
+    pub activity_score: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LearningActivityHeatmap {
+    pub start_date: String,
+    pub end_date: String,
+    #[serde(default)]
+    pub days: Vec<LearningActivityHeatmapDay>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningReview {
     #[serde(default)]
@@ -1420,6 +1446,23 @@ impl BackendClient {
         self.parse_response(response).await
     }
 
+    pub async fn get_learning_activity_heatmap(
+        &self,
+        query: Option<&LearningActivityHeatmapRequest>,
+    ) -> Result<LearningActivityHeatmap, BackendClientError> {
+        let request = self
+            .client
+            .get(self.url("/learning-review/activity-heatmap"))
+            .bearer_auth(&self.auth_token);
+        let request = if let Some(query) = query {
+            request.query(query)
+        } else {
+            request
+        };
+        let response = request.send().await?;
+        self.parse_response(response).await
+    }
+
     pub async fn get_material_learning_review(
         &self,
         material_id: &str,
@@ -2036,6 +2079,43 @@ mod tests {
             "4e79490f-17b2-42eb-86d4-97bf2548eff7"
         );
         assert_eq!(serialized["source_sentence"], "This can mitigate risk.");
+    }
+
+    #[test]
+    fn activity_heatmap_contract_uses_snake_case_and_preserves_counts() {
+        let query = LearningActivityHeatmapRequest {
+            start_date: Some("2026-04-23".to_string()),
+            end_date: Some("2026-07-15".to_string()),
+            timezone_offset_minutes: Some(480),
+        };
+        let serialized = serde_json::to_value(query).unwrap();
+        assert_eq!(serialized["start_date"], "2026-04-23");
+        assert_eq!(serialized["end_date"], "2026-07-15");
+        assert_eq!(serialized["timezone_offset_minutes"], 480);
+
+        let response: LearningActivityHeatmap = serde_json::from_value(serde_json::json!({
+            "start_date": "2026-07-14",
+            "end_date": "2026-07-15",
+            "days": [
+                {
+                    "date": "2026-07-14",
+                    "read_materials": 2,
+                    "learning_actions": 8,
+                    "activity_score": 10
+                },
+                {
+                    "date": "2026-07-15",
+                    "read_materials": 0,
+                    "learning_actions": 0,
+                    "activity_score": 0
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(response.days.len(), 2);
+        assert_eq!(response.days[0].activity_score, 10);
+        assert_eq!(response.days[1].read_materials, 0);
     }
 
     #[test]

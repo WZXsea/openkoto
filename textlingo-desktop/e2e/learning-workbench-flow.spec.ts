@@ -119,7 +119,7 @@ test("learning workbench filters, accepts, previews, and checks compatibility da
   });
 
   await page.goto("http://127.0.0.1:1420/");
-  await page.getByRole("button", { name: /学习工作台|Learning Workbench/ }).click();
+  await page.getByRole("button", { name: "Learning Workbench", exact: true }).click();
   await expect(page.getByTestId("learning-workbench")).toBeVisible();
   await expect(page.getByText("mitigate", { exact: true })).toBeVisible();
   await expect(page.getByTestId("learning-item-item-1").getByText("待人工核验", { exact: true })).toBeVisible();

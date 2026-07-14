@@ -8,7 +8,8 @@ use crate::backend_client::{
     BackendClientError, BackendHealthResponse, BackendUser, BulkOrganizeLearningItemsRequest,
     BulkOrganizeLearningItemsResponse, ConvertAnnotationResponse, CreateAnnotationRequest,
     CreateLearningItemFromSelectionRequest, CreateLearningItemRequest, CreateMaterialRequest,
-    DailyLearningReviewRequest, LearningActivityEvent, LearningItem, LearningReview,
+    DailyLearningReviewRequest, LearningActivityEvent, LearningActivityHeatmap,
+    LearningActivityHeatmapRequest, LearningItem, LearningReview,
     LegacyLearningItemMigrationRequest, LegacyLearningItemMigrationResponse,
     ListAnnotationsRequest, ListLearningActivityEventsRequest, ListLearningItemsRequest,
     PatchMaterialRequest, RecordLocalPreviewRequest, UpdateAnnotationRequest,
@@ -3812,6 +3813,17 @@ pub async fn get_daily_learning_review_cmd(
 ) -> Result<LearningReview, String> {
     backend_client_for_app(&app_handle)?
         .get_daily_learning_review(query.as_ref())
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn get_learning_activity_heatmap_cmd(
+    app_handle: AppHandle,
+    query: Option<LearningActivityHeatmapRequest>,
+) -> Result<LearningActivityHeatmap, String> {
+    backend_client_for_app(&app_handle)?
+        .get_learning_activity_heatmap(query.as_ref())
         .await
         .map_err(backend_error_to_string)
 }

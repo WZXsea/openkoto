@@ -86,6 +86,8 @@ test.describe("Material workbench", () => {
                 onboarding_completed: true,
                 interface_language: "zh-CN",
                 target_language: "zh-CN",
+                ui_font_family: "Inter, sans-serif",
+                reader_font_family: "Georgia, serif",
                 active_model_id: "model-1",
                 model_configs: [{ id: "model-1", name: "Mock", api_provider: "openai", api_key: "test", model: "gpt-4o-mini", is_default: true }],
               };
@@ -101,6 +103,18 @@ test.describe("Material workbench", () => {
               };
             }
             if (command === "list_articles_cmd") return articles;
+            if (command === "get_learning_activity_heatmap_cmd") {
+              return {
+                start_date: "2026-04-19",
+                end_date: "2026-07-11",
+                days: Array.from({ length: 84 }, (_, index) => ({
+                  date: new Date(Date.UTC(2026, 3, 19 + index)).toISOString().slice(0, 10),
+                  read_materials: index === 83 ? 1 : 0,
+                  learning_actions: 0,
+                  activity_score: index === 83 ? 1 : 0,
+                })),
+              };
+            }
             if (command === "get_article") return articles.find((article) => article.id === args.id) || null;
             if (command === "material_library_list_tags_cmd") {
               return [{ id: "tag-research", name: "Research", color: "#2255aa", material_count: 1, created_at: now, updated_at: now }];
@@ -130,10 +144,27 @@ test.describe("Material workbench", () => {
       });
     });
 
+    await page.emulateMedia({ colorScheme: "dark" });
     await page.goto("http://127.0.0.1:1420/");
-    await expect(page.getByRole("heading", { name: "继续阅读" })).toBeVisible();
+    await expect(page.getByText("继续阅读").first()).toBeVisible();
     await expect(page.getByText("Genomics Reading").first()).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("dark"))).toBe(true);
+    await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue("--font-sans"))).toBe("Inter, sans-serif");
+    await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue("--openkoto-reader-font-family"))).toBe("Georgia, serif");
+    await page.emulateMedia({ colorScheme: "light" });
+    await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("dark"))).toBe(false);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.setViewportSize({ width: 700, height: 800 });
+    await expect.poll(async () => Math.round((await page.getByRole("complementary", { name: "主导航" }).boundingBox())?.width ?? 0)).toBe(72);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.getByRole("button", { name: "素材库" }).first().click();
+    await page.getByRole("tab", { name: /导入任务/ }).click();
     await expect(page.getByRole("region", { name: "最近导入任务" })).toContainText("已完成");
+
+    await page.getByRole("tab", { name: /^素材/ }).click();
 
     const allMaterials = page.locator('section[aria-labelledby="all-materials-title"]');
     await page.getByRole("textbox", { name: "搜索素材" }).fill("Daily");
@@ -142,10 +173,12 @@ test.describe("Material workbench", () => {
     await page.getByRole("button", { name: "清除筛选" }).click();
 
     await page.getByRole("checkbox", { name: "选择 Genomics Reading" }).check();
+    await page.getByRole("tab", { name: /标签/ }).click();
     await page.getByRole("checkbox", { name: "批量选择 Research" }).check();
     await page.getByRole("button", { name: "应用到 1 项" }).click();
     await page.getByRole("button", { name: "确认应用" }).click();
 
+    await page.getByRole("tab", { name: /^素材/ }).click();
     await page.getByRole("checkbox", { name: "选择 Genomics Reading" }).check();
     await page.getByRole("button", { name: "归档", exact: true }).click();
     await page.getByRole("button", { name: "归档", exact: true }).last().click();
@@ -153,6 +186,7 @@ test.describe("Material workbench", () => {
     await page.getByRole("textbox", { name: "搜索素材" }).fill("Genomics");
     await page.getByRole("button", { name: /Genomics Reading/ }).first().click();
     await expect(page.getByText("Genomic evidence changes clinical interpretation.")).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "主导航" })).toHaveCount(0);
     await page.getByText("A second sentence keeps the reader active.").click();
     await expect.poll(async () => (await page.evaluate(() => window.__openkotoInvokeCalls))
       .filter((call) => call.command === "material_library_upsert_reading_progress_cmd").length).toBeGreaterThan(0);

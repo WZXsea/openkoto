@@ -23,6 +23,10 @@
     "learningWorkbench": "Learning Workbench",
     "newMaterial": "New Material"
   },
+  "navigation": {
+    "home": "Home",
+    "materials": "Material Library"
+  },
   "footer": {
     "provider": "Provider",
     "model": "Model",

@@ -64,17 +64,40 @@ vi.mock("./components/features/ArticleList", () => ({
   ArticleList: ({
     articles,
     onSelectArticle,
+    filters,
+    onFiltersChange,
   }: {
     articles: Array<{ id: string; title: string }>;
     onSelectArticle: (article: { id: string; title: string }) => void;
+    filters?: { query: string };
+    onFiltersChange?: (filters: Record<string, unknown>) => void;
   }) => (
     <div>
       <div>ArticleList</div>
+      {filters && <input aria-label="Search materials" value={filters.query} onChange={(event) => onFiltersChange?.({ ...filters, query: event.target.value })} />}
       {articles.map((article) => (
         <button key={article.id} type="button" onClick={() => onSelectArticle(article)}>
           {article.title}
         </button>
       ))}
+    </div>
+  ),
+}));
+
+vi.mock("./components/features/HomePage", () => ({
+  HomePage: ({
+    articles,
+    onSelectArticle,
+    onOpenMaterials,
+  }: {
+    articles: Array<{ id: string; title: string }>;
+    onSelectArticle: (article: { id: string; title: string }) => void;
+    onOpenMaterials: () => void;
+  }) => (
+    <div>
+      <div>HomePage</div>
+      {articles.map((article) => <button key={article.id} type="button" onClick={() => onSelectArticle(article)}>{article.title}</button>)}
+      <button type="button" onClick={onOpenMaterials}>Open materials</button>
     </div>
   ),
 }));
@@ -166,7 +189,7 @@ vi.mock("./components/features/AnnotationWorkbench", () => ({
 }));
 
 vi.mock("./components/features/SettingsDialog", () => ({
-  SettingsButton: () => <button type="button">settings</button>,
+  SettingsButton: ({ onSave }: { onSave?: () => void }) => <button type="button" onClick={onSave}>settings</button>,
 }));
 
 vi.mock("./components/features/ApiQuickSwitcher", () => ({
@@ -218,6 +241,39 @@ vi.mock("./lib/hooks/useAgentOpenMaterialListener", () => ({
 }));
 
 describe("App onboarding", () => {
+  it("starts at home and returns to the materials workbench with session filters intact", async () => {
+    const article = {
+      id: "article-1",
+      title: "Article One",
+      content: "Source text",
+      source_type: "article",
+      created_at: "2026-07-14T00:00:00Z",
+      translated: false,
+      segments: [],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") return Promise.resolve({ onboarding_completed: true, model_configs: [], prompt_features: [] });
+      if (command === "backend_check_session_cmd") return Promise.resolve(authenticatedBackendSession);
+      if (command === "list_articles_cmd") return Promise.resolve([article]);
+      if (command === "material_library_list_tags_cmd" || command === "material_library_list_import_jobs_cmd") return Promise.resolve([]);
+      if (command === "material_library_get_reading_progress_cmd") return Promise.resolve(null);
+      if (command === "list_annotations_cmd") return Promise.resolve([]);
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    expect(screen.getByLabelText("主导航")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "素材库" }));
+    await userEvent.type(await screen.findByRole("textbox", { name: "Search materials" }), "clinical");
+    await userEvent.click(screen.getByRole("button", { name: "Article One" }));
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+    expect(screen.queryByLabelText("主导航")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
+    expect(await screen.findByRole("textbox", { name: "Search materials" })).toHaveValue("clinical");
+    expect(screen.getByLabelText("主导航")).toBeInTheDocument();
+  });
+
   it("opens the annotation workbench and navigates back to its source material", async () => {
     const article = {
       id: "article-1",
@@ -239,8 +295,8 @@ describe("App onboarding", () => {
     });
 
     render(<App />);
-    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /批注/ }));
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "笔记" }));
     expect(await screen.findByText("AnnotationWorkbench")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Open annotation source" }));
     expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
@@ -285,7 +341,7 @@ describe("App onboarding", () => {
       await vi.advanceTimersByTimeAsync(400);
     });
 
-    expect(screen.getByText("ArticleList")).toBeInTheDocument();
+    expect(screen.getByText("HomePage")).toBeInTheDocument();
     expect(backendStatusChecks).toBe(3);
     expect(invokeMock).toHaveBeenCalledWith("backend_check_session_cmd");
   });
@@ -413,7 +469,7 @@ describe("App onboarding", () => {
     });
 
     configState = "missing";
-    await userEvent.click(screen.getByRole("button", { name: "Reload Config" }));
+    await userEvent.click(screen.getByRole("button", { name: "settings" }));
 
     await waitFor(() => {
       expect(screen.queryByText("Onboarding Visible")).not.toBeInTheDocument();
@@ -548,7 +604,7 @@ describe("App onboarding", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
     expect(screen.getByText("Reader")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "账户" }));
@@ -561,7 +617,7 @@ describe("App onboarding", () => {
     });
     expect(await screen.findByText("OpenKoto Backend")).toBeInTheDocument();
     expect(screen.getByText("需要登录 Backend")).toBeInTheDocument();
-    expect(screen.queryByText("ArticleList")).not.toBeInTheDocument();
+    expect(screen.queryByText("HomePage")).not.toBeInTheDocument();
     expect(screen.queryByText("Article One")).not.toBeInTheDocument();
   });
 
@@ -601,21 +657,21 @@ describe("App onboarding", () => {
     });
 
     render(<App />);
-    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "账户" }));
     await userEvent.click(screen.getByText("切换账户"));
 
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("backend_logout_cmd"));
     expect(await screen.findByText("需要登录 Backend")).toBeInTheDocument();
-    expect(screen.queryByText("ArticleList")).not.toBeInTheDocument();
+    expect(screen.queryByText("HomePage")).not.toBeInTheDocument();
     expect(screen.queryByText("Article One")).not.toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText("Email"), "new@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "new-password");
     await userEvent.click(screen.getByRole("button", { name: "登录" }));
 
-    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
     expect(screen.getByText("Article One")).toBeInTheDocument();
   });
 
@@ -687,7 +743,8 @@ describe("App onboarding", () => {
 
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "收藏夹" }));
+    await userEvent.click(await screen.findByRole("button", { name: "学习" }));
+    await userEvent.click(screen.getByRole("button", { name: "词包与已收录" }));
     expect(await screen.findByText("FavoritesPage")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Open Favorite Article" }));
@@ -698,7 +755,7 @@ describe("App onboarding", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
     expect(await screen.findByText("FavoritesPage")).toBeInTheDocument();
-    expect(screen.queryByText("ArticleList")).not.toBeInTheDocument();
+    expect(screen.queryByText("HomePage")).not.toBeInTheDocument();
   });
 
   it("opens an existing material from the agent event without fetching it again", async () => {
@@ -744,7 +801,7 @@ describe("App onboarding", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
     await waitFor(() => {
       expect(appShellMocks.capturedAgentOpenMaterial).toEqual(expect.any(Function));
     });
@@ -802,7 +859,7 @@ describe("App onboarding", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
     await waitFor(() => {
       expect(appShellMocks.capturedAgentOpenMaterial).toEqual(expect.any(Function));
     });
@@ -866,7 +923,7 @@ describe("App onboarding", () => {
 
     const { unmount } = render(<App />);
 
-    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
     await waitFor(() => {
       expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
     });
@@ -949,7 +1006,7 @@ describe("App onboarding", () => {
 
     const { unmount } = render(<App />);
 
-    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
     await waitFor(() => {
       expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
     });
