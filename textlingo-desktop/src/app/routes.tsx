@@ -4,10 +4,12 @@ import { useTranslation } from "react-i18next";
 
 import { ArticleList } from "../components/features/ArticleList";
 import { ArticleReader } from "../components/features/ArticleReader";
+import { AnnotationWorkbench } from "../components/features/AnnotationWorkbench";
 import { BookReader } from "../components/features/BookReader";
 import { FavoritesPage } from "../components/features/FavoritesPage";
 import { KtvExportPage } from "../components/features/KtvExportPage";
 import { Button } from "../components/ui/button";
+import { createAnnotationsApi } from "../features/annotations";
 import type { Article } from "../lib/tauri";
 import { createMaterialsApi } from "../features/materials/api";
 import { DuplicateResolutionDialog } from "../features/materials/DuplicateResolutionDialog";
@@ -15,11 +17,21 @@ import { MaterialImportJobsPanel } from "../features/materials/MaterialImportJob
 import { MaterialTagsPanel } from "../features/materials/MaterialTagsPanel";
 import type { MaterialImportJob, MaterialImportJobsApi, MaterialTagsApi, ManagedMaterialTag } from "../features/materials/materialManagement";
 import { DEFAULT_MATERIAL_FILTERS, type MaterialArticle, type MaterialFilters } from "../features/materials/types";
-import type { ReadingProgressChangeHandler, ReadingProgressLocator, ReadingProgressUpdate, ReaderKind } from "../features/reader";
+import {
+  toSourceLocator,
+  type AnnotationResolution,
+  type ReaderAnnotationDraft,
+  type ReadingProgressChangeHandler,
+  type ReadingProgressLocator,
+  type ReadingProgressUpdate,
+  type ReaderKind,
+} from "../features/reader";
+import type { Annotation } from "../types";
 import { getAppNavigationItem, type AppScreen, type MaterialViewMode } from "./navigation";
 
 interface AppRoutesProps {
   activeScreen: AppScreen;
+  activeAnnotation: Annotation | null;
   articles: Article[];
   canUseKtvExport: boolean;
   isLoading: boolean;
@@ -34,6 +46,7 @@ interface AppRoutesProps {
   onEditArticle: (article: Article) => void;
   onNewMaterial: () => void;
   onNextArticle: () => void;
+  onNavigateAnnotationSource: (annotation: Annotation) => void;
   onOpenKtvExport: () => void;
   onPreviousArticle: () => void;
   onRefresh: () => Promise<Article[]>;
@@ -79,6 +92,7 @@ function resolveDuplicateTitles(jobs: MaterialImportJob[], articles: Article[]):
 
 export function AppRoutes({
   activeScreen,
+  activeAnnotation,
   articles,
   canUseKtvExport,
   isLoading,
@@ -93,6 +107,7 @@ export function AppRoutes({
   onEditArticle,
   onNewMaterial,
   onNextArticle,
+  onNavigateAnnotationSource,
   onOpenKtvExport,
   onPreviousArticle,
   onRefresh,
@@ -102,6 +117,7 @@ export function AppRoutes({
   const { t } = useTranslation();
   const homeNavItem = getAppNavigationItem("home");
   const materialsApi = useMemo(() => createMaterialsApi(), []);
+  const annotationsApi = useMemo(() => createAnnotationsApi(), []);
   const [selectedMaterialIds, setSelectedMaterialIds] = useState<string[]>([]);
   const [materialFilters, setMaterialFilters] = useState<MaterialFilters>(DEFAULT_MATERIAL_FILTERS);
   const [tags, setTags] = useState<ManagedMaterialTag[]>([]);
@@ -113,6 +129,8 @@ export function AppRoutes({
   const progressSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const [isInitialProgressLoading, setIsInitialProgressLoading] = useState(false);
   const [duplicateJob, setDuplicateJob] = useState<MaterialImportJob | null>(null);
+  const [readerAnnotation, setReaderAnnotation] = useState<Annotation | null>(activeAnnotation);
+  const [annotationMessage, setAnnotationMessage] = useState<string | null>(null);
   const titledJobs = useMemo(() => resolveDuplicateTitles(jobs, articles), [articles, jobs]);
 
   const refreshWorkbench = useCallback(async (): Promise<void> => {
@@ -141,6 +159,25 @@ export function AppRoutes({
   useEffect(() => {
     void refreshWorkbench();
   }, [refreshWorkbench]);
+
+  useEffect(() => {
+    setReaderAnnotation(activeAnnotation);
+    setAnnotationMessage(null);
+  }, [activeAnnotation, selectedArticle?.id]);
+
+  useEffect(() => {
+    if (!selectedArticle || activeAnnotation) return;
+    let cancelled = false;
+    void Promise.resolve()
+      .then(() => annotationsApi.list({ material_id: selectedArticle.id, limit: 1, offset: 0 }))
+      .then((items) => {
+        if (!cancelled) setReaderAnnotation(items[0] ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setReaderAnnotation(null);
+      });
+    return () => { cancelled = true; };
+  }, [activeAnnotation, annotationsApi, selectedArticle]);
 
   useEffect(() => {
     if (!selectedArticle) {
@@ -200,6 +237,34 @@ export function AppRoutes({
       });
   }, [materialsApi, selectedArticle]);
 
+  const handleAnnotationResolved = useCallback((resolution: AnnotationResolution) => {
+    setAnnotationMessage(resolution.message);
+  }, []);
+
+  const handleAnnotationDraftCreated = useCallback(async (draft: ReaderAnnotationDraft) => {
+    if (!selectedArticle) return;
+    const locator = toSourceLocator(draft.locator);
+    const segmentId = "segment_id" in locator ? locator.segment_id ?? null : null;
+    try {
+      const created = await annotationsApi.create({
+        material_id: selectedArticle.id,
+        segment_id: segmentId,
+        kind: "highlight",
+        locator,
+        source_text: draft.source_text,
+        material_revision: draft.material_revision ?? null,
+        content_sha256: draft.content_sha256 ?? null,
+        color: "#facc15",
+        tags: [],
+        client_request_id: crypto.randomUUID(),
+      });
+      setReaderAnnotation(created);
+      setAnnotationMessage("高亮已保存");
+    } catch (error) {
+      setAnnotationMessage(`高亮保存失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [annotationsApi, selectedArticle]);
+
   const handleDuplicateResolution = useCallback(async (action: "cancel" | "open_existing" | "replace" | "keep_copy") => {
     const job = duplicateJob;
     setDuplicateJob(null);
@@ -237,7 +302,8 @@ export function AppRoutes({
       return (
         <>
           {progressError && <p className="px-4 pt-3 text-sm text-destructive" role="alert">阅读进度未保存：{progressError}</p>}
-          <BookReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onUpdate={onArticleUpdate} initialProgress={initialProgress} onProgressChange={handleReadingProgress} />
+          {annotationMessage && <p className="px-4 pt-2 text-xs text-muted-foreground" role="status">{annotationMessage}</p>}
+          <BookReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onUpdate={onArticleUpdate} initialProgress={initialProgress} onProgressChange={handleReadingProgress} annotation={readerAnnotation} onAnnotationResolved={handleAnnotationResolved} onAnnotationDraftCreated={handleAnnotationDraftCreated} />
         </>
       );
     }
@@ -245,7 +311,8 @@ export function AppRoutes({
     return (
       <>
         {progressError && <p className="px-4 pt-3 text-sm text-destructive" role="alert">阅读进度未保存：{progressError}</p>}
-        <ArticleReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onNext={onNextArticle} onPrev={onPreviousArticle} hasNext={selectedIndex < articles.length - 1} hasPrev={selectedIndex > 0} onUpdate={onArticleUpdate} onOpenKtvExport={canUseKtvExport ? onOpenKtvExport : undefined} initialProgress={initialProgress} onProgressChange={handleReadingProgress} />
+        {annotationMessage && <p className="px-4 pt-2 text-xs text-muted-foreground" role="status">{annotationMessage}</p>}
+        <ArticleReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onNext={onNextArticle} onPrev={onPreviousArticle} hasNext={selectedIndex < articles.length - 1} hasPrev={selectedIndex > 0} onUpdate={onArticleUpdate} onOpenKtvExport={canUseKtvExport ? onOpenKtvExport : undefined} initialProgress={initialProgress} onProgressChange={handleReadingProgress} annotation={readerAnnotation} onAnnotationResolved={handleAnnotationResolved} onAnnotationDraftCreated={handleAnnotationDraftCreated} />
       </>
     );
   }
@@ -256,6 +323,20 @@ export function AppRoutes({
         onBack={onBackFromFavorites}
         onSelectArticle={onSelectArticle}
       />
+    );
+  }
+
+  if (activeScreen === "annotations") {
+    return (
+      <div className="h-full w-full max-w-7xl mx-auto p-4 sm:p-6">
+        <h2 className="mb-4 text-xl font-semibold">批注与摘录</h2>
+        <AnnotationWorkbench
+          className="h-[calc(100%-3rem)]"
+          materials={articles.map(({ id, title }) => ({ id, title }))}
+          annotationsApi={annotationsApi}
+          onNavigateToSource={onNavigateAnnotationSource}
+        />
+      </div>
     );
   }
 

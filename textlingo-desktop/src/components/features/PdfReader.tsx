@@ -48,10 +48,17 @@ import {
     type ReadingProgressChangeHandler,
     type ReadingProgressUpdate,
 } from "../../features/reader";
+import {
+    createAnnotationDraft,
+    resolveAnnotation,
+    type AnnotationResolution,
+    type ReaderAnnotationDraft,
+    type ReaderAnnotationReference,
+} from "../../features/reader";
 
 
 
-interface PdfReaderProps {
+export interface PdfReaderProps {
     /** PDF 文件的 URL */
     bookPath: string;
     /** 书籍标题 */
@@ -64,6 +71,12 @@ interface PdfReaderProps {
     initialProgress?: ReadingProgressUpdate;
     /** 阅读位置变化回调 */
     onProgressChange?: ReadingProgressChangeHandler;
+    annotation?: ReaderAnnotationReference | null;
+    onAnnotationResolved?: (resolution: AnnotationResolution) => void;
+    onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
+    materialId?: string;
+    materialRevision?: string;
+    contentSha256?: string;
 }
 
 export function PdfReader({
@@ -73,6 +86,12 @@ export function PdfReader({
     onBack,
     initialProgress,
     onProgressChange,
+    annotation,
+    onAnnotationResolved,
+    onAnnotationDraftCreated,
+    materialId,
+    materialRevision,
+    contentSha256,
 }: PdfReaderProps) {
     const { t } = useTranslation();
     const containerRef = useRef<HTMLDivElement>(null);
@@ -100,12 +119,15 @@ export function PdfReader({
     const [bookmarkNote, setBookmarkNote] = useState("");
     const [bookmarkSelectedText, setBookmarkSelectedText] = useState("");
     const { reportProgress } = useReadingProgressReporter(onProgressChange);
+    const [annotationResolution, setAnnotationResolution] = useState<AnnotationResolution | undefined>();
 
     // PDF 加载成功回调
     const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
         setNumPages(numPages);
         setIsLoading(false);
         setError(null);
+
+        if (annotation) return;
 
         // 后端阅读进度是权威来源；没有用户 ID 时不读取跨会话 localStorage。
         const initialPdfProgress = getInitialProgressForReader(initialProgress, "pdf");
@@ -114,7 +136,30 @@ export function PdfReader({
         if (initialPage) {
             setPageNumber(Math.min(numPages, Math.max(1, initialPage)));
         }
-    }, [initialProgress]);
+    }, [annotation, initialProgress]);
+
+    useEffect(() => {
+        if (!annotation) {
+            setAnnotationResolution(undefined);
+            return;
+        }
+        const target = annotation.locator ?? annotation.source_locator;
+        const targetPage = target && typeof target === "object" && "page" in target && typeof target.page === "number" ? target.page : undefined;
+        if (targetPage !== undefined) setPageNumber(Math.min(numPages || targetPage, Math.max(1, targetPage)));
+    }, [annotation, numPages]);
+
+    useEffect(() => {
+        if (!annotation) return;
+        const pageText = contentRef.current?.querySelector<HTMLElement>(".react-pdf__Page__textContent")?.textContent ?? "";
+        const resolution = resolveAnnotation(annotation, {
+            reader_kind: "pdf",
+            material_revision: materialRevision,
+            content_sha256: contentSha256,
+            pages: [{ page: pageNumber, text: pageText }],
+        });
+        setAnnotationResolution(resolution);
+        onAnnotationResolved?.(resolution);
+    }, [annotation, contentSha256, materialRevision, onAnnotationResolved, pageNumber]);
 
     // PDF 加载失败回调
     const onDocumentLoadError = useCallback((err: Error) => {
@@ -130,6 +175,17 @@ export function PdfReader({
             const text = selection.toString().trim();
             if (text.length > 0) {
                 onTextSelect?.(text);
+                const pageText = contentRef.current?.querySelector<HTMLElement>(".react-pdf__Page__textContent")?.textContent ?? text;
+                onAnnotationDraftCreated?.(createAnnotationDraft({
+                    materialId: materialId ?? bookPath,
+                    readerKind: "pdf",
+                    sourceText: pageText,
+                    selectedText: text,
+                    page: pageNumber,
+                    totalPages: numPages,
+                    materialRevision,
+                    contentSha256,
+                }));
             }
         }
     }, [onTextSelect]);
@@ -443,6 +499,11 @@ export function PdfReader({
                 onMouseUp={handleTextSelection}
                 onWheel={handleWheelNavigation}
             >
+                {annotationResolution && (
+                    <div role="status" className="w-full shrink-0 px-2 py-1 text-center text-xs text-muted-foreground bg-background/90 border-b border-border" data-testid="pdf-annotation-status">
+                        {annotationResolution.message}
+                    </div>
+                )}
                 {/* 翻页按钮 - 左 */}
                 <button
                     onClick={goToPrevPage}
@@ -490,7 +551,7 @@ export function PdfReader({
                             width={getPageWidth()}
                             renderTextLayer={true}
                             renderAnnotationLayer={true}
-                            className="shadow-lg"
+                            className={`shadow-lg ${annotationResolution?.status !== "unresolved" && annotation ? "ring-2 ring-primary/40" : ""}`}
                         />
                     </Document>
                 </div>

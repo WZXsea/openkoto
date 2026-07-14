@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
-import { BookOpen, Star } from "lucide-react";
+import { BookOpen, Highlighter, Star } from "lucide-react";
 
-export type AppScreen = "home" | "favorites" | "reader" | "ktv-export";
+export type AppScreen = "home" | "favorites" | "annotations" | "reader" | "ktv-export";
 export type MaterialViewMode = "list" | "card";
 
 export interface AppNavigationItem {
@@ -24,6 +24,12 @@ export const APP_NAVIGATION_ITEMS: AppNavigationItem[] = [
     fallbackLabel: "收藏夹",
     icon: Star,
   },
+  {
+    id: "annotations",
+    labelKey: "header.annotations",
+    fallbackLabel: "批注",
+    icon: Highlighter,
+  },
 ];
 
 export function getAppNavigationItem(id: AppNavigationItem["id"]) {
@@ -31,7 +37,7 @@ export function getAppNavigationItem(id: AppNavigationItem["id"]) {
 }
 
 export function isLibraryScreen(screen: AppScreen) {
-  return screen === "home" || screen === "favorites";
+  return screen === "home" || screen === "favorites" || screen === "annotations";
 }
 
 export function isReaderScreen(screen: AppScreen) {

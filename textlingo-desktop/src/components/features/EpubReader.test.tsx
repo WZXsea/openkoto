@@ -82,4 +82,23 @@ describe("EpubReader", () => {
     expect(getItem).not.toHaveBeenCalled();
     expect(setItem).not.toHaveBeenCalled();
   });
+
+  it("accepts a controlled CFI target and reports an exact resolution", () => {
+    const onAnnotationResolved = vi.fn();
+    render(
+      <EpubReader
+        bookPath="/tmp/book.epub"
+        annotation={{
+          material_id: "epub-1",
+          reader_kind: "epub",
+          locator: { reader_kind: "epub", kind: "epub_cfi", cfi: "epubcfi(/6/9!/4/1:0)", quote: { exact: "chapter" } },
+        }}
+        onAnnotationResolved={onAnnotationResolved}
+      />,
+    );
+
+    expect(screen.getByTestId("epub-reader")).toHaveTextContent("epubcfi(/6/9!/4/1:0)");
+    expect(screen.getByTestId("epub-annotation-status")).toHaveTextContent("CFI 精确定位");
+    expect(onAnnotationResolved).toHaveBeenCalledWith(expect.objectContaining({ status: "exact" }));
+  });
 });

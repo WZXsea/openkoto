@@ -28,4 +28,23 @@ describe("TxtReader", () => {
       status: "completed",
     }));
   });
+
+  it("accepts a controlled annotation target and highlights the resolved range", () => {
+    const onAnnotationResolved = vi.fn();
+    render(
+      <TxtReader
+        content="target"
+        annotation={{
+          material_id: "txt-1",
+          reader_kind: "txt",
+          locator: { reader_kind: "txt", kind: "text_range", page: 1, start_offset: 0, end_offset: 6, quote: { exact: "target" } },
+        }}
+        onAnnotationResolved={onAnnotationResolved}
+      />,
+    );
+
+    expect(screen.getByTestId("txt-annotation-highlight")).toHaveTextContent("target");
+    expect(screen.getByTestId("txt-annotation-status")).toHaveTextContent("精确定位");
+    expect(onAnnotationResolved).toHaveBeenCalledWith(expect.objectContaining({ status: "exact" }));
+  });
 });

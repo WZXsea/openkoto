@@ -1,9 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import type { Article, AppConfig } from "../lib/tauri";
+import type { Annotation } from "../types";
 import type { AppScreen, MaterialViewMode } from "./navigation";
 
-type ReaderReturnScreen = "home" | "favorites";
+type ReaderReturnScreen = "home" | "favorites" | "annotations";
 
 export function useAppStore() {
   const [articles, setArticles] = useState<Article[]>([]);
@@ -15,6 +16,7 @@ export function useAppStore() {
   const [viewMode, setViewMode] = useState<MaterialViewMode>("card");
   const [activeScreen, setActiveScreen] = useState<AppScreen>("home");
   const [readerReturnScreen, setReaderReturnScreen] = useState<ReaderReturnScreen>("home");
+  const [activeAnnotation, setActiveAnnotation] = useState<Annotation | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const onboardingDismissedRef = useRef(false);
 
@@ -29,11 +31,18 @@ export function useAppStore() {
   }, []);
 
   const openArticle = useCallback((article: Article, options?: { returnScreen?: ReaderReturnScreen }) => {
+    setActiveAnnotation(null);
     setReaderReturnScreen(options?.returnScreen ?? "home");
     showReaderArticle(article);
   }, [showReaderArticle]);
 
-  const openArticleById = useCallback((articleId: string, options?: { returnScreen?: "home" | "favorites" }) => {
+  const openAnnotationSource = useCallback((article: Article, annotation: Annotation) => {
+    setReaderReturnScreen("annotations");
+    setActiveAnnotation(annotation);
+    showReaderArticle(article);
+  }, [showReaderArticle]);
+
+  const openArticleById = useCallback((articleId: string, options?: { returnScreen?: ReaderReturnScreen }) => {
     const article = articles.find((item) => item.id === articleId);
     if (article) openArticle(article, options);
     return article ?? null;
@@ -41,26 +50,37 @@ export function useAppStore() {
 
   const openNextArticle = useCallback(() => {
     if (selectedIndex >= 0 && selectedIndex < articles.length - 1) {
+      setActiveAnnotation(null);
       showReaderArticle(articles[selectedIndex + 1]);
     }
   }, [articles, selectedIndex, showReaderArticle]);
 
   const openPreviousArticle = useCallback(() => {
     if (selectedIndex > 0) {
+      setActiveAnnotation(null);
       showReaderArticle(articles[selectedIndex - 1]);
     }
   }, [articles, selectedIndex, showReaderArticle]);
 
   const goHome = useCallback(() => {
     setSelectedArticle(null);
+    setActiveAnnotation(null);
     setReaderReturnScreen("home");
     setActiveScreen("home");
   }, []);
 
   const openFavorites = useCallback(() => {
     setSelectedArticle(null);
+    setActiveAnnotation(null);
     setReaderReturnScreen("favorites");
     setActiveScreen("favorites");
+  }, []);
+
+  const openAnnotations = useCallback(() => {
+    setSelectedArticle(null);
+    setActiveAnnotation(null);
+    setReaderReturnScreen("annotations");
+    setActiveScreen("annotations");
   }, []);
 
   const backFromFavorites = useCallback(() => {
@@ -70,6 +90,7 @@ export function useAppStore() {
 
   const backToReaderList = useCallback(() => {
     setSelectedArticle(null);
+    setActiveAnnotation(null);
     setActiveScreen(readerReturnScreen);
   }, [readerReturnScreen]);
 
@@ -118,6 +139,7 @@ export function useAppStore() {
   }, []);
 
   return {
+    activeAnnotation,
     activeScreen,
     articles,
     backFromFavorites,
@@ -133,6 +155,8 @@ export function useAppStore() {
     isLoading,
     openArticle,
     openArticleById,
+    openAnnotationSource,
+    openAnnotations,
     openFavorites,
     openKtvExport,
     openNextArticle,
@@ -142,6 +166,7 @@ export function useAppStore() {
     selectedArticle,
     selectedIndex,
     setActiveScreen,
+    setActiveAnnotation,
     setArticles,
     setConfig,
     setIsLoading,

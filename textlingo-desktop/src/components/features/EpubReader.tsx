@@ -42,8 +42,15 @@ import {
     type ReadingProgressChangeHandler,
     type ReadingProgressUpdate,
 } from "../../features/reader";
+import {
+    createAnnotationDraft,
+    resolveAnnotation,
+    type AnnotationResolution,
+    type ReaderAnnotationDraft,
+    type ReaderAnnotationReference,
+} from "../../features/reader";
 
-interface EpubReaderProps {
+export interface EpubReaderProps {
     /** EPUB 文件的 URL 或本地路径 */
     bookPath: string;
     /** 书籍标题 */
@@ -58,6 +65,12 @@ interface EpubReaderProps {
     initialProgress?: ReadingProgressUpdate;
     /** 阅读位置变化回调 */
     onProgressChange?: ReadingProgressChangeHandler;
+    annotation?: ReaderAnnotationReference | null;
+    onAnnotationResolved?: (resolution: AnnotationResolution) => void;
+    onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
+    materialId?: string;
+    materialRevision?: string;
+    contentSha256?: string;
 }
 
 const DEFAULT_EPUB_READER_FONT =
@@ -84,6 +97,12 @@ export function EpubReader({
     onBack,
     initialProgress,
     onProgressChange,
+    annotation,
+    onAnnotationResolved,
+    onAnnotationDraftCreated,
+    materialId,
+    materialRevision,
+    contentSha256,
 }: EpubReaderProps) {
     const { t } = useTranslation();
 
@@ -113,6 +132,25 @@ export function EpubReader({
     const [locationsReady, setLocationsReady] = useState(false);
     const pendingInitialPercentageRef = useRef<number | undefined>(undefined);
     const { reportProgress } = useReadingProgressReporter(onProgressChange);
+    const [annotationResolution, setAnnotationResolution] = useState<AnnotationResolution | undefined>();
+
+    useEffect(() => {
+        if (!annotation) {
+            setAnnotationResolution(undefined);
+            return;
+        }
+        const resolution = resolveAnnotation(annotation, {
+            reader_kind: "epub",
+            material_revision: materialRevision,
+            content_sha256: contentSha256,
+            epub_cfi_available: true,
+        });
+        setAnnotationResolution(resolution);
+        onAnnotationResolved?.(resolution);
+        if (resolution.locator?.reader_kind === "epub" && resolution.locator.cfi) {
+            setLocation(resolution.locator.cfi);
+        }
+    }, [annotation, contentSha256, materialRevision, onAnnotationResolved]);
 
     // 书签相关状态
     const [isBookmarkSidebarOpen, setIsBookmarkSidebarOpen] = useState(false);
@@ -152,6 +190,7 @@ export function EpubReader({
         const initialPercentage = initialEpubProgress?.progress_ratio;
 
         setLocationsReady(false);
+        if (annotation) return;
         pendingInitialPercentageRef.current = initialCfi ? undefined : initialPercentage;
         if (initialPercentage !== undefined) {
             setProgress(Math.round(clampProgressRatio(initialPercentage) * 100));
@@ -166,7 +205,7 @@ export function EpubReader({
         }
 
         setLocation(0);
-    }, [bookPath, initialProgress]);
+    }, [annotation, bookPath, initialProgress]);
 
     // 应用字体大小
     useEffect(() => {
@@ -203,6 +242,15 @@ export function EpubReader({
                 if (text.length > 0) {
                     setSelectedText(text);
                     onTextSelect?.(text);
+                    onAnnotationDraftCreated?.(createAnnotationDraft({
+                        materialId: materialId ?? bookPath,
+                        readerKind: "epub",
+                        sourceText: text,
+                        selectedText: text,
+                        cfi: _cfiRange,
+                        materialRevision,
+                        contentSha256,
+                    }));
                 }
             }
         });
@@ -237,7 +285,7 @@ export function EpubReader({
             });
         });
 
-    }, [fontSize, onTextSelect]);
+    }, [bookPath, contentSha256, fontSize, materialId, materialRevision, onAnnotationDraftCreated, onTextSelect]);
 
     // 处理进度条变更
     const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -426,6 +474,11 @@ export function EpubReader({
                     </Button>
                 </div>
             </div>
+            {annotationResolution && (
+                <div role="status" className="px-3 py-1 text-xs text-muted-foreground border-b border-border" data-testid="epub-annotation-status">
+                    {annotationResolution.message}
+                </div>
+            )}
 
             {/* 主内容区 */}
             <div className="flex-1 flex overflow-hidden relative">

@@ -86,12 +86,14 @@ vi.mock("./components/features/ArticleReader", () => ({
     onBack,
     onNext,
     onOpenKtvExport,
+    onAnnotationDraftCreated,
   }: {
     article: { title: string };
     hasNext?: boolean;
     onBack: () => void;
     onNext: () => void;
     onOpenKtvExport?: () => void;
+    onAnnotationDraftCreated?: (draft: Record<string, unknown>) => void;
   }) => (
     <div>
       <div>ArticleReader</div>
@@ -104,6 +106,15 @@ vi.mock("./components/features/ArticleReader", () => ({
       </button>
       <button type="button" onClick={onOpenKtvExport}>
         Open KTV Export
+      </button>
+      <button type="button" onClick={() => onAnnotationDraftCreated?.({
+        material_id: "article-1",
+        reader_kind: "article",
+        source_text: "Source text",
+        quote: { exact: "Source" },
+        locator: { reader_kind: "article", kind: "text_range", start_offset: 0, end_offset: 6, quote: { exact: "Source" } },
+      })}>
+        Save highlight
       </button>
     </div>
   ),
@@ -134,6 +145,21 @@ vi.mock("./components/features/FavoritesPage", () => ({
         onClick={() => onSelectArticle({ id: "article-1", title: "Article One" })}
       >
         Open Favorite Article
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock("./components/features/AnnotationWorkbench", () => ({
+  AnnotationWorkbench: ({
+    onNavigateToSource,
+  }: {
+    onNavigateToSource: (annotation: { id: string; material_id: string }) => void;
+  }) => (
+    <div>
+      <div>AnnotationWorkbench</div>
+      <button type="button" onClick={() => onNavigateToSource({ id: "annotation-1", material_id: "article-1" })}>
+        Open annotation source
       </button>
     </div>
   ),
@@ -192,6 +218,40 @@ vi.mock("./lib/hooks/useAgentOpenMaterialListener", () => ({
 }));
 
 describe("App onboarding", () => {
+  it("opens the annotation workbench and navigates back to its source material", async () => {
+    const article = {
+      id: "article-1",
+      title: "Article One",
+      content: "Source text",
+      source_type: "article",
+      created_at: "2026-07-14T00:00:00Z",
+      translated: false,
+      segments: [],
+    };
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === "get_config") return Promise.resolve({ onboarding_completed: true, model_configs: [], prompt_features: [] });
+      if (command === "backend_check_session_cmd") return Promise.resolve(authenticatedBackendSession);
+      if (command === "list_articles_cmd") return Promise.resolve([article]);
+      if (command === "list_material_tags_cmd" || command === "list_material_import_jobs_cmd") return Promise.resolve([]);
+      if (command === "list_annotations_cmd") return Promise.resolve([]);
+      if (command === "create_annotation_cmd") return Promise.resolve({ id: "annotation-created", ...(args?.payload as object) });
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(await screen.findByText("ArticleList")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /批注/ }));
+    expect(await screen.findByText("AnnotationWorkbench")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open annotation source" }));
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save highlight" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("create_annotation_cmd", {
+        payload: expect.objectContaining({ material_id: "article-1", kind: "highlight" }),
+      });
+    });
+  });
+
   it("waits for the packaged backend before restoring the session", async () => {
     vi.useFakeTimers();
     let backendStatusChecks = 0;

@@ -8,6 +8,7 @@ export interface TextQuoteSelector {
 
 interface SourceLocatorMetadata {
   version?: typeof SOURCE_LOCATOR_VERSION;
+  reader_kind?: "article" | "txt" | "pdf" | "epub" | "media";
   material_revision?: string;
   content_sha256?: string;
   quote?: TextQuoteSelector;
@@ -24,6 +25,8 @@ export type SourceLocatorV1 = SourceLocatorMetadata & (
     kind: "text_range";
     segment_id?: string;
     segment_order?: number;
+    page?: number;
+    total_pages?: number;
     start_offset: number;
     end_offset: number;
     quote: TextQuoteSelector;
@@ -42,6 +45,7 @@ export type SourceLocatorV1 = SourceLocatorMetadata & (
     current_time: number;
     end_time?: number;
     duration?: number;
+    segment_id?: string;
   }
 );
 
@@ -130,6 +134,10 @@ export function assertValidSourceLocator(locator: SourceLocatorV1): void {
   }
   if (locator.kind === "text_range" && (locator.start_offset < 0 || locator.start_offset >= locator.end_offset)) {
     throw new Error("Invalid text range locator");
+  }
+  if (locator.kind === "text_range" && locator.page !== undefined
+    && (locator.page < 1 || (locator.total_pages !== undefined && locator.total_pages < locator.page))) {
+    throw new Error("Invalid text range page");
   }
   if (locator.kind === "page" && (locator.page < 1 || (locator.total_pages !== undefined && locator.total_pages < locator.page))) {
     throw new Error("Invalid page locator");

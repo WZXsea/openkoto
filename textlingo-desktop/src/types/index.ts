@@ -1,3 +1,5 @@
+import type { SourceLocatorV1 } from "../features/reader/sourceLocator";
+
 export interface Article {
     id: string;
     title: string;
@@ -145,6 +147,86 @@ export type AcceptedFavorite =
 export interface AcceptLearningItemResponse {
     learning_item: LearningItem;
     favorite: AcceptedFavorite;
+}
+
+export type AnnotationKind = "highlight" | "excerpt" | "note" | "vocabulary" | "grammar";
+
+export interface Annotation {
+    id: string;
+    material_id: string;
+    segment_id?: string | null;
+    kind: AnnotationKind;
+    locator: SourceLocatorV1;
+    source_text: string;
+    material_revision?: string | null;
+    content_sha256?: string | null;
+    color?: string | null;
+    note?: string | null;
+    tags: string[];
+    learning_item_id?: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ListAnnotationsQuery {
+    material_id?: string;
+    kind?: AnnotationKind;
+    tag?: string;
+    q?: string;
+    created_after?: string;
+    created_before?: string;
+    limit?: number;
+    offset?: number;
+}
+
+export interface CreateAnnotationInput {
+    id?: string;
+    material_id: string;
+    segment_id?: string | null;
+    kind: AnnotationKind;
+    locator: SourceLocatorV1;
+    source_text: string;
+    material_revision?: string | null;
+    content_sha256?: string | null;
+    color?: string | null;
+    note?: string | null;
+    tags?: string[];
+    learning_item_id?: string | null;
+    /** Caller-stable idempotency key. Reuse it only when retrying the same creation. */
+    client_request_id: string;
+}
+
+export interface UpdateAnnotationInput {
+    material_id?: string;
+    segment_id?: string | null;
+    kind?: AnnotationKind;
+    locator?: SourceLocatorV1;
+    source_text?: string;
+    material_revision?: string | null;
+    content_sha256?: string | null;
+    color?: string | null;
+    note?: string | null;
+    tags?: string[];
+    learning_item_id?: string | null;
+}
+
+export interface AnnotationLearningItem {
+    id: string;
+    material_id?: string | null;
+    segment_id?: string | null;
+    item_type: string;
+    text: string;
+    source_sentence: string;
+    tags: string[];
+    status: string;
+    review_state: unknown;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ConvertAnnotationResponse {
+    annotation: Annotation;
+    learning_item: AnnotationLearningItem;
 }
 
 export type AgentTaskType =

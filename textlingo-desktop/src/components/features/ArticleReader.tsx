@@ -57,6 +57,13 @@ import {
   type ReadingProgressChangeHandler,
   type ReadingProgressUpdate,
 } from "../../features/reader";
+import {
+  createAnnotationDraft,
+  resolveAnnotation,
+  type AnnotationResolution,
+  type ReaderAnnotationDraft,
+  type ReaderAnnotationReference,
+} from "../../features/reader";
 import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
 
 const DEFAULT_BATCH_TRANSLATION_CONCURRENCY = 3;
@@ -75,7 +82,7 @@ function normalizeBatchTranslationConcurrency(value: unknown): number {
   );
 }
 
-interface ArticleReaderProps {
+export interface ArticleReaderProps {
   article: Article;
   onBack?: () => void;
   onNext?: () => void;
@@ -86,6 +93,12 @@ interface ArticleReaderProps {
   onOpenKtvExport?: () => void;
   initialProgress?: ReadingProgressUpdate;
   onProgressChange?: ReadingProgressChangeHandler;
+  /** 工作台请求回跳的 article/media annotation。 */
+  annotation?: ReaderAnnotationReference | null;
+  onAnnotationResolved?: (resolution: AnnotationResolution) => void;
+  onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
+  materialRevision?: string;
+  contentSha256?: string;
 }
 
 export function ArticleReader({
@@ -99,6 +112,11 @@ export function ArticleReader({
   onOpenKtvExport,
   initialProgress,
   onProgressChange,
+  annotation,
+  onAnnotationResolved,
+  onAnnotationDraftCreated,
+  materialRevision,
+  contentSha256,
 }: ArticleReaderProps) {
   const { t } = useTranslation();
   const assistantModeStorageKey = "article-reader-assistant-mode";
@@ -132,6 +150,7 @@ export function ArticleReader({
 
   // 本地段落状态 - 用于批量处理时的局部刷新
   const [localSegments, setLocalSegments] = useState(article.segments || []);
+  const [annotationResolution, setAnnotationResolution] = useState<AnnotationResolution | undefined>();
 
   // 字幕提取状态
   const [isExtractingSubtitles, setIsExtractingSubtitles] = useState(false);
@@ -351,6 +370,36 @@ export function ArticleReader({
       setSelectedSegmentId(restoredSegment.id);
     }
   }, [article.id, article.media_path, initialProgress, localSegments]);
+
+  useEffect(() => {
+    if (!annotation) {
+      setAnnotationResolution(undefined);
+      return;
+    }
+    const readerKind = article.media_path ? "media" : "article";
+    const resolution = resolveAnnotation(annotation, {
+      reader_kind: readerKind,
+      material_revision: materialRevision,
+      content_sha256: contentSha256,
+      segments: localSegments.map((segment) => ({
+        id: segment.id,
+        order: segment.order,
+        text: segment.text,
+        start_time: segment.start_time,
+        end_time: segment.end_time,
+      })),
+    });
+    setAnnotationResolution(resolution);
+    onAnnotationResolved?.(resolution);
+    const target = resolution.locator;
+    if (target?.reader_kind === "article" || target?.reader_kind === "media") {
+      const targetId = target.segment_id
+        ?? (target.kind === "text_range" && target.segment_order !== undefined
+          ? localSegments.find((segment) => segment.order === target.segment_order)?.id
+          : undefined);
+      if (targetId) setSelectedSegmentId(targetId);
+    }
+  }, [annotation, article.media_path, contentSha256, localSegments, materialRevision, onAnnotationResolved]);
 
   // 自动滚动到激活的段落（非视频模式）
   useEffect(() => {
@@ -625,6 +674,24 @@ export function ArticleReader({
       contextBefore,
       contextAfter,
     });
+    const isMedia = Boolean(article.media_path);
+    const selectedSegment = segment ?? localSegments.find((candidate) => candidate.start_time !== undefined
+      && candidate.end_time !== undefined
+      && (annotationResolution?.locator?.kind === "time_range"
+        ? candidate.start_time <= annotationResolution.locator.current_time && candidate.end_time >= annotationResolution.locator.current_time
+        : false));
+    if (!isMedia) {
+      onAnnotationDraftCreated?.(createAnnotationDraft({
+        materialId: article.id,
+        readerKind: "article",
+        sourceText: sourceSentence,
+        selectedText: selected,
+        segmentId: selectedSegment?.id,
+        segmentOrder: selectedSegment?.order,
+        materialRevision,
+        contentSha256,
+      }));
+    }
     setShowCandidateBox(true);
   };
 
@@ -1485,6 +1552,11 @@ export function ArticleReader({
                   onScroll={handleReaderScroll}
                   className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth"
                 >
+                  {annotationResolution && (
+                    <div role="status" className="mb-3 text-xs text-muted-foreground" data-testid="article-annotation-status">
+                      {annotationResolution.message}
+                    </div>
+                  )}
                   {/* 视频/音频模式：使用 VideoSubtitlePlayer 组件 */}
                   {article.media_path && (() => {
                     const filename = article.media_path.split('/').pop() || article.media_path.split('\\').pop() || '';
@@ -1515,6 +1587,12 @@ export function ArticleReader({
                         onViewModeChange={setViewMode}
                         initialProgress={initialProgress}
                         onProgressChange={onProgressChange}
+                        annotation={annotation}
+                        onAnnotationResolved={undefined}
+                        onAnnotationDraftCreated={onAnnotationDraftCreated}
+                        materialRevision={materialRevision}
+                        contentSha256={contentSha256}
+                        onTextSelect={setSelectedText}
                       />
                     );
                   })()}
@@ -1554,11 +1632,21 @@ export function ArticleReader({
                                 const isSelected = segment.id === selectedSegmentId;
 
                                 return (
-                                  <React.Fragment key={segment.id}>
+                                  (() => {
+                                    const displayedText = viewMode === 'translation' && segment.translation ? segment.translation : segment.text;
+                                    const annotationLocator = annotationResolution?.locator;
+                                    const hasAnnotationRange = viewMode !== 'translation'
+                                      && annotationLocator?.kind === "text_range"
+                                      && annotationLocator.reader_kind === "article"
+                                      && (annotationLocator.segment_id === segment.id || annotationLocator.segment_order === segment.order)
+                                      && annotationResolution?.status !== "unresolved";
+                                    return (
+                                    <React.Fragment key={segment.id}>
                                     <span
                                       ref={isSelected ? activeSegmentRef : null}
                                       data-reader-segment-id={segment.id}
                                       data-reader-segment-order={segment.order}
+                                      data-annotation-active={hasAnnotationRange ? "true" : undefined}
                                       onClick={() => handleSegmentClick(segment.id)}
                                       className={`inline decoration-clone rounded-lg border-2 px-1 py-0.5 mx-0.5 transition-all duration-200 cursor-pointer ${isSelected
                                         ? "bg-primary/20 border-primary shadow-sm text-foreground ring-2 ring-primary/20"
@@ -1574,10 +1662,20 @@ export function ArticleReader({
                                         boxDecorationBreak: 'clone'
                                       }}
                                     >
-                                      {viewMode === 'translation' && segment.translation ? segment.translation : segment.text}
+                                      {hasAnnotationRange ? (
+                                        <>
+                                          {segment.text.slice(0, annotationLocator.start_offset)}
+                                          <mark data-testid="article-annotation-highlight" className="bg-primary/25 text-foreground rounded-sm">
+                                            {segment.text.slice(annotationLocator.start_offset, annotationLocator.end_offset)}
+                                          </mark>
+                                          {segment.text.slice(annotationLocator.end_offset)}
+                                        </>
+                                      ) : displayedText}
                                     </span>
                                     {segIndex < group.length - 1 && " "}
-                                  </React.Fragment>
+                                    </React.Fragment>
+                                    );
+                                  })()
                                 );
                               })}
                             </div>

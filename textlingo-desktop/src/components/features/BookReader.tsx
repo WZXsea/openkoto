@@ -27,7 +27,13 @@ import { useConfig } from "../../lib/hooks";
 import { logger } from "../../lib/logger";
 import { buildMediaResourceUrl } from "../../lib/media";
 import { hasActiveModelConfig, isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
-import type { ReadingProgressChangeHandler, ReadingProgressUpdate } from "../../features/reader";
+import type {
+    AnnotationResolution,
+    ReaderAnnotationDraft,
+    ReaderAnnotationReference,
+    ReadingProgressChangeHandler,
+    ReadingProgressUpdate,
+} from "../../features/reader";
 
 interface BookReaderProps {
     article: Article;
@@ -35,9 +41,12 @@ interface BookReaderProps {
     onUpdate?: () => void;
     initialProgress?: ReadingProgressUpdate;
     onProgressChange?: ReadingProgressChangeHandler;
+    annotation?: ReaderAnnotationReference | null;
+    onAnnotationResolved?: (resolution: AnnotationResolution) => void;
+    onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
 }
 
-export function BookReader({ article, onBack, initialProgress, onProgressChange }: BookReaderProps) {
+export function BookReader({ article, onBack, initialProgress, onProgressChange, annotation, onAnnotationResolved, onAnnotationDraftCreated }: BookReaderProps) {
     const { t } = useTranslation();
     const assistantModeStorageKey = "book-reader-assistant-mode";
     const backToMaterialsLabel = t("bookReader.backToMaterials", "返回素材列表");
@@ -479,6 +488,10 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange 
                             onTextSelect={handleTextSelect}
                             initialProgress={initialProgress}
                             onProgressChange={onProgressChange}
+                            materialId={article.id}
+                            annotation={annotation}
+                            onAnnotationResolved={onAnnotationResolved}
+                            onAnnotationDraftCreated={onAnnotationDraftCreated}
                         />
                     )}
                     {isTxt && (
@@ -489,6 +502,10 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange 
                             onTextSelect={handleTextSelect}
                             initialProgress={initialProgress}
                             onProgressChange={onProgressChange}
+                            materialId={article.id}
+                            annotation={annotation}
+                            onAnnotationResolved={onAnnotationResolved}
+                            onAnnotationDraftCreated={onAnnotationDraftCreated}
                         />
                     )}
                     {isPdf && (
@@ -502,6 +519,10 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange 
                                             onTextSelect={handleTextSelect}
                                             initialProgress={initialProgress}
                                             onProgressChange={onProgressChange}
+                                            materialId={article.id}
+                                            annotation={annotation}
+                                            onAnnotationResolved={onAnnotationResolved}
+                                            onAnnotationDraftCreated={onAnnotationDraftCreated}
                                         />
                                     </div>
                                     <div className="flex-1 min-w-0">
@@ -511,6 +532,7 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange 
                                             onTextSelect={handleTextSelect}
                                             initialProgress={initialProgress}
                                             onProgressChange={onProgressChange}
+                                            materialId={article.id}
                                         />
                                     </div>
                                 </div>
@@ -521,6 +543,10 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange 
                                     onTextSelect={handleTextSelect}
                                     initialProgress={initialProgress}
                                     onProgressChange={onProgressChange}
+                                    materialId={article.id}
+                                    annotation={annotation}
+                                    onAnnotationResolved={onAnnotationResolved}
+                                    onAnnotationDraftCreated={onAnnotationDraftCreated}
                                 />
                             )}
                         </>

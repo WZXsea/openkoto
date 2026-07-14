@@ -4,10 +4,11 @@ use crate::agent_worker::{
 };
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
 use crate::backend_client::{
-    AcceptLearningItemRequest, AcceptLearningItemResponse, BackendClient, BackendClientError,
-    BackendHealthResponse, BackendUser, CreateLearningItemFromSelectionRequest,
-    CreateLearningItemRequest, CreateMaterialRequest, LearningItem, ListLearningItemsRequest,
-    PatchMaterialRequest, UpdateLearningItemRequest,
+    AcceptLearningItemRequest, AcceptLearningItemResponse, Annotation, BackendClient,
+    BackendClientError, BackendHealthResponse, BackendUser, ConvertAnnotationResponse,
+    CreateAnnotationRequest, CreateLearningItemFromSelectionRequest, CreateLearningItemRequest,
+    CreateMaterialRequest, LearningItem, ListAnnotationsRequest, ListLearningItemsRequest,
+    PatchMaterialRequest, UpdateAnnotationRequest, UpdateLearningItemRequest,
 };
 use crate::feature_gate::require_external_tools_enabled;
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
@@ -3757,6 +3758,63 @@ pub async fn accept_learning_item_cmd(
 pub async fn delete_learning_item_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
     backend_client_for_app(&app_handle)?
         .delete_learning_item(&id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn list_annotations_cmd(
+    app_handle: AppHandle,
+    query: Option<ListAnnotationsRequest>,
+) -> Result<Vec<Annotation>, String> {
+    backend_client_for_app(&app_handle)?
+        .list_annotations(query.as_ref())
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn create_annotation_cmd(
+    app_handle: AppHandle,
+    payload: CreateAnnotationRequest,
+) -> Result<Annotation, String> {
+    if payload.client_request_id.trim().is_empty() {
+        return Err("client_request_id is required".to_string());
+    }
+    backend_client_for_app(&app_handle)?
+        .create_annotation(&payload)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn update_annotation_cmd(
+    app_handle: AppHandle,
+    id: String,
+    payload: UpdateAnnotationRequest,
+) -> Result<Annotation, String> {
+    backend_client_for_app(&app_handle)?
+        .patch_annotation(&id, &payload)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn delete_annotation_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
+    backend_client_for_app(&app_handle)?
+        .delete_annotation(&id)
+        .await
+        .map(|_| ())
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn convert_annotation_to_learning_item_cmd(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<ConvertAnnotationResponse, String> {
+    backend_client_for_app(&app_handle)?
+        .convert_annotation_to_learning_item(&id)
         .await
         .map_err(backend_error_to_string)
 }

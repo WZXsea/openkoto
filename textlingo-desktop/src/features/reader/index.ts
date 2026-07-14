@@ -32,6 +32,27 @@ export {
   withLocatorVersion,
 } from "./sourceLocator";
 export type { SourceLocatorV1, TextQuoteSelector } from "./sourceLocator";
+export {
+  createAnnotationDraft,
+  getAnnotationLocator,
+  parseReaderAnnotationLocator,
+  resolveAnnotation,
+  toSourceLocator,
+  useAnnotationResolution,
+} from "./annotationLocator";
+export type {
+  AnnotationQuote,
+  ReaderAnnotationContext,
+  AnnotationReaderKind,
+  AnnotationResolution,
+  AnnotationResolutionStatus,
+  AnnotationResolutionStrategy,
+  CreateAnnotationDraftInput,
+  ReaderAnnotationDraft,
+  ReaderAnnotationLocator,
+  ReaderAnnotationReference,
+  ReaderTextSegment,
+} from "./annotationLocator";
 
 export const readerFeature = {
   id: "reader",

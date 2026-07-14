@@ -425,6 +425,127 @@ pub struct CreateLearningItemFromSelectionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Annotation {
+    pub id: String,
+    pub material_id: String,
+    #[serde(default)]
+    pub segment_id: Option<String>,
+    pub kind: String,
+    pub locator: Value,
+    pub source_text: String,
+    #[serde(default)]
+    pub material_revision: Option<String>,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub learning_item_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListAnnotationsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateAnnotationRequest {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub material_id: String,
+    #[serde(default)]
+    pub segment_id: Option<String>,
+    pub kind: String,
+    pub locator: Value,
+    pub source_text: String,
+    #[serde(default)]
+    pub material_revision: Option<String>,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub learning_item_id: Option<String>,
+    pub client_request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdateAnnotationRequest {
+    #[serde(default)]
+    pub material_id: Option<String>,
+    #[serde(default)]
+    pub segment_id: Option<Option<String>>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub locator: Option<Value>,
+    #[serde(default)]
+    pub source_text: Option<String>,
+    #[serde(default)]
+    pub material_revision: Option<Option<String>>,
+    #[serde(default)]
+    pub content_sha256: Option<Option<String>>,
+    #[serde(default)]
+    pub color: Option<Option<String>>,
+    #[serde(default)]
+    pub note: Option<Option<String>>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub learning_item_id: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationLearningItem {
+    pub id: String,
+    #[serde(default)]
+    pub material_id: Option<String>,
+    #[serde(default)]
+    pub segment_id: Option<String>,
+    pub item_type: String,
+    pub text: String,
+    pub source_sentence: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub status: String,
+    #[serde(default)]
+    pub review_state: Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConvertAnnotationResponse {
+    pub annotation: Annotation,
+    pub learning_item: AnnotationLearningItem,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BackendErrorBody {
     error: BackendErrorDetail,
 }
@@ -1049,6 +1170,75 @@ impl BackendClient {
         self.parse_response(response).await
     }
 
+    pub async fn list_annotations(
+        &self,
+        query: Option<&ListAnnotationsRequest>,
+    ) -> Result<Vec<Annotation>, BackendClientError> {
+        let request = self
+            .client
+            .get(self.url("/annotations"))
+            .bearer_auth(&self.auth_token);
+        let request = if let Some(query) = query {
+            request.query(query)
+        } else {
+            request
+        };
+        let response = request.send().await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn create_annotation(
+        &self,
+        payload: &CreateAnnotationRequest,
+    ) -> Result<Annotation, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/annotations"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn patch_annotation(
+        &self,
+        id: &str,
+        payload: &UpdateAnnotationRequest,
+    ) -> Result<Annotation, BackendClientError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/annotations/{id}")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn delete_annotation(&self, id: &str) -> Result<DeleteResponse, BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/annotations/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn convert_annotation_to_learning_item(
+        &self,
+        id: &str,
+    ) -> Result<ConvertAnnotationResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/annotations/{id}/convert-to-learning-item")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
     pub async fn list_word_packs(&self) -> Result<Vec<WordPack>, BackendClientError> {
         let response = self
             .client
@@ -1600,6 +1790,90 @@ mod tests {
             response.favorite,
             AcceptedFavorite::Vocabulary { ref pack_ids, .. } if pack_ids == &["pack-a"]
         ));
+    }
+
+    #[test]
+    fn annotation_create_and_list_contracts_use_backend_field_names() {
+        let create = CreateAnnotationRequest {
+            id: None,
+            material_id: "material-1".to_string(),
+            segment_id: Some("segment-1".to_string()),
+            kind: "highlight".to_string(),
+            locator: serde_json::json!({
+                "version": 1,
+                "kind": "text_range",
+                "start_offset": 2,
+                "end_offset": 10,
+                "quote": { "exact": "language" }
+            }),
+            source_text: "language".to_string(),
+            material_revision: Some("revision-1".to_string()),
+            content_sha256: Some("a".repeat(64)),
+            color: Some("#facc15".to_string()),
+            note: Some("Review this phrase".to_string()),
+            tags: vec!["academic".to_string()],
+            learning_item_id: None,
+            client_request_id: "request-1".to_string(),
+        };
+        let serialized = serde_json::to_value(create).unwrap();
+        assert_eq!(serialized["client_request_id"], "request-1");
+        assert_eq!(serialized["locator"]["kind"], "text_range");
+        assert_eq!(serialized["tags"], serde_json::json!(["academic"]));
+
+        let query = ListAnnotationsRequest {
+            material_id: Some("material-1".to_string()),
+            kind: Some("vocabulary".to_string()),
+            tag: Some("academic".to_string()),
+            q: Some("mitigate".to_string()),
+            created_after: Some("2026-07-01T00:00:00Z".to_string()),
+            created_before: Some("2026-07-31T23:59:59Z".to_string()),
+            limit: Some(50),
+            offset: Some(10),
+        };
+        let serialized = serde_json::to_value(query).unwrap();
+        assert_eq!(serialized["material_id"], "material-1");
+        assert_eq!(serialized["kind"], "vocabulary");
+        assert_eq!(serialized["tag"], "academic");
+        assert_eq!(serialized["q"], "mitigate");
+        assert_eq!(serialized["created_after"], "2026-07-01T00:00:00Z");
+    }
+
+    #[test]
+    fn annotation_conversion_response_preserves_annotation_and_learning_item() {
+        let response: ConvertAnnotationResponse = serde_json::from_value(serde_json::json!({
+            "annotation": {
+                "id": "annotation-1",
+                "material_id": "material-1",
+                "kind": "vocabulary",
+                "locator": { "version": 1, "kind": "page", "page": 2 },
+                "source_text": "mitigate",
+                "tags": ["academic"],
+                "learning_item_id": "learning-1",
+                "created_at": "2026-07-14T00:00:00Z",
+                "updated_at": "2026-07-14T00:00:00Z"
+            },
+            "learning_item": {
+                "id": "learning-1",
+                "item_type": "word",
+                "text": "mitigate",
+                "source_sentence": "Early action can mitigate risk.",
+                "collocations": [],
+                "examples": [],
+                "tags": [],
+                "status": "candidate",
+                "priority": 0,
+                "review_state": {},
+                "created_at": "2026-07-14T00:00:00Z",
+                "updated_at": "2026-07-14T00:00:00Z"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            response.annotation.learning_item_id.as_deref(),
+            Some("learning-1")
+        );
+        assert_eq!(response.learning_item.id, "learning-1");
     }
 
     #[test]

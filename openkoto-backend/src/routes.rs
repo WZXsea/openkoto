@@ -10,8 +10,8 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use crate::{
-    auth, config::AppConfig, error::AppError, files, learning, learning_items, legacy_imports,
-    material_library, materials,
+    annotations, auth, config::AppConfig, error::AppError, files, learning, learning_items,
+    legacy_imports, material_library, materials,
 };
 
 #[derive(Clone)]
@@ -179,6 +179,20 @@ pub fn build_router(state: AppState) -> Router {
             get(learning_items::get_learning_item)
                 .patch(learning_items::patch_learning_item)
                 .delete(learning_items::delete_learning_item),
+        )
+        .route(
+            "/annotations",
+            get(annotations::list_annotations).post(annotations::create_annotation),
+        )
+        .route(
+            "/annotations/{id}/convert-to-learning-item",
+            post(annotations::convert_to_learning_item),
+        )
+        .route(
+            "/annotations/{id}",
+            get(annotations::get_annotation)
+                .patch(annotations::patch_annotation)
+                .delete(annotations::delete_annotation),
         )
         .route(
             "/agent-tasks/{id}",

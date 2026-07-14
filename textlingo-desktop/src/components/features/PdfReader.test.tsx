@@ -176,4 +176,23 @@ describe("PdfReader", () => {
     expect(getItem).not.toHaveBeenCalled();
     expect(setItem).not.toHaveBeenCalled();
   });
+
+  it("uses the controlled annotation page when the PDF text layer is unavailable", async () => {
+    const onAnnotationResolved = vi.fn();
+    render(
+      <PdfReader
+        bookPath="http://127.0.0.1/test.pdf"
+        annotation={{
+          material_id: "pdf-1",
+          reader_kind: "pdf",
+          locator: { reader_kind: "pdf", kind: "text_range", page: 4, start_offset: 0, end_offset: 5, quote: { exact: "Paper" } },
+        }}
+        onAnnotationResolved={onAnnotationResolved}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("4/5")).toBeInTheDocument());
+    expect(screen.getByTestId("pdf-annotation-status")).toHaveTextContent("页面位置");
+    expect(onAnnotationResolved).toHaveBeenCalledWith(expect.objectContaining({ status: "degraded" }));
+  });
 });

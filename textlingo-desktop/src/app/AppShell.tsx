@@ -19,6 +19,7 @@ import { applyFontSettings } from "../lib/fontSettings";
 import { useAgentOpenMaterialListener } from "../lib/hooks/useAgentOpenMaterialListener";
 import { isPhase1CapabilityEnabled } from "../lib/phase1Capabilities";
 import type { Article, AppConfig, BackendSessionCheck } from "../lib/tauri";
+import type { Annotation } from "../types";
 import { useAppStore } from "./appStore";
 import { getAppNavigationItem } from "./navigation";
 import { AppRoutes } from "./routes";
@@ -85,6 +86,8 @@ export function AppShell() {
   const { t } = useTranslation();
   const favoritesNavItem = getAppNavigationItem("favorites");
   const FavoritesIcon = favoritesNavItem.icon;
+  const annotationsNavItem = getAppNavigationItem("annotations");
+  const AnnotationsIcon = annotationsNavItem.icon;
   const store = useAppStore();
   const {
     dismissOnboarding,
@@ -92,6 +95,7 @@ export function AppShell() {
     hasDismissedOnboarding,
     openArticle,
     openArticleById,
+    openAnnotationSource,
     prependArticleIfMissing,
     refreshSelectedArticle,
     setArticles,
@@ -117,6 +121,7 @@ export function AppShell() {
   const canUseKtvExport = isPhase1CapabilityEnabled("ktvExport");
   const canCheckForUpdates = isPhase1CapabilityEnabled("updateCheck");
   const isFavoritesActive = store.activeScreen === "favorites";
+  const isAnnotationsActive = store.activeScreen === "annotations";
 
   const clearDropStatusTimer = useCallback(() => {
     if (dropStatusTimer.current) {
@@ -433,6 +438,22 @@ export function AppShell() {
     });
   }, [openArticle, store.activeScreen]);
 
+  const handleNavigateAnnotationSource = useCallback((annotation: Annotation) => {
+    const existing = store.articles.find((article) => article.id === annotation.material_id);
+    if (existing) {
+      openAnnotationSource(existing, annotation);
+      return;
+    }
+    void invoke<Article>("get_article", { id: annotation.material_id })
+      .then((article) => {
+        prependArticleIfMissing(article);
+        openAnnotationSource(article, annotation);
+      })
+      .catch((error) => {
+        console.error("Failed to open annotation source:", error);
+      });
+  }, [openAnnotationSource, prependArticleIfMissing, store.articles]);
+
   const handleArticleUpdate = useCallback(async () => {
     const refreshedArticles = await loadData();
     refreshSelectedArticle(refreshedArticles);
@@ -512,6 +533,15 @@ export function AppShell() {
               {t(favoritesNavItem.labelKey, favoritesNavItem.fallbackLabel)}
             </Button>
 
+            <Button
+              variant={isAnnotationsActive ? "default" : "secondary"}
+              onClick={store.openAnnotations}
+              className="gap-2"
+            >
+              <AnnotationsIcon size={16} />
+              {t(annotationsNavItem.labelKey, annotationsNavItem.fallbackLabel)}
+            </Button>
+
             <Button onClick={store.startCreateMaterial} className="gap-2">
               <Plus size={16} />
               {t("header.newMaterial")}
@@ -535,6 +565,7 @@ export function AppShell() {
         {canCheckForUpdates && <UpdateChecker />}
         <AppRoutes
           activeScreen={store.activeScreen}
+          activeAnnotation={store.activeAnnotation}
           articles={store.articles}
           canUseKtvExport={canUseKtvExport}
           isLoading={store.isLoading}
@@ -549,6 +580,7 @@ export function AppShell() {
           onEditArticle={store.startEditMaterial}
           onNewMaterial={store.startCreateMaterial}
           onNextArticle={store.openNextArticle}
+          onNavigateAnnotationSource={handleNavigateAnnotationSource}
           onOpenKtvExport={store.openKtvExport}
           onPreviousArticle={store.openPreviousArticle}
           onRefresh={loadData}

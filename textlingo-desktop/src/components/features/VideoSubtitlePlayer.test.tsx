@@ -164,4 +164,26 @@ describe("VideoSubtitlePlayer", () => {
       status: "completed",
     }));
   });
+
+  it("seeks to a controlled annotation time and selects its subtitle", () => {
+    const onSegmentClick = vi.fn();
+    render(
+      <VideoSubtitlePlayer
+        videoUrl="http://localhost/video.mp4"
+        segments={[createSegment({ start_time: 10, end_time: 13 })]}
+        selectedSegmentId={null}
+        onSegmentClick={onSegmentClick}
+        fontSize={18}
+        viewMode="original"
+        annotation={{
+          material_id: "media-1",
+          reader_kind: "media",
+          locator: { reader_kind: "media", kind: "time_range", segment_id: "seg-1", current_time: 11, end_time: 13, quote: { exact: "Alpha" } },
+        }}
+      />,
+    );
+
+    expect(onSegmentClick).toHaveBeenCalledWith("seg-1");
+    expect(screen.getByTestId("media-annotation-status")).toHaveTextContent("时间范围精确定位");
+  });
 });

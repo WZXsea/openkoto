@@ -7,6 +7,8 @@ pub struct SourceLocator {
     #[serde(default = "default_version")]
     pub version: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_sha256: Option<String>,
@@ -39,6 +41,10 @@ pub enum SourceAnchor {
         segment_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         segment_order: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total_pages: Option<u32>,
         start_offset: u32,
         end_offset: u32,
     },
@@ -56,6 +62,8 @@ pub enum SourceAnchor {
         end_time: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        segment_id: Option<String>,
     },
 }
 
@@ -88,6 +96,8 @@ impl SourceLocator {
                 }
             }
             SourceAnchor::TextRange {
+                page,
+                total_pages,
                 start_offset,
                 end_offset,
                 ..
@@ -97,6 +107,13 @@ impl SourceLocator {
                 }
                 if self.quote.is_none() {
                     return Err("text range locator requires a quote selector".to_string());
+                }
+                if page.is_some_and(|value| value < 1)
+                    || page
+                        .zip(*total_pages)
+                        .is_some_and(|(page, total)| total < page)
+                {
+                    return Err("text range page is invalid".to_string());
                 }
             }
             SourceAnchor::Page { page, total_pages } => {
@@ -113,6 +130,7 @@ impl SourceLocator {
                 current_time,
                 end_time,
                 duration,
+                ..
             } => {
                 if !current_time.is_finite() || *current_time < 0.0 {
                     return Err("time locator start is invalid".to_string());
