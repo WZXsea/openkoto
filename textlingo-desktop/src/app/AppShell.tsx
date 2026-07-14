@@ -88,6 +88,8 @@ export function AppShell() {
   const FavoritesIcon = favoritesNavItem.icon;
   const annotationsNavItem = getAppNavigationItem("annotations");
   const AnnotationsIcon = annotationsNavItem.icon;
+  const learningNavItem = getAppNavigationItem("learning");
+  const LearningIcon = learningNavItem.icon;
   const store = useAppStore();
   const {
     dismissOnboarding,
@@ -122,6 +124,7 @@ export function AppShell() {
   const canCheckForUpdates = isPhase1CapabilityEnabled("updateCheck");
   const isFavoritesActive = store.activeScreen === "favorites";
   const isAnnotationsActive = store.activeScreen === "annotations";
+  const isLearningActive = store.activeScreen === "learning";
 
   const clearDropStatusTimer = useCallback(() => {
     if (dropStatusTimer.current) {
@@ -434,7 +437,9 @@ export function AppShell() {
 
   const handleSelectArticle = useCallback((article: Article) => {
     openArticle(article, {
-      returnScreen: store.activeScreen === "favorites" ? "favorites" : "home",
+      returnScreen: store.activeScreen === "favorites" || store.activeScreen === "learning"
+        ? store.activeScreen
+        : "home",
     });
   }, [openArticle, store.activeScreen]);
 
@@ -540,6 +545,15 @@ export function AppShell() {
             >
               <AnnotationsIcon size={16} />
               {t(annotationsNavItem.labelKey, annotationsNavItem.fallbackLabel)}
+            </Button>
+
+            <Button
+              variant={isLearningActive ? "default" : "secondary"}
+              onClick={store.openLearning}
+              className="gap-2"
+            >
+              <LearningIcon size={16} />
+              {t(learningNavItem.labelKey, learningNavItem.fallbackLabel)}
             </Button>
 
             <Button onClick={store.startCreateMaterial} className="gap-2">

@@ -560,6 +560,21 @@ pub async fn patch_material(
     .fetch_one(&mut *tx)
     .await?;
 
+    sqlx::query(
+        r#"
+        UPDATE learning_items
+        SET source_material_title_snapshot = $3,
+            source_type_snapshot = $4
+        WHERE user_id = $1 AND material_id = $2
+        "#,
+    )
+    .bind(user.id)
+    .bind(record.id)
+    .bind(&record.title)
+    .bind(&record.source_type)
+    .execute(&mut *tx)
+    .await?;
+
     if let Some(segments) = payload.segments {
         sqlx::query(
             r#"
@@ -626,11 +641,26 @@ pub async fn bulk_delete_materials(
     ApiJson(payload): ApiJson<BulkMaterialIdsRequest>,
 ) -> Result<Json<Value>, AppError> {
     let ids = validate_bulk_ids(payload.ids)?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query(
+        r#"
+        UPDATE learning_items li
+        SET source_material_title_snapshot = m.title,
+            source_type_snapshot = m.source_type
+        FROM materials m
+        WHERE li.user_id = $1 AND li.material_id = m.id AND m.id = ANY($2)
+        "#,
+    )
+    .bind(user.id)
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?;
     let result = sqlx::query("DELETE FROM materials WHERE user_id = $1 AND id = ANY($2)")
         .bind(user.id)
         .bind(&ids)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(Json(
         serde_json::json!({ "affected": result.rows_affected() }),
     ))
@@ -641,6 +671,20 @@ pub async fn delete_material(
     AuthenticatedUser { user }: AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
+    let mut tx = state.pool.begin().await?;
+    sqlx::query(
+        r#"
+        UPDATE learning_items li
+        SET source_material_title_snapshot = m.title,
+            source_type_snapshot = m.source_type
+        FROM materials m
+        WHERE li.user_id = $1 AND li.material_id = m.id AND m.id = $2
+        "#,
+    )
+    .bind(user.id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     let deleted = sqlx::query_scalar::<_, Uuid>(
         r#"
         DELETE FROM materials
@@ -650,12 +694,13 @@ pub async fn delete_material(
     )
     .bind(id)
     .bind(user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     if deleted.is_none() {
         return Err(material_not_found());
     }
+    tx.commit().await?;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }

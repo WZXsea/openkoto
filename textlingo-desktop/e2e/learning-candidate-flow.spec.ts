@@ -126,15 +126,20 @@ test.describe("Learning candidate flow", () => {
             if (command === "create_learning_item_from_selection_cmd") {
               return learningItem;
             }
-            if (command === "update_learning_item_cmd") {
-              learningItem = { ...learningItem, ...(args.payload as object), updated_at: "2026-03-08T00:00:01Z" };
-              return learningItem;
-            }
             if (command === "list_word_packs_cmd") {
               return [{ id: "pack-1", name: "未分组", is_system: true }];
             }
-            if (command === "add_favorite_vocabulary_cmd") {
-              return { id: "favorite-1", word: "mitigate", meaning: "reduce" };
+            if (command === "accept_learning_item_cmd") {
+              learningItem = {
+                ...learningItem,
+                status: "accepted",
+                accepted_at: "2026-03-08T00:00:01Z",
+                updated_at: "2026-03-08T00:00:01Z",
+              };
+              return {
+                learning_item: learningItem,
+                favorite: { type: "vocabulary", id: "favorite-1", pack_ids: ["pack-1"] },
+              };
             }
             return null;
           },
@@ -183,19 +188,13 @@ test.describe("Learning candidate flow", () => {
           }),
         }),
         expect.objectContaining({
-          command: "add_favorite_vocabulary_cmd",
-          args: expect.objectContaining({
-            word: "mitigate",
-            sourceArticleId: "article-1",
-            sourceArticleTitle: "Academic Reading",
-            packIds: ["pack-1"],
-          }),
-        }),
-        expect.objectContaining({
-          command: "update_learning_item_cmd",
+          command: "accept_learning_item_cmd",
           args: expect.objectContaining({
             id: "item-1",
-            payload: { status: "accepted" },
+            payload: {
+              favorite_type: "vocabulary",
+              pack_ids: ["pack-1"],
+            },
           }),
         }),
       ]),

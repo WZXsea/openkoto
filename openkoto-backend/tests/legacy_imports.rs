@@ -183,6 +183,101 @@ async fn legacy_imports_are_idempotent_and_user_isolated_when_database_is_config
     assert_eq!(vocabulary["source_article_id"], material_target_id);
     assert_eq!(vocabulary["pack_ids"][0], "legacy-pack");
 
+    let (status, migrated) = json_request(
+        app.clone(),
+        Method::POST,
+        "/learning-items/compatibility-migration",
+        json!({"dry_run": false}),
+        Some(&token_a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{migrated}");
+    assert_eq!(migrated["migrated"], 2);
+    let (status, overwrite_batch) = json_request(
+        app.clone(),
+        Method::POST,
+        "/legacy-imports",
+        json!({
+            "client_import_id": format!("legacy-linked-overwrite-{}", Uuid::new_v4()),
+            "favorite_vocabularies": [{
+                "source_id": "legacy-vocab-valid",
+                "payload": {
+                    "id": "legacy-vocab-valid",
+                    "word": "attenuate updated",
+                    "meaning": "updated canonical meaning",
+                    "usage": "updated usage",
+                    "source_article_id": material_target_id,
+                    "source_article_title": "Legacy Reading Updated",
+                    "pack_ids": ["legacy-pack"],
+                    "srs_state": "learning",
+                    "ease_factor": 2.6,
+                    "repetitions": 1,
+                    "interval_days": 2,
+                    "due_date": "2026-07-16",
+                    "last_reviewed_at": null,
+                    "review_count": 1,
+                    "created_at": Utc::now().to_rfc3339()
+                }
+            }],
+            "favorite_grammars": [{
+                "source_id": "legacy-grammar",
+                "payload": {
+                    "id": "legacy-grammar",
+                    "point": "updated reduced relative clause",
+                    "explanation": "Updated canonical grammar explanation.",
+                    "example": "Genes updated in tissue were analyzed.",
+                    "source_article_id": material_target_id,
+                    "source_article_title": "Legacy Reading Updated",
+                    "created_at": Utc::now().to_rfc3339()
+                }
+            }]
+        }),
+        Some(&token_a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{overwrite_batch}");
+    assert_eq!(overwrite_batch["imported_items"], 2);
+    let (canonical_word, canonical_meaning, canonical_pack): (String, Option<String>, String) =
+        sqlx::query_as(
+            r#"
+            SELECT li.text, li.meaning_in_context, wpli.pack_id
+            FROM favorite_vocabularies fv
+            JOIN learning_items li
+              ON li.user_id = fv.user_id AND li.id = fv.learning_item_id
+            JOIN word_pack_learning_items wpli
+              ON wpli.user_id = li.user_id AND wpli.learning_item_id = li.id
+            WHERE fv.id = 'legacy-vocab-valid' AND fv.source_article_id = $1
+            "#,
+        )
+        .bind(&material_target_id)
+        .fetch_one(&inspection_pool)
+        .await
+        .unwrap();
+    assert_eq!(canonical_word, "attenuate updated");
+    assert_eq!(
+        canonical_meaning.as_deref(),
+        Some("updated canonical meaning")
+    );
+    assert_eq!(canonical_pack, "legacy-pack");
+    let canonical_grammar: (String, Option<String>) = sqlx::query_as(
+        r#"
+        SELECT li.text, li.meaning_in_context
+        FROM favorite_grammars fg
+        JOIN learning_items li
+          ON li.user_id = fg.user_id AND li.id = fg.learning_item_id
+        WHERE fg.id = 'legacy-grammar' AND fg.source_article_id = $1
+        "#,
+    )
+    .bind(&material_target_id)
+    .fetch_one(&inspection_pool)
+    .await
+    .unwrap();
+    assert_eq!(canonical_grammar.0, "updated reduced relative clause");
+    assert_eq!(
+        canonical_grammar.1.as_deref(),
+        Some("Updated canonical grammar explanation.")
+    );
+
     let (status, task) = json_request(
         app.clone(),
         Method::GET,

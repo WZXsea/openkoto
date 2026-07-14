@@ -17,6 +17,7 @@ use crate::{
         AgentTaskDto, ArtifactDto, BookmarkDto, FavoriteGrammarDto, FavoriteVocabularyDto,
         WordPackDto,
     },
+    learning_items,
     material_library::{content_sha256_hex, normalize_source_url, validate_sha256},
     materials::{CreateMaterialRequest, MaterialSegmentInput},
     routes::AppState,
@@ -1063,6 +1064,14 @@ async fn import_favorite_vocabulary(
     )?;
 
     let mut tx = pool.begin().await?;
+    let linked_learning_item_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT learning_item_id FROM favorite_vocabularies WHERE user_id = $1 AND id = $2",
+    )
+    .bind(user_id)
+    .bind(&payload.id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten();
     sqlx::query(
         r#"
         INSERT INTO favorite_vocabularies (
@@ -1095,22 +1104,36 @@ async fn import_favorite_vocabulary(
     .bind(payload.word.trim())
     .bind(payload.meaning.trim())
     .bind(payload.usage.trim())
-    .bind(payload.explanation)
-    .bind(payload.example)
-    .bind(payload.reading)
-    .bind(payload.source_article_id)
-    .bind(payload.source_article_title)
+    .bind(&payload.explanation)
+    .bind(&payload.example)
+    .bind(&payload.reading)
+    .bind(&payload.source_article_id)
+    .bind(&payload.source_article_title)
     .bind(normalize_srs_state(&payload.srs_state))
     .bind(payload.ease_factor.max(1.3))
     .bind(payload.repetitions.max(0))
     .bind(payload.interval_days.max(0))
-    .bind(payload.due_date)
-    .bind(payload.last_reviewed_at)
+    .bind(&payload.due_date)
+    .bind(&payload.last_reviewed_at)
     .bind(payload.review_count.max(0))
-    .bind(payload.created_at)
+    .bind(&payload.created_at)
     .execute(&mut *tx)
     .await?;
     replace_pack_links(&mut tx, user_id, &payload.id, &payload.pack_ids).await?;
+    if linked_learning_item_id.is_some() {
+        learning_items::canonicalize_favorite_vocabulary_tx(
+            &mut tx,
+            user_id,
+            &payload.id,
+            &payload.word,
+            &payload.meaning,
+            payload.explanation.as_deref(),
+            payload.example.as_deref(),
+            payload.source_article_id.as_deref(),
+            payload.source_article_title.as_deref(),
+        )
+        .await?;
+    }
     tx.commit().await?;
 
     Ok(ImportedTarget {
@@ -1140,6 +1163,15 @@ async fn import_favorite_grammar(
         "favorite grammar explanation is required",
     )?;
 
+    let mut tx = pool.begin().await?;
+    let linked_learning_item_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT learning_item_id FROM favorite_grammars WHERE user_id = $1 AND id = $2",
+    )
+    .bind(user_id)
+    .bind(&payload.id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten();
     sqlx::query(
         r#"
         INSERT INTO favorite_grammars (
@@ -1160,12 +1192,26 @@ async fn import_favorite_grammar(
     .bind(&payload.id)
     .bind(payload.point.trim())
     .bind(payload.explanation.trim())
-    .bind(payload.example)
-    .bind(payload.source_article_id)
-    .bind(payload.source_article_title)
-    .bind(payload.created_at)
-    .execute(pool)
+    .bind(&payload.example)
+    .bind(&payload.source_article_id)
+    .bind(&payload.source_article_title)
+    .bind(&payload.created_at)
+    .execute(&mut *tx)
     .await?;
+    if linked_learning_item_id.is_some() {
+        learning_items::canonicalize_favorite_grammar_tx(
+            &mut tx,
+            user_id,
+            &payload.id,
+            &payload.point,
+            &payload.explanation,
+            payload.example.as_deref(),
+            payload.source_article_id.as_deref(),
+            payload.source_article_title.as_deref(),
+        )
+        .await?;
+    }
+    tx.commit().await?;
 
     Ok(ImportedTarget {
         kind: "favorite_grammar",

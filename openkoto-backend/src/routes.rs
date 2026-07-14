@@ -10,8 +10,8 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use crate::{
-    annotations, auth, config::AppConfig, error::AppError, files, learning, learning_items,
-    legacy_imports, material_library, materials,
+    annotations, auth, config::AppConfig, error::AppError, files, learning, learning_activity,
+    learning_items, legacy_imports, material_library, materials,
 };
 
 #[derive(Clone)]
@@ -86,6 +86,10 @@ pub fn build_router(state: AppState) -> Router {
             "/materials/{id}/reading-progress",
             get(material_library::get_reading_progress)
                 .put(material_library::upsert_reading_progress),
+        )
+        .route(
+            "/materials/{id}/learning-review",
+            get(learning_activity::get_material_learning_review),
         )
         .route(
             "/materials/{id}",
@@ -171,8 +175,20 @@ pub fn build_router(state: AppState) -> Router {
             post(learning_items::bulk_learning_item_status),
         )
         .route(
+            "/learning-items/bulk-organize",
+            post(learning_items::bulk_organize_learning_items),
+        )
+        .route(
+            "/learning-items/compatibility-migration",
+            post(learning_items::migrate_legacy_learning_items),
+        )
+        .route(
             "/learning-items/{id}/accept",
             post(learning_items::accept_learning_item),
+        )
+        .route(
+            "/learning-items/{id}/local-preview",
+            post(learning_activity::record_local_preview),
         )
         .route(
             "/learning-items/{id}",
@@ -193,6 +209,14 @@ pub fn build_router(state: AppState) -> Router {
             get(annotations::get_annotation)
                 .patch(annotations::patch_annotation)
                 .delete(annotations::delete_annotation),
+        )
+        .route(
+            "/learning-activity-events",
+            get(learning_activity::list_learning_activity_events),
+        )
+        .route(
+            "/learning-review/daily",
+            get(learning_activity::get_daily_learning_review),
         )
         .route(
             "/agent-tasks/{id}",

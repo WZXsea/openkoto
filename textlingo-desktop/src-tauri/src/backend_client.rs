@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use reqwest::{multipart, Client, StatusCode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::types::{
@@ -260,6 +260,8 @@ pub struct LearningItem {
     pub examples: Vec<Value>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub quality_flags: Vec<String>,
     pub status: String,
     pub priority: i32,
     #[serde(default)]
@@ -271,11 +273,17 @@ pub struct LearningItem {
     #[serde(default)]
     pub source_material_title: Option<String>,
     #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
     pub source_segment_order: Option<i32>,
     #[serde(default)]
     pub accepted_at: Option<String>,
     #[serde(default)]
     pub rejected_at: Option<String>,
+    #[serde(default)]
+    pub status_before_archive: Option<String>,
+    #[serde(default)]
+    pub merged_into_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -293,6 +301,14 @@ pub struct ListLearningItemsRequest {
     pub item_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_flag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -329,6 +345,8 @@ pub struct CreateLearningItemRequest {
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
+    pub quality_flags: Vec<String>,
+    #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
     pub priority: Option<i32>,
@@ -352,22 +370,44 @@ pub struct UpdateLearningItemRequest {
     pub text: Option<String>,
     #[serde(default)]
     pub source_sentence: Option<String>,
-    #[serde(default)]
-    pub context_before: Option<String>,
-    #[serde(default)]
-    pub context_after: Option<String>,
-    #[serde(default)]
-    pub meaning_in_context: Option<String>,
-    #[serde(default)]
-    pub definition_en: Option<String>,
-    #[serde(default)]
-    pub definition_zh: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_before: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_after: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub meaning_in_context: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub definition_en: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub definition_zh: Option<Option<String>>,
     #[serde(default)]
     pub collocations: Option<Vec<Value>>,
     #[serde(default)]
     pub examples: Option<Vec<Value>>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub quality_flags: Option<Vec<String>>,
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
@@ -378,6 +418,14 @@ pub struct UpdateLearningItemRequest {
     pub ai_explanation: Option<Value>,
     #[serde(default)]
     pub review_state: Option<Value>,
+}
+
+fn deserialize_patch_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -422,6 +470,146 @@ pub struct CreateLearningItemFromSelectionRequest {
     #[serde(default)]
     pub context_after: Option<String>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub quality_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BulkOrganizeLearningItemsRequest {
+    #[serde(default)]
+    pub items: Vec<BulkOrganizeLearningItemOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkOrganizeLearningItemOperation {
+    pub id: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub quality_flags: Option<Vec<String>>,
+    #[serde(default)]
+    pub merge_into_id: Option<String>,
+    #[serde(default)]
+    pub favorite_type: Option<AcceptedFavoriteType>,
+    #[serde(default)]
+    pub pack_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkOrganizeLearningItemsResponse {
+    pub succeeded: usize,
+    pub failed: usize,
+    #[serde(default)]
+    pub results: Vec<BulkOrganizeLearningItemResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkOrganizeLearningItemResult {
+    pub id: String,
+    pub success: bool,
+    #[serde(default)]
+    pub item: Option<LearningItem>,
+    #[serde(default)]
+    pub merged_into_id: Option<String>,
+    #[serde(default)]
+    pub error: Option<BulkOrganizeLearningItemError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkOrganizeLearningItemError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyLearningItemMigrationRequest {
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyLearningItemMigrationResponse {
+    pub dry_run: bool,
+    pub planned: usize,
+    pub migrated: usize,
+    pub already_migrated: usize,
+    #[serde(default)]
+    pub conflicts: Vec<LegacyLearningItemMigrationConflict>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyLearningItemMigrationConflict {
+    pub source_type: String,
+    pub source_id: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListLearningActivityEventsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone_offset_minutes: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningActivityEvent {
+    pub id: String,
+    #[serde(default)]
+    pub learning_item_id: Option<String>,
+    #[serde(default)]
+    pub material_id: Option<String>,
+    pub event_type: String,
+    #[serde(default)]
+    pub metadata: Value,
+    pub occurred_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DailyLearningReviewRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone_offset_minutes: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningReview {
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub material_id: Option<String>,
+    pub total_events: i64,
+    #[serde(default)]
+    pub event_counts: std::collections::BTreeMap<String, i64>,
+    pub unique_learning_items: i64,
+    #[serde(default)]
+    pub events: Vec<LearningActivityEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RecordLocalPreviewRequest {
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1170,6 +1358,96 @@ impl BackendClient {
         self.parse_response(response).await
     }
 
+    pub async fn bulk_organize_learning_items(
+        &self,
+        payload: &BulkOrganizeLearningItemsRequest,
+    ) -> Result<BulkOrganizeLearningItemsResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/learning-items/bulk-organize"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn migrate_legacy_learning_items(
+        &self,
+        payload: &LegacyLearningItemMigrationRequest,
+    ) -> Result<LegacyLearningItemMigrationResponse, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url("/learning-items/compatibility-migration"))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn list_learning_activity_events(
+        &self,
+        query: Option<&ListLearningActivityEventsRequest>,
+    ) -> Result<Vec<LearningActivityEvent>, BackendClientError> {
+        let request = self
+            .client
+            .get(self.url("/learning-activity-events"))
+            .bearer_auth(&self.auth_token);
+        let request = if let Some(query) = query {
+            request.query(query)
+        } else {
+            request
+        };
+        let response = request.send().await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_daily_learning_review(
+        &self,
+        query: Option<&DailyLearningReviewRequest>,
+    ) -> Result<LearningReview, BackendClientError> {
+        let request = self
+            .client
+            .get(self.url("/learning-review/daily"))
+            .bearer_auth(&self.auth_token);
+        let request = if let Some(query) = query {
+            request.query(query)
+        } else {
+            request
+        };
+        let response = request.send().await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_material_learning_review(
+        &self,
+        material_id: &str,
+    ) -> Result<LearningReview, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/materials/{material_id}/learning-review")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn record_local_preview(
+        &self,
+        id: &str,
+        payload: &RecordLocalPreviewRequest,
+    ) -> Result<LearningActivityEvent, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/learning-items/{id}/local-preview")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
     pub async fn list_annotations(
         &self,
         query: Option<&ListAnnotationsRequest>,
@@ -1653,6 +1931,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn learning_item_patch_distinguishes_omitted_and_explicit_null_fields() {
+        let payload: UpdateLearningItemRequest = serde_json::from_value(serde_json::json!({
+            "meaning_in_context": null,
+            "definition_en": "definition"
+        }))
+        .unwrap();
+        assert_eq!(payload.meaning_in_context, Some(None));
+        assert_eq!(payload.definition_en, Some(Some("definition".to_string())));
+        assert_eq!(payload.definition_zh, None);
+
+        let serialized = serde_json::to_value(payload).unwrap();
+        assert_eq!(serialized.get("meaning_in_context"), Some(&Value::Null));
+        assert_eq!(serialized["definition_en"], "definition");
+        assert!(serialized.get("definition_zh").is_none());
+    }
+
+    #[test]
     fn material_patch_body_omits_partial_fields_and_only_clears_missing_replace_sources() {
         let payload = PatchMaterialRequest {
             source_type: Some("web".to_string()),
@@ -1726,6 +2021,7 @@ mod tests {
             context_before: Some("This can".to_string()),
             context_after: Some("risk.".to_string()),
             tags: vec!["academic".to_string()],
+            quality_flags: vec![],
         };
 
         let serialized = serde_json::to_value(&payload).unwrap();

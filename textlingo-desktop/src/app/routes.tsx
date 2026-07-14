@@ -8,6 +8,7 @@ import { AnnotationWorkbench } from "../components/features/AnnotationWorkbench"
 import { BookReader } from "../components/features/BookReader";
 import { FavoritesPage } from "../components/features/FavoritesPage";
 import { KtvExportPage } from "../components/features/KtvExportPage";
+import { LearningWorkbench } from "../components/features/LearningWorkbench";
 import { Button } from "../components/ui/button";
 import { createAnnotationsApi } from "../features/annotations";
 import type { Article } from "../lib/tauri";
@@ -335,6 +336,26 @@ export function AppRoutes({
           materials={articles.map(({ id, title }) => ({ id, title }))}
           annotationsApi={annotationsApi}
           onNavigateToSource={onNavigateAnnotationSource}
+        />
+      </div>
+    );
+  }
+
+  if (activeScreen === "learning") {
+    return (
+      <div className="h-full w-full max-w-[1600px] mx-auto p-4 sm:p-6">
+        <LearningWorkbench
+          className="h-full"
+          materials={articles.map(({ id, title, source_type }) => ({
+            id,
+            title,
+            sourceType: source_type,
+          }))}
+          onNavigateToSource={(item) => {
+            if (!item.material_id) return;
+            const article = articles.find((candidate) => candidate.id === item.material_id);
+            if (article) onSelectArticle(article);
+          }}
         />
       </div>
     );

@@ -298,42 +298,52 @@ export function LearningCandidateBox({
                     </Button>
                   </div>
 
-                  <div className="mt-2 grid grid-cols-3 gap-2">
-                    <Button
-                      size="sm"
-                      className="h-8 gap-1"
-                      onClick={() => {
-                        if (item.item_type === "grammar") {
-                          void handleAcceptItem(item, []);
-                        } else {
-                          setPendingPackItem(item);
-                        }
-                      }}
-                      disabled={savingItemId === item.id}
-                    >
-                      <Check size={14} />
-                      接受
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="h-8 gap-1"
-                      onClick={() => void handlePatchItem(item, { status: item.status === "archived" ? "candidate" : "archived" })}
-                      disabled={savingItemId === item.id}
-                    >
-                      <Archive size={14} />
-                      归档
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 gap-1 text-destructive hover:text-destructive"
-                      onClick={() => void handleDelete(item)}
-                      disabled={savingItemId === item.id}
-                    >
-                      <Trash2 size={14} />
-                      删除
-                    </Button>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {item.status === "candidate" && (
+                      <Button
+                        size="sm"
+                        className="h-8 flex-1 gap-1"
+                        onClick={() => {
+                          if (item.item_type === "grammar") {
+                            void handleAcceptItem(item, []);
+                          } else {
+                            setPendingPackItem(item);
+                          }
+                        }}
+                        disabled={savingItemId === item.id}
+                      >
+                        <Check size={14} />
+                        接受
+                      </Button>
+                    )}
+                    {!item.merged_into_id && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="h-8 flex-1 gap-1"
+                        onClick={() => void handlePatchItem(item, {
+                          status: item.status === "archived"
+                            ? item.status_before_archive || "candidate"
+                            : "archived",
+                        })}
+                        disabled={savingItemId === item.id}
+                      >
+                        <Archive size={14} />
+                        {item.status === "archived" ? "恢复" : "归档"}
+                      </Button>
+                    )}
+                    {(item.status === "candidate" || item.status === "rejected") && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 flex-1 gap-1 text-destructive hover:text-destructive"
+                        onClick={() => void handleDelete(item)}
+                        disabled={savingItemId === item.id}
+                      >
+                        <Trash2 size={14} />
+                        删除
+                      </Button>
+                    )}
                   </div>
                 </article>
               ))}

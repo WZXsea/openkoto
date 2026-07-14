@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::{
     auth::{ApiJson, AuthenticatedUser},
     error::AppError,
+    learning_activity, learning_items,
     routes::AppState,
 };
 
@@ -349,11 +350,13 @@ pub async fn delete_word_pack(
 
     ensure_default_word_pack(&state.pool, user.id).await?;
     let mut tx = state.pool.begin().await?;
-    let affected_vocab_ids = sqlx::query_scalar::<_, String>(
+    let affected_vocabularies = sqlx::query_as::<_, (String, Option<Uuid>)>(
         r#"
-        SELECT vocabulary_id
-        FROM favorite_vocabulary_packs
-        WHERE user_id = $1 AND pack_id = $2
+        SELECT fvp.vocabulary_id, fv.learning_item_id
+        FROM favorite_vocabulary_packs fvp
+        JOIN favorite_vocabularies fv
+          ON fv.user_id = fvp.user_id AND fv.id = fvp.vocabulary_id
+        WHERE fvp.user_id = $1 AND fvp.pack_id = $2
         "#,
     )
     .bind(user.id)
@@ -377,7 +380,7 @@ pub async fn delete_word_pack(
         return Err(not_found("word_pack_not_found", "word pack not found"));
     }
 
-    for vocabulary_id in affected_vocab_ids {
+    for (vocabulary_id, learning_item_id) in affected_vocabularies {
         let pack_count = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*)
@@ -404,6 +407,30 @@ pub async fn delete_word_pack(
             .execute(&mut *tx)
             .await?;
         }
+        if let Some(learning_item_id) = learning_item_id {
+            sqlx::query(
+                "DELETE FROM word_pack_learning_items \
+                 WHERE user_id = $1 AND learning_item_id = $2",
+            )
+            .bind(user.id)
+            .bind(learning_item_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO word_pack_learning_items (user_id, pack_id, learning_item_id)
+                SELECT user_id, pack_id, $3
+                FROM favorite_vocabulary_packs
+                WHERE user_id = $1 AND vocabulary_id = $2
+                ON CONFLICT DO NOTHING
+                "#,
+            )
+            .bind(user.id)
+            .bind(&vocabulary_id)
+            .bind(learning_item_id)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
     tx.commit().await?;
@@ -422,6 +449,14 @@ pub async fn list_favorite_vocabularies(
                due_date, last_reviewed_at, review_count, created_at
         FROM favorite_vocabularies
         WHERE user_id = $1
+          AND (
+              learning_item_id IS NULL OR EXISTS (
+                  SELECT 1 FROM learning_items li
+                  WHERE li.user_id = favorite_vocabularies.user_id
+                    AND li.id = favorite_vocabularies.learning_item_id
+                    AND li.status = 'accepted'
+              )
+          )
         ORDER BY created_at DESC
         "#,
     )
@@ -448,6 +483,18 @@ pub async fn upsert_favorite_vocabulary(
     let mut tx = state.pool.begin().await?;
     upsert_favorite_vocabulary_record(&mut tx, user.id, &payload).await?;
     replace_vocabulary_pack_links(&mut tx, user.id, &payload.id, &payload.pack_ids).await?;
+    learning_items::canonicalize_favorite_vocabulary_tx(
+        &mut tx,
+        user.id,
+        &payload.id,
+        &payload.word,
+        &payload.meaning,
+        payload.explanation.as_deref(),
+        payload.example.as_deref(),
+        payload.source_article_id.as_deref(),
+        payload.source_article_title.as_deref(),
+    )
+    .await?;
     tx.commit().await?;
 
     let record = fetch_favorite_vocabulary_record(&state.pool, user.id, &payload.id).await?;
@@ -488,14 +535,35 @@ pub async fn delete_favorite_vocabulary(
     AuthenticatedUser { user }: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<DeleteResponse>, AppError> {
-    delete_by_id(
-        &state.pool,
-        "favorite_vocabularies",
+    let mut tx = state.pool.begin().await?;
+    let learning_item_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT learning_item_id FROM favorite_vocabularies \
+         WHERE user_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(user.id)
+    .bind(&id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        not_found(
+            "favorite_vocabulary_not_found",
+            "favorite vocabulary not found",
+        )
+    })?;
+    archive_learning_item_for_projection_delete(
+        &mut tx,
         user.id,
+        learning_item_id,
+        "vocabulary",
         &id,
-        "favorite_vocabulary_not_found",
     )
     .await?;
+    sqlx::query("DELETE FROM favorite_vocabularies WHERE user_id = $1 AND id = $2")
+        .bind(user.id)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(Json(DeleteResponse { deleted: true }))
 }
 
@@ -508,6 +576,14 @@ pub async fn list_favorite_grammars(
         SELECT id, point, explanation, example, source_article_id, source_article_title, created_at
         FROM favorite_grammars
         WHERE user_id = $1
+          AND (
+              learning_item_id IS NULL OR EXISTS (
+                  SELECT 1 FROM learning_items li
+                  WHERE li.user_id = favorite_grammars.user_id
+                    AND li.id = favorite_grammars.learning_item_id
+                    AND li.status = 'accepted'
+              )
+          )
         ORDER BY created_at DESC
         "#,
     )
@@ -544,6 +620,7 @@ pub async fn upsert_favorite_grammar(
         "grammar explanation must not be empty",
     )?;
 
+    let mut tx = state.pool.begin().await?;
     let record = sqlx::query_as::<_, FavoriteGrammarRecord>(
         r#"
         INSERT INTO favorite_grammars (
@@ -561,15 +638,28 @@ pub async fn upsert_favorite_grammar(
         "#,
     )
     .bind(user.id)
-    .bind(payload.id)
+    .bind(&payload.id)
     .bind(payload.point.trim())
     .bind(payload.explanation.trim())
-    .bind(payload.example)
-    .bind(payload.source_article_id)
-    .bind(payload.source_article_title)
-    .bind(payload.created_at)
-    .fetch_one(&state.pool)
+    .bind(&payload.example)
+    .bind(&payload.source_article_id)
+    .bind(&payload.source_article_title)
+    .bind(&payload.created_at)
+    .fetch_one(&mut *tx)
     .await?;
+
+    learning_items::canonicalize_favorite_grammar_tx(
+        &mut tx,
+        user.id,
+        &payload.id,
+        &payload.point,
+        &payload.explanation,
+        payload.example.as_deref(),
+        payload.source_article_id.as_deref(),
+        payload.source_article_title.as_deref(),
+    )
+    .await?;
+    tx.commit().await?;
 
     Ok(Json(favorite_grammar_from_record(record)))
 }
@@ -600,14 +690,24 @@ pub async fn delete_favorite_grammar(
     AuthenticatedUser { user }: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<DeleteResponse>, AppError> {
-    delete_by_id(
-        &state.pool,
-        "favorite_grammars",
-        user.id,
-        &id,
-        "favorite_grammar_not_found",
+    let mut tx = state.pool.begin().await?;
+    let learning_item_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT learning_item_id FROM favorite_grammars \
+         WHERE user_id = $1 AND id = $2 FOR UPDATE",
     )
-    .await?;
+    .bind(user.id)
+    .bind(&id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| not_found("favorite_grammar_not_found", "favorite grammar not found"))?;
+    archive_learning_item_for_projection_delete(&mut tx, user.id, learning_item_id, "grammar", &id)
+        .await?;
+    sqlx::query("DELETE FROM favorite_grammars WHERE user_id = $1 AND id = $2")
+        .bind(user.id)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(Json(DeleteResponse { deleted: true }))
 }
 
@@ -1386,6 +1486,59 @@ async fn delete_by_id(
         return Err(not_found(error_code, "record not found"));
     }
 
+    Ok(())
+}
+
+async fn archive_learning_item_for_projection_delete(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    learning_item_id: Option<Uuid>,
+    favorite_type: &str,
+    favorite_id: &str,
+) -> Result<(), AppError> {
+    let Some(learning_item_id) = learning_item_id else {
+        return Ok(());
+    };
+    let item = sqlx::query_as::<_, (String, Option<Uuid>)>(
+        "SELECT status, material_id FROM learning_items \
+         WHERE user_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(user_id)
+    .bind(learning_item_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((status, material_id)) = item else {
+        return Ok(());
+    };
+    if status == "accepted" {
+        sqlx::query(
+            r#"
+            UPDATE learning_items
+            SET status_before_archive = 'accepted', status = 'archived', updated_at = NOW()
+            WHERE user_id = $1 AND id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(learning_item_id)
+        .execute(&mut **tx)
+        .await?;
+        learning_activity::record_event_tx(
+            tx,
+            user_id,
+            Some(learning_item_id),
+            material_id,
+            "archive",
+            serde_json::json!({
+                "from_status": "accepted",
+                "to_status": "archived",
+                "origin": "favorite_projection_delete",
+                "favorite_type": favorite_type,
+                "favorite_id": favorite_id,
+            }),
+            None,
+        )
+        .await?;
+    }
     Ok(())
 }
 

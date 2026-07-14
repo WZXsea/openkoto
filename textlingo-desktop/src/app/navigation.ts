@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
-import { BookOpen, Highlighter, Star } from "lucide-react";
+import { BookCheck, BookOpen, Highlighter, Star } from "lucide-react";
 
-export type AppScreen = "home" | "favorites" | "annotations" | "reader" | "ktv-export";
+export type AppScreen = "home" | "favorites" | "annotations" | "learning" | "reader" | "ktv-export";
 export type MaterialViewMode = "list" | "card";
 
 export interface AppNavigationItem {
@@ -30,6 +30,12 @@ export const APP_NAVIGATION_ITEMS: AppNavigationItem[] = [
     fallbackLabel: "批注",
     icon: Highlighter,
   },
+  {
+    id: "learning",
+    labelKey: "header.learningWorkbench",
+    fallbackLabel: "学习工作台",
+    icon: BookCheck,
+  },
 ];
 
 export function getAppNavigationItem(id: AppNavigationItem["id"]) {
@@ -37,7 +43,7 @@ export function getAppNavigationItem(id: AppNavigationItem["id"]) {
 }
 
 export function isLibraryScreen(screen: AppScreen) {
-  return screen === "home" || screen === "favorites" || screen === "annotations";
+  return screen === "home" || screen === "favorites" || screen === "annotations" || screen === "learning";
 }
 
 export function isReaderScreen(screen: AppScreen) {

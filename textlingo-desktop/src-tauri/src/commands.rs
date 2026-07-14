@@ -5,10 +5,14 @@ use crate::agent_worker::{
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
 use crate::backend_client::{
     AcceptLearningItemRequest, AcceptLearningItemResponse, Annotation, BackendClient,
-    BackendClientError, BackendHealthResponse, BackendUser, ConvertAnnotationResponse,
-    CreateAnnotationRequest, CreateLearningItemFromSelectionRequest, CreateLearningItemRequest,
-    CreateMaterialRequest, LearningItem, ListAnnotationsRequest, ListLearningItemsRequest,
-    PatchMaterialRequest, UpdateAnnotationRequest, UpdateLearningItemRequest,
+    BackendClientError, BackendHealthResponse, BackendUser, BulkOrganizeLearningItemsRequest,
+    BulkOrganizeLearningItemsResponse, ConvertAnnotationResponse, CreateAnnotationRequest,
+    CreateLearningItemFromSelectionRequest, CreateLearningItemRequest, CreateMaterialRequest,
+    DailyLearningReviewRequest, LearningActivityEvent, LearningItem, LearningReview,
+    LegacyLearningItemMigrationRequest, LegacyLearningItemMigrationResponse,
+    ListAnnotationsRequest, ListLearningActivityEventsRequest, ListLearningItemsRequest,
+    PatchMaterialRequest, RecordLocalPreviewRequest, UpdateAnnotationRequest,
+    UpdateLearningItemRequest,
 };
 use crate::feature_gate::require_external_tools_enabled;
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
@@ -3758,6 +3762,81 @@ pub async fn accept_learning_item_cmd(
 pub async fn delete_learning_item_cmd(app_handle: AppHandle, id: String) -> Result<(), String> {
     backend_client_for_app(&app_handle)?
         .delete_learning_item(&id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn bulk_organize_learning_items_cmd(
+    app_handle: AppHandle,
+    payload: BulkOrganizeLearningItemsRequest,
+) -> Result<BulkOrganizeLearningItemsResponse, String> {
+    for operation in &payload.items {
+        validate_uuid(&operation.id, "items[].id")?;
+        if let Some(merge_into_id) = operation.merge_into_id.as_deref() {
+            validate_uuid(merge_into_id, "items[].merge_into_id")?;
+        }
+    }
+    backend_client_for_app(&app_handle)?
+        .bulk_organize_learning_items(&payload)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn migrate_legacy_learning_items_cmd(
+    app_handle: AppHandle,
+    payload: LegacyLearningItemMigrationRequest,
+) -> Result<LegacyLearningItemMigrationResponse, String> {
+    backend_client_for_app(&app_handle)?
+        .migrate_legacy_learning_items(&payload)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn list_learning_activity_events_cmd(
+    app_handle: AppHandle,
+    query: Option<ListLearningActivityEventsRequest>,
+) -> Result<Vec<LearningActivityEvent>, String> {
+    backend_client_for_app(&app_handle)?
+        .list_learning_activity_events(query.as_ref())
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn get_daily_learning_review_cmd(
+    app_handle: AppHandle,
+    query: Option<DailyLearningReviewRequest>,
+) -> Result<LearningReview, String> {
+    backend_client_for_app(&app_handle)?
+        .get_daily_learning_review(query.as_ref())
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn get_material_learning_review_cmd(
+    app_handle: AppHandle,
+    material_id: String,
+) -> Result<LearningReview, String> {
+    validate_uuid(&material_id, "material_id")?;
+    backend_client_for_app(&app_handle)?
+        .get_material_learning_review(&material_id)
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn record_local_preview_cmd(
+    app_handle: AppHandle,
+    id: String,
+    payload: RecordLocalPreviewRequest,
+) -> Result<LearningActivityEvent, String> {
+    validate_uuid(&id, "id")?;
+    backend_client_for_app(&app_handle)?
+        .record_local_preview(&id, &payload)
         .await
         .map_err(backend_error_to_string)
 }

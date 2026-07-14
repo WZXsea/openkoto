@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::{
     auth::{ApiJson, AuthenticatedUser},
     error::AppError,
+    learning_activity,
     routes::AppState,
 };
 
@@ -484,6 +485,24 @@ pub async fn convert_to_learning_item(
         .bind(review_state)
         .bind(dedupe_key)
         .execute(&mut *tx)
+        .await?;
+
+        learning_activity::record_event_tx(
+            &mut tx,
+            user.id,
+            Some(learning_item_id),
+            Some(annotation.material_id),
+            "create",
+            json!({
+                "origin": "annotation",
+                "annotation_id": annotation.id,
+                "annotation_kind": annotation.kind,
+            }),
+            Some(format!(
+                "create:annotation:{}:{learning_item_id}",
+                annotation.id
+            )),
+        )
         .await?;
 
         sqlx::query(

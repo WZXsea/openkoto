@@ -4,7 +4,7 @@ import type { Article, AppConfig } from "../lib/tauri";
 import type { Annotation } from "../types";
 import type { AppScreen, MaterialViewMode } from "./navigation";
 
-type ReaderReturnScreen = "home" | "favorites" | "annotations";
+type ReaderReturnScreen = "home" | "favorites" | "annotations" | "learning";
 
 export function useAppStore() {
   const [articles, setArticles] = useState<Article[]>([]);
@@ -83,6 +83,13 @@ export function useAppStore() {
     setActiveScreen("annotations");
   }, []);
 
+  const openLearning = useCallback(() => {
+    setSelectedArticle(null);
+    setActiveAnnotation(null);
+    setReaderReturnScreen("learning");
+    setActiveScreen("learning");
+  }, []);
+
   const backFromFavorites = useCallback(() => {
     setReaderReturnScreen("home");
     setActiveScreen("home");
@@ -159,6 +166,7 @@ export function useAppStore() {
     openAnnotations,
     openFavorites,
     openKtvExport,
+    openLearning,
     openNextArticle,
     openPreviousArticle,
     prependArticleIfMissing,

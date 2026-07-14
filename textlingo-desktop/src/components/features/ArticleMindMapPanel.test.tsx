@@ -519,8 +519,8 @@ describe("ArticleMindMapPanel", () => {
     );
 
     expect(await screen.findByTestId("mind-map-panel-root")).toHaveAttribute("data-panel-mode", "compact");
-    expect(screen.getByRole("button", { name: "显示节点详情" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "显示运行日志" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "显示节点详情" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "显示运行日志" })).toBeInTheDocument();
     expect(screen.queryByText("选中节点")).not.toBeInTheDocument();
     expect(screen.queryByText("ready")).not.toBeInTheDocument();
   });

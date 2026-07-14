@@ -66,9 +66,12 @@ export interface LearningItem {
     ai_explanation?: unknown | null;
     review_state: unknown;
     source_material_title?: string | null;
+    source_type?: string | null;
     source_segment_order?: number | null;
     accepted_at?: string | null;
     rejected_at?: string | null;
+    status_before_archive?: LearningItemStatus | null;
+    merged_into_id?: string | null;
     created_at: string;
     updated_at: string;
 }

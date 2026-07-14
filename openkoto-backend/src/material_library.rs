@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::{
     auth::{ApiJson, AuthenticatedUser},
     error::AppError,
+    learning_activity,
     routes::AppState,
 };
 
@@ -424,12 +425,24 @@ pub async fn upsert_reading_progress(
         }
     });
     reading_status(&status)?;
+    let mut tx = s.pool.begin().await?;
     let row=sqlx::query_as::<_,ProgressRow>(r#"INSERT INTO reading_progress(user_id,material_id,reader_kind,locator,progress_ratio,status,last_opened_at,completed_at,updated_at)
         VALUES($1,$2,$3,$4,$5,$6,NOW(),CASE WHEN $6='completed' THEN NOW() ELSE NULL END,NOW()) ON CONFLICT(user_id,material_id) DO UPDATE SET
         reader_kind=EXCLUDED.reader_kind,locator=EXCLUDED.locator,progress_ratio=EXCLUDED.progress_ratio,status=EXCLUDED.status,last_opened_at=NOW(),
         completed_at=CASE WHEN EXCLUDED.status='completed' THEN COALESCE(reading_progress.completed_at,NOW()) ELSE NULL END,updated_at=NOW()
         RETURNING material_id,reader_kind,locator,progress_ratio,status,last_opened_at,completed_at,updated_at"#)
-        .bind(user.id).bind(mid).bind(p.reader_kind).bind(p.locator).bind(p.progress_ratio).bind(status).fetch_one(&s.pool).await?;
+        .bind(user.id).bind(mid).bind(&p.reader_kind).bind(&p.locator).bind(p.progress_ratio).bind(&status).fetch_one(&mut *tx).await?;
+    learning_activity::record_read_event_tx(
+        &mut tx,
+        user.id,
+        mid,
+        &p.reader_kind,
+        &p.locator,
+        p.progress_ratio,
+        &status,
+    )
+    .await?;
+    tx.commit().await?;
     Ok(Json(progress_dto(row)))
 }
 

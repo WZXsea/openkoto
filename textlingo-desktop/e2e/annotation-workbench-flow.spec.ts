@@ -80,7 +80,7 @@ test("annotation workbench edits, converts, and returns to the source", async ({
   });
 
   await page.goto("http://127.0.0.1:1420/");
-  await page.getByRole("button", { name: "批注" }).click();
+  await page.getByRole("button", { name: /批注|Annotations/ }).click();
   await expect(page.getByRole("region", { name: "批注工作台" })).toContainText("Genomic evidence");
 
   await page.getByLabel("Genomic evidence changes clinical interpretation. 笔记").fill("Evidence note");

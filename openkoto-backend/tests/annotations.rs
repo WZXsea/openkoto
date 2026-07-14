@@ -450,7 +450,15 @@ async fn annotation_conversion_is_transactional_idempotent_and_obeys_delete_poli
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(learning_count, 0);
+    assert_eq!(learning_count, 1);
+    let preserved_material_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT material_id FROM learning_items WHERE review_state->>'annotation_id' = $1",
+    )
+    .bind(annotation_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(preserved_material_id.is_none());
     let _ = tokio::fs::remove_dir_all(storage_dir).await;
 }
 

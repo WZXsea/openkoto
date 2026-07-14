@@ -2,6 +2,17 @@
 
 This guide describes the current OpenKoto Desktop packaging and release process.
 
+## 0.8.0 PR-10 Packaging
+
+Version `0.8.0` adds the canonical learning-item state machine, the learning workbench,
+legacy favorite migration preview/commit, activity events, and local review summaries.
+
+The WZX Apple Silicon prerelease is published from the verified
+`wzx/pr10-learning-domain-local-review` branch with the descriptive tag
+`wzx-v0.8.0-pr10-learning-workbench`. Descriptive `wzx-*` tags do not trigger the
+repository release workflows, so this package is built and verified locally before the
+DMG, checksum, and verification notes are uploaded with `gh release create --prerelease`.
+
 ## 0.7.0 Packaging
 
 Version `0.7.0` packages the Axum backend, PostgreSQL 16 runtime, Node.js runtime, and agent worker into the macOS application bundle.
@@ -16,8 +27,8 @@ GitHub Actions currently builds macOS packages for Apple Silicon and Intel. Wind
 The build workflow is triggered when you push a tag starting with `v`.
 
 ```bash
-git tag v0.7.0
-git push origin v0.7.0
+git tag v0.8.0
+git push origin v0.8.0
 ```
 
 ### 2. Monitor Build
@@ -41,8 +52,8 @@ npm run tauri:build:packaged
 ```
 The output will be in `src-tauri/target/release/bundle/dmg`.
 
-Run the full PR-7 acceptance gate, including app and DMG resource validation, from the repository root:
+Run the PR-10 acceptance gate, which chains the earlier regression gates, from the repository root:
 
 ```bash
-bash script/verify_pr7_material_workbench.sh --build-app
+bash script/verify_pr10_learning_domain.sh --full --run-pr9
 ```
