@@ -1,6 +1,6 @@
 # OpenKoto 0.8.0 macOS 安装与数据说明
 ## 适用版本
-本页适用于 WZX PR-10 的 `OpenKoto Desktop_0.8.0_aarch64.dmg`，仅支持 Apple Silicon Mac。Intel 用户应等待对应架构的发行资产。
+本页适用于 WZX PR-10 的 `OpenKoto-Desktop_0.8.0_aarch64.dmg`，仅支持 Apple Silicon Mac。Intel 用户应等待对应架构的发行资产。
 ## 安装
 1. 从 [WZX PR-10 GitHub Release](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.8.0-pr10-learning-workbench) 下载 `.dmg` 和 `SHA256SUMS`。
 2. 打开 `.dmg`，将 `OpenKoto Desktop.app` 拖入 `Applications`。
@@ -12,7 +12,7 @@
 发布资产的 SHA-256 记录在同一 Release 的 `SHA256SUMS` 中。
 终端校验命令：
 ```bash
-shasum -a 256 "OpenKoto Desktop_0.8.0_aarch64.dmg"
+shasum -a 256 "OpenKoto-Desktop_0.8.0_aarch64.dmg"
 ```
 ## 运行方式
 - 用户可见 Backend 固定为 `http://127.0.0.1:19421`。
