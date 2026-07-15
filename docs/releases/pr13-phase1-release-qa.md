@@ -42,3 +42,11 @@ Desktop 不直接把本地请求重新序列化所得 SHA-256 与 Backend `reque
 
 ### Apple 发布边界
 本地脚本可以完成未签名或本地签名的构建与 DMG 冒烟，不能替代正式 macOS 发布验证。以下步骤仍依赖主线持有的 Apple Developer 凭据和发布环境：Developer ID Application 签名、Developer ID Installer 签名（如使用）、Hardened Runtime/entitlements 验证、Apple notarization、stapling，以及在干净 Mac 上执行 Gatekeeper `spctl` 验证。缺少这些凭据时，工程验证结果只能标记为“代码与本地包候选通过”，不能标记为“可公开分发已验证”。
+
+### 0.11.0 本机候选验收记录
+1. `bash script/verify_pr13_phase1_release.sh --package-smoke` 通过，生成 ARM64 `.app` 和 `.dmg`。
+2. 以 `signingIdentity: "-"` 生成 ad-hoc hardened runtime 候选包；应用和 DMG 盘内应用均通过 `codesign --verify --deep --strict`，DMG 通过 `hdiutil verify`。
+3. 0.10.0 应用和 App Support 在进程停止、PostgreSQL 正常关闭后完成离线备份；代表性素材、Assistant checkpoint 和收藏文件哈希与升级前一致。
+4. 0.11.0 首次启动生成 v2 pre-upgrade backup；清单本身 SHA-256 一致，1,467 个 snapshot entry 的路径、大小和 SHA-256 全部验证通过。
+5. 安装后 Backend 报告 0.11.0，PostgreSQL connected、file storage ready、auth configured；主进程重启后冷启动进入首页。
+6. 实机覆盖首页、84 天热力图、素材筛选与 Reader 返回、Reader 沉浸模式、学习工作台、Assistant 时间线和拆分后的设置面板。

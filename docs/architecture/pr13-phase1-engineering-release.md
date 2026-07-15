@@ -48,7 +48,7 @@ PR-13 不扩大产品功能范围，它将 PR-7～PR-12 已交付的素材、批
 - [x] Reader、Settings、offline、error 和任务恢复状态回归通过。
 - [x] 备份篡改、dry restore、不完整 PostgreSQL 目录、升级失败和 legacy 报告测试通过。
 - [x] Backend、Desktop、agent-worker、Frontend、Playwright 和 PR-7～PR-12 历史回归通过。
-- [ ] packaged runtime、安装、覆盖升级、重启和数据保持 smoke 通过。
+- [x] packaged runtime、安装、覆盖升级、重启和数据保持 smoke 通过。
 - [ ] Developer ID 签名、公证、staple 和 Gatekeeper 评估通过。
 
 ### 验证记录
@@ -57,3 +57,7 @@ PR-13 不扩大产品功能范围，它将 PR-7～PR-12 已交付的素材、批
 2. Playwright 结果为 5 项通过、2 项按环境条件跳过。
 3. `bash script/verify_pr13_phase1_release.sh --history` 在 0.11.0 契约下通过 PR-7～PR-12 历史回归链。
 4. 发行工作流 YAML、结构检查和 9 项单元测试通过。
+5. `bash script/verify_pr13_phase1_release.sh --package-smoke` 通过，ARM64 `.app` 与 `.dmg` 均包含 Backend、PostgreSQL、Node 和 agent-worker 资源。
+6. 工程候选包使用 ad-hoc hardened runtime 签名；`.app` 通过 `codesign --verify --deep --strict`，DMG 及盘内 `.app` 通过校验，DMG SHA-256 为 `9496289087f4e6bbb322dab698e6b19653d0e245c2fc3ade374e39af1ea1af52`。
+7. 本机完成 0.10.0→0.11.0 覆盖升级；升级前离线备份保留 0.10.0 应用和 262 MB App Support，用户内容哈希一致，0.11.0 Backend health、数据库和文件存储正常。
+8. v2 自动升级备份生成 1,467 个快照条目，`manifest.sha256` 与全部文件大小、SHA-256 逐项验证通过；冷启动首页、素材筛选返回、Reader 沉浸模式、学习、Assistant 和设置完成实机 QA。
