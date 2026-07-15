@@ -11,17 +11,6 @@ import {
   Sparkles,
   Loader2,
   FileText,
-  FileDown,
-  ChevronLeft,
-  ChevronRight,
-  Split,
-  PanelRightOpen,
-  PanelRightClose,
-  Eye,
-  Minus,
-  Plus,
-  Check,
-  ChevronDown
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { isKimiProvider } from "../../lib/kimiProvider";
@@ -29,24 +18,15 @@ import ReactMarkdown from "react-markdown";
 import { AnalysisType, AppConfig, ModelConfig } from "../../lib/tauri";
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from "docx";
 import { Article, SegmentExplanation } from "../../types";
-import { AgentPanel } from "./AgentPanel";
-import { ArticleChatAssistant } from "./ArticleChatAssistant";
-import { ArticleExplanationPanel } from "./ArticleExplanationPanel";
 import { LearningCandidateBox, type ReaderSelectionContext } from "./LearningCandidateBox";
-import { ArticleMindMapPanel } from "./ArticleMindMapPanel";
-import { AssistantSidebarShell, type AssistantPanelMode } from "./AssistantSidebarShell";
-import { AssistantTaskCenter } from "./AssistantTaskCenter";
+import { ArticleReaderHeader } from "./reader/ArticleReaderHeader";
+import {
+  ArticleReaderAssistantShell,
+  type ArticleReaderAssistantTab,
+} from "./reader/ArticleReaderAssistantShell";
 import type { AssistantSourceReference } from "../../features/assistant";
 import { MarkdownContent } from "../ui/MarkdownContent";
 import { VideoSubtitlePlayer, ViewMode } from "./VideoSubtitlePlayer";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-} from "../ui/dropdown-menu";
 import { useConfig } from "../../lib/hooks";
 import { buildMediaResourceUrl } from "../../lib/media";
 import { hasActiveModelConfig, isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
@@ -123,7 +103,6 @@ export function ArticleReader({
   onNavigateAssistantSource,
 }: ArticleReaderProps) {
   const { t } = useTranslation();
-  const assistantModeStorageKey = "article-reader-assistant-mode";
   const [content, setContent] = useState(article.content);
   const [isEditing, setIsEditing] = useState(false);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -146,7 +125,7 @@ export function ArticleReader({
   // Segment Explorer State
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [isGeneratingExplanation, setIsGeneratingExplanation] = useState(false);
-  const [activeTab, setActiveTab] = useState<"explanation" | "mind_map" | "chat" | "agent" | "tasks">("explanation");
+  const [activeTab, setActiveTab] = useState<ArticleReaderAssistantTab>("explanation");
 
   // Video Sync State
   const activeSegmentRef = useRef<HTMLElement>(null);
@@ -1231,288 +1210,36 @@ export function ArticleReader({
           </div>
         )}
 
-        {/* Header */}
-        <div className="flex flex-col gap-3 p-4 border-b border-border bg-card/50 backdrop-blur-sm supports-[backdrop-filter]:bg-card/50">
-          <div className="flex items-center gap-4 min-w-0">
-            {onBack && (
-              <Button variant="ghost" size="sm" onClick={onBack} aria-label={t("common.back", "返回")} title={t("common.back", "返回")}>
-                <ChevronLeft size={18} />
-              </Button>
-            )}
-            <div className="min-w-0 overflow-hidden">
-              <h1 className="text-xl font-semibold text-foreground truncate">
-                {article.title || t("articleReader.untitled")}
-              </h1>
-              {hasSegments && (
-                <div className="flex items-center gap-2 mt-1">
-                  {/* 合并后的状态指示器 */}
-                  <div className="flex items-center gap-3 px-2 py-0.5 bg-muted/40 rounded-md border border-border/50">
-                    {/* 翻译计数 */}
-                    <div className="flex items-center gap-1.5">
-                      <div className="h-1.5 w-1.5 rounded-full bg-yellow-500"></div>
-                      <span className="text-[10px] text-muted-foreground font-medium">
-                        {localSegments.filter(s => s.translation).length} / {localSegments.length}
-                        <span className="ml-1 opacity-80">{t("articleReader.translated") || "已翻译"}</span>
-                      </span>
-                    </div>
-
-                    <div className="w-px h-3 bg-border/50" />
-
-                    {/* 解析计数 */}
-                    <div className="flex items-center gap-1.5">
-                      <div className="h-1.5 w-1.5 rounded-full bg-green-500"></div>
-                      <span className="text-[10px] text-muted-foreground font-medium">
-                        {localSegments.filter(s => s.explanation).length} / {localSegments.length}
-                        <span className="ml-1 opacity-80">{t("articleReader.parsed") || "已解析"}</span>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            {onPrev && (
-              <Button variant="ghost" size="sm" onClick={onPrev} disabled={!hasPrev} title="Previous Article">
-                <ChevronLeft size={18} />
-              </Button>
-            )}
-            {onNext && (
-              <Button variant="ghost" size="sm" onClick={onNext} disabled={!hasNext} title="Next Article">
-                <ChevronRight size={18} />
-              </Button>
-            )}
-
-            <div className="w-px h-4 bg-border mx-1" />
-
-            {/* Font Size Control - Compact */}
-            <div className="flex items-center gap-0.5 bg-muted/50 rounded-lg p-0.5 mr-2 border border-border">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setFontSize(Math.max(12, fontSize - 2))}
-                className="h-7 w-7 p-0 hover:bg-background text-foreground"
-                title="Decrease font size"
-              >
-                <Minus size={14} />
-              </Button>
-              <span className="text-xs text-muted-foreground w-6 text-center">{fontSize}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setFontSize(Math.min(32, fontSize + 2))}
-                className="h-7 w-7 p-0 hover:bg-background text-foreground"
-                title="Increase font size"
-              >
-                <Plus size={14} />
-              </Button>
-            </div>
-
-            {hasSegments ? (
-              <>
-                {!article.media_path && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant={viewMode !== 'original' ? "default" : "secondary"}
-                        size="sm"
-                        title={t("articleReader.viewModeLabel") || "View Mode"}
-                        className="h-8 md:h-9"
-                        data-testid="reader-toolbar-view-mode-trigger"
-                      >
-                        {viewMode === 'original' && <Eye size={16} />}
-                        {viewMode === 'bilingual' && <Split size={16} />}
-                        {viewMode === 'translation' && <Languages size={16} />}
-                        <span className="ml-2 hidden xl:inline">
-                          {t(`articleReader.viewMode.${viewMode}`) || (viewMode === 'original' ? "Original" : viewMode === 'bilingual' ? "Bilingual" : "Translation")}
-                        </span>
-                        <ChevronDown size={14} className="ml-1 opacity-50" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => setViewMode('original')}>
-                        <div className="flex items-center justify-between w-full min-w-[120px]">
-                          <span>{t("articleReader.viewMode.original") || "Original"}</span>
-                          {viewMode === 'original' && <Check size={14} />}
-                        </div>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setViewMode('bilingual')}>
-                        <div className="flex items-center justify-between w-full">
-                          <span>{t("articleReader.viewMode.bilingual") || "Bilingual"}</span>
-                          {viewMode === 'bilingual' && <Check size={14} />}
-                        </div>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setViewMode('translation')}>
-                        <div className="flex items-center justify-between w-full">
-                          <span>{t("articleReader.viewMode.translation") || "Translation"}</span>
-                          {viewMode === 'translation' && <Check size={14} />}
-                        </div>
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-
-                {isBatchTranslating ? (
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-muted rounded-md border border-border h-8 md:h-9">
-                    <Loader2 size={14} className="animate-spin text-primary" />
-                    <span className="text-xs text-muted-foreground font-mono">
-                      {Math.round((batchProgress.current / batchProgress.total) * 100)}%
-                    </span>
-                  </div>
-                ) : (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleBatchTranslate}
-                    disabled={isBatchTranslating || !hasSegments || !canUseAi}
-                    title={canUseAi ? t("articleReader.analyzeAll") : aiUnavailableMessage}
-                    className="h-8 md:h-9"
-                  >
-                    <Sparkles size={16} />
-                    <span className="ml-2 hidden xl:inline">{t("articleReader.analyzeAll") || "Deep Dive Translate"}</span>
-                  </Button>
-                )}
-
-                {/* Resegment Button - Hide for Video */}
-                {!article.media_path && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleResegment}
-                    disabled={isResegmenting}
-                    className="h-8 md:h-9"
-                    title={t("articleReader.resegment")}
-                  >
-                    {isResegmenting ? <Loader2 size={16} className="animate-spin" /> : <Split size={16} />}
-                    <span className="ml-2 hidden xl:inline">{t("articleReader.segment")}</span>
-                  </Button>
-                )}
-
-                {!article.media_path && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setShowCandidateBox(true)}
-                    className="h-8 md:h-9"
-                    title="学习候选箱"
-                  >
-                    <Plus size={16} />
-                    <span className="ml-2 hidden xl:inline">候选箱</span>
-                  </Button>
-                )}
-
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="h-8 md:h-9 gap-2"
-                      title={t("articleReader.export") || "Export"}
-                    >
-                      <FileDown size={16} />
-                      <span className="hidden xl:inline">{t("articleReader.export") || "Export"}</span>
-                      <ChevronDown size={14} className="opacity-60" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="min-w-[220px]">
-                    <DropdownMenuLabel>{t("articleReader.exportMarkdown") || "Markdown"}</DropdownMenuLabel>
-                    <DropdownMenuItem onClick={() => handleArticleExport("md", false)}>
-                      {t("articleReader.exportOriginalTranslationMd") || "Original + Translation (MD)"}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleArticleExport("md", true)}>
-                      {t("articleReader.exportAnnotatedMd") || "Original + Translation + Notes (MD)"}
-                    </DropdownMenuItem>
-
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel>{t("articleReader.exportDocx") || "DOCX"}</DropdownMenuLabel>
-                    <DropdownMenuItem onClick={() => handleArticleExport("docx", false)}>
-                      {t("articleReader.exportOriginalTranslationDocx") || "Original + Translation (DOCX)"}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleArticleExport("docx", true)}>
-                      {t("articleReader.exportAnnotatedDocx") || "Original + Translation + Notes (DOCX)"}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </>
-            ) : (
-              // No Segments - Show Segment buttons if NOT video (Wait, video should extract subtitles, not segmentation usually)
-              // If video has no segments, it usually implies subtitles extraction needed.
-              // Let's keep logic: Hide Segment/Edit button for video.
-              !article.media_path ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleResegment}
-                  disabled={isResegmenting}
-                  className="h-8 md:h-9"
-                >
-                  {isResegmenting ? <Loader2 size={16} className="animate-spin" /> : <Split size={16} />}
-                  <span className="ml-2 hidden xl:inline">{t("articleReader.segment")}</span>
-                </Button>
-              ) : null
-            )}
-
-            <div className="w-px h-4 bg-border mx-1" />
-
-            {/* Edit & Translate - Hide Edit for Video */}
-            {!article.media_path && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setIsEditing(!isEditing)}
-                className="h-8 md:h-9"
-                title={t("articleReader.edit")}
-              >
-                <FileText size={16} />
-                <span className="ml-2 hidden xl:inline">{isEditing ? t("articleReader.cancel") : t("articleReader.edit")}</span>
-              </Button>
-            )}
-
-            <Button
-              size="sm"
-              onClick={handleTranslate}
-              disabled={isTranslating || !canUseAi}
-              className="gap-2 h-8 md:h-9 relative overflow-hidden"
-              title={canUseAi ? t("articleReader.translate") : aiUnavailableMessage}
-              variant="secondary"
-            >
-              {/* Progress Bar Background */}
-              {isTranslating && translationProgress && translationProgress.total > 0 && (
-                <div
-                  className="absolute inset-0 bg-primary/10 transition-all duration-300"
-                  style={{ width: `${Math.min(100, (translationProgress.current / translationProgress.total) * 100)}%` }}
-                />
-              )}
-
-              {isTranslating ? (
-                translationProgress && translationProgress.total > 0 ? (
-                  <span className="text-xs font-mono z-10 text-primary">
-                    {Math.round((translationProgress.current / translationProgress.total) * 100)}%
-                  </span>
-                ) : (
-                  <Loader2 size={16} className="animate-spin" />
-                )
-              ) : (
-                <Languages size={16} />
-              )}
-              <span className="hidden xl:inline z-10">{t("articleReader.translate")}</span>
-            </Button>
-
-            <div className="w-px h-4 bg-border mx-1" />
-
-            {/* Assistant Toggle */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowAssistant(!showAssistant)}
-              title={showAssistant ? "Hide Assistant" : "Show Assistant"}
-              className="h-8 w-8 p-0"
-            >
-              {showAssistant ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-            </Button>
-          </div>
-        </div>
+        <ArticleReaderHeader
+          article={article}
+          segments={localSegments}
+          hasSegments={hasSegments}
+          onBack={onBack}
+          onNext={onNext}
+          onPrev={onPrev}
+          hasNext={hasNext}
+          hasPrev={hasPrev}
+          fontSize={fontSize}
+          onFontSizeChange={setFontSize}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          isBatchTranslating={isBatchTranslating}
+          batchProgress={batchProgress}
+          canUseAi={canUseAi}
+          aiUnavailableMessage={aiUnavailableMessage}
+          onBatchTranslate={handleBatchTranslate}
+          isResegmenting={isResegmenting}
+          onResegment={handleResegment}
+          onOpenCandidateBox={() => setShowCandidateBox(true)}
+          onArticleExport={handleArticleExport}
+          isEditing={isEditing}
+          onToggleEditing={() => setIsEditing((current) => !current)}
+          isTranslating={isTranslating}
+          translationProgress={translationProgress}
+          onTranslate={handleTranslate}
+          showAssistant={showAssistant}
+          onToggleAssistant={() => setShowAssistant((current) => !current)}
+        />
 
         {error && (
           <div className="mx-4 mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg text-destructive text-sm">
@@ -1798,91 +1525,21 @@ export function ArticleReader({
     </>
   );
 
-  const aiDisabledPanel = (
-    <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
-      <Sparkles size={48} className="mb-4 opacity-50" />
-      <p>{aiUnavailableMessage}</p>
-    </div>
-  );
-
-  const sidebarTabs = [
-    {
-      value: "explanation",
-      label: t("articleReader.explanation", "讲解"),
-      content: !canUseAi && !selectedSegment?.explanation ? aiDisabledPanel : selectedSegment ? (
-        <ArticleExplanationPanel
-          segment={selectedSegment}
-          explanation={selectedSegment.explanation || null}
-          isLoading={isGeneratingExplanation}
-          onRegenerate={handleGenerateExplanation}
-        />
-      ) : (
-        <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
-          <BookOpen size={48} className="mb-4 opacity-50" />
-          <p>{t("articleReader.selectSegment") || "Select a sentence to see explanation"}</p>
-        </div>
-      ),
-    },
-    {
-      value: "mind_map",
-      label: t("articleReader.mindMap", "思维导图"),
-      content: canUseAi ? ({ panelMode }: { panelMode: AssistantPanelMode }) => (
-        <ArticleMindMapPanel
-          article={article}
-          targetLanguage={targetLanguage}
-          panelMode={panelMode}
-        />
-      ) : aiDisabledPanel,
-    },
-    {
-      value: "chat",
-      label: t("articleReader.chat", "对话"),
-      content: canUseAi ? (
-        <ArticleChatAssistant
-          articleId={article.id}
-          articleTitle={article.title}
-          targetLanguage={targetLanguage}
-          selectedText={selectedText || (selectedSegment ? selectedSegment.text : "")}
-        />
-      ) : aiDisabledPanel,
-    },
-    {
-      value: "agent",
-      label: t("assistant.mode.agent", "Agent"),
-      content: canUseAi ? (
-        <AgentPanel
-          articleId={article.id}
-          articleTitle={article.title}
-          targetLanguage={targetLanguage}
-        />
-      ) : aiDisabledPanel,
-    },
-    {
-      value: "tasks",
-      label: "任务",
-      content: (
-        <AssistantTaskCenter
-          mode="reader"
-          articles={[article]}
-          initialArticleId={article.id}
-          onNavigateSource={onNavigateAssistantSource ?? (() => undefined)}
-        />
-      ),
-    },
-  ] as const;
-
   return (
-    <AssistantSidebarShell
-      storageKey={assistantModeStorageKey}
-      showAssistant={showAssistant}
-      shellTestId="article-reader-shell"
-      mainPaneTestId="article-reader-main-pane"
-      assistantPaneTestId="article-reader-assistant-pane"
-      defaultTab="explanation"
-      activeTab={activeTab}
-      onTabChange={(value) => setActiveTab(value as "explanation" | "mind_map" | "chat" | "agent" | "tasks")}
-      tabs={sidebarTabs as unknown as { value: string; label: string; content: React.ReactNode | ((context: { panelMode: AssistantPanelMode }) => React.ReactNode); }[]}
+    <ArticleReaderAssistantShell
+      article={article}
       mainContent={mainContent}
+      showAssistant={showAssistant}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      canUseAi={canUseAi}
+      aiUnavailableMessage={aiUnavailableMessage}
+      selectedSegment={selectedSegment}
+      isGeneratingExplanation={isGeneratingExplanation}
+      onGenerateExplanation={handleGenerateExplanation}
+      targetLanguage={targetLanguage}
+      selectedText={selectedText}
+      onNavigateAssistantSource={onNavigateAssistantSource}
     />
   );
 }

@@ -216,4 +216,37 @@ describe("SettingsDialog", () => {
       );
     });
   });
+
+  it("keeps language and runtime log panels reachable after panel extraction", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+      if (command === "get_logs_cmd") return Promise.resolve([]);
+      return Promise.resolve("ok");
+    });
+
+    render(<SettingsDialog isOpen onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "settings.nav.language" }));
+    fireEvent.change(screen.getByLabelText("settings.interfaceLanguage"), { target: { value: "zh" } });
+    fireEvent.change(screen.getByLabelText("settings.targetLanguage"), { target: { value: "ja" } });
+    await userEvent.click(screen.getByRole("button", { name: "settings.nav.logs" }));
+    expect(await screen.findByRole("region", { name: "运行日志" })).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Close"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_config_cmd",
+        expect.objectContaining({
+          config: expect.objectContaining({ interface_language: "zh", target_language: "ja" }),
+        }),
+      );
+    });
+  });
 });

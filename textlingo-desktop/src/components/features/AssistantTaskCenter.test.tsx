@@ -167,12 +167,29 @@ describe("AssistantTaskCenter", () => {
   it("keeps task details visible when artifact loading fails independently", async () => {
     const current = task({ status: "succeeded", progress: 1, finished_at: "2026-07-15T08:02:00Z" });
     const api = apiFor(() => current);
-    vi.mocked(api.artifacts).mockRejectedValue({ code: "assistant_artifact_not_found", message: "artifact file missing" });
+    vi.mocked(api.artifacts).mockRejectedValueOnce({ code: "assistant_artifact_not_found", message: "artifact file missing" });
 
     render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
 
     expect(await screen.findByTestId("assistant-task-detail-task-1")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("任务产物不可用：artifact file missing");
+    await userEvent.click(screen.getByRole("button", { name: "重试产物" }));
+    await waitFor(() => expect(api.artifacts).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("当前任务没有可查看的产物")).toBeInTheDocument();
+  });
+
+  it("recovers the timeline independently from an otherwise available task detail", async () => {
+    const current = task({ status: "succeeded", progress: 1, finished_at: "2026-07-15T08:02:00Z" });
+    const api = apiFor(() => current);
+    vi.mocked(api.timeline).mockRejectedValueOnce({ code: "offline", message: "timeline unavailable" });
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
+
+    expect(await screen.findByTestId("assistant-task-detail-task-1")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("时间线暂不可用：timeline unavailable");
+    await userEvent.click(screen.getByRole("button", { name: "重试时间线" }));
+    await waitFor(() => expect(api.timeline).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("排队中 → 已完成")).toBeInTheDocument();
   });
 
   it("keeps the failure boundary local when the task service is offline", async () => {

@@ -1,6 +1,7 @@
 // Modules
 pub mod agent_worker;
 mod ai_service;
+pub mod app_config;
 pub mod assistant;
 pub mod backend_client;
 pub mod commands;
@@ -41,23 +42,23 @@ pub fn run() {
         .manage(packaged_backend::PackagedBackendManager::default())
         .invoke_handler(tauri::generate_handler![
             // App initialization
-            commands::init_app,
+            app_config::commands::init_app,
             // Configuration
-            commands::get_config,
-            commands::save_config_cmd,
-            commands::backend_check_session_cmd,
-            commands::backend_health_cmd,
-            commands::backend_login_cmd,
-            commands::backend_register_cmd,
-            commands::backend_logout_cmd,
+            app_config::commands::get_config,
+            app_config::commands::save_config_cmd,
+            app_config::commands::backend_check_session_cmd,
+            app_config::commands::backend_health_cmd,
+            app_config::commands::backend_login_cmd,
+            app_config::commands::backend_register_cmd,
+            app_config::commands::backend_logout_cmd,
             packaged_backend::packaged_backend_status_cmd,
             legacy_import::run_legacy_import_cmd,
             legacy_import::get_legacy_import_cmd,
-            commands::set_api_key,
-            commands::save_model_config,
-            commands::delete_model_config,
-            commands::set_active_model_config,
-            commands::get_active_model_config,
+            app_config::commands::set_api_key,
+            app_config::commands::save_model_config,
+            app_config::commands::delete_model_config,
+            app_config::commands::set_active_model_config,
+            app_config::commands::get_active_model_config,
             // Articles
             commands::create_article,
             commands::resegment_article,
@@ -195,7 +196,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Ensure app directories exist
-                let _ = commands::init_app(app_handle.clone()).await;
+                let _ = app_config::commands::init_app(app_handle.clone()).await;
                 if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
                     // Start the persistent log file as early as possible so the
                     // very first PDF translation of a session is captured.

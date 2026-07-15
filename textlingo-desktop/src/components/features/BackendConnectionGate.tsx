@@ -38,6 +38,7 @@ export function BackendConnectionGate({
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -58,6 +59,7 @@ export function BackendConnectionGate({
   const canSubmit = backendUrl.trim() && email.trim() && password.length >= 1 && !isSubmitting;
   const submitLabel = mode === "login" ? "登录" : "注册并登录";
   const toggleLabel = mode === "login" ? "创建账户" : "使用已有账户";
+  const isConnectionCheckPending = isChecking || isRetrying;
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -81,6 +83,18 @@ export function BackendConnectionGate({
     }
   };
 
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    setLocalError(null);
+    try {
+      await onRetry();
+    } catch (error) {
+      setLocalError(errorMessage(error));
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   return (
     <div className="h-screen bg-background text-foreground flex items-center justify-center px-6">
       <div className="w-full max-w-md border border-border rounded-lg bg-card p-6 shadow-sm">
@@ -90,15 +104,31 @@ export function BackendConnectionGate({
           </div>
           <div className="min-w-0">
             <h1 className="text-lg font-semibold leading-6">OpenKoto Backend</h1>
-            <p className="text-sm text-muted-foreground mt-1">{statusText}</p>
+            <p className="text-sm text-muted-foreground mt-1" aria-live="polite">{statusText}</p>
           </div>
         </div>
 
         {(status?.error || localError) && (
-          <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
             {localError || status?.error}
           </div>
         )}
+
+        <details className="mb-4 rounded-lg border border-border bg-muted/25 px-3 py-2 text-sm">
+          <summary className="cursor-pointer font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            连接诊断
+          </summary>
+          <dl className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+            <dt className="text-muted-foreground">Backend URL</dt>
+            <dd className="break-all text-right font-mono">{detectedBackendUrl || backendUrl || "未配置"}</dd>
+            <dt className="text-muted-foreground">配置</dt>
+            <dd className="text-right">{status?.configured ? "已配置" : "未配置"}</dd>
+            <dt className="text-muted-foreground">连接</dt>
+            <dd className="text-right">{status?.connected ? "正常" : "未连接"}</dd>
+            <dt className="text-muted-foreground">认证</dt>
+            <dd className="text-right">{status?.authenticated ? "已登录" : "未登录"}</dd>
+          </dl>
+        </details>
 
         <form className="space-y-4" onSubmit={handleSubmit}>
           <div className="space-y-2">
@@ -154,11 +184,12 @@ export function BackendConnectionGate({
               {mode === "login" ? <LogIn size={16} /> : <UserPlus size={16} />}
               {isSubmitting ? "处理中" : submitLabel}
             </Button>
-            <Button type="button" variant="secondary" onClick={() => setMode(mode === "login" ? "register" : "login")}>
+            <Button type="button" variant="secondary" onClick={() => { setMode(mode === "login" ? "register" : "login"); setLocalError(null); }}>
               {toggleLabel}
             </Button>
-            <Button type="button" variant="ghost" onClick={() => { void onRetry(); }} disabled={isChecking} title="重新检查">
-              <RefreshCw size={16} />
+            <Button type="button" variant="ghost" className="gap-2" onClick={() => { void handleRetry(); }} disabled={isConnectionCheckPending}>
+              <RefreshCw size={16} className={isConnectionCheckPending ? "animate-spin" : undefined} />
+              {isConnectionCheckPending ? "检查中" : "重新检查"}
             </Button>
           </div>
         </form>

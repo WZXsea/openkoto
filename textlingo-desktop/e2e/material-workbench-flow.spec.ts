@@ -187,6 +187,9 @@ test.describe("Material workbench", () => {
     await page.getByRole("button", { name: /Genomics Reading/ }).first().click();
     await expect(page.getByText("Genomic evidence changes clinical interpretation.")).toBeVisible();
     await expect(page.getByRole("complementary", { name: "主导航" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Decrease font size" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Increase font size" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Hide Assistant" })).toBeVisible();
     await page.getByText("A second sentence keeps the reader active.").click();
     await expect.poll(async () => (await page.evaluate(() => window.__openkotoInvokeCalls))
       .filter((call) => call.command === "material_library_upsert_reading_progress_cmd").length).toBeGreaterThan(0);

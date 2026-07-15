@@ -15,6 +15,15 @@ REQUIRED_CI_GATE_SNIPPETS = (
     'bash script/verify_pdf_sidecar_binary.sh',
     'name: Install agent worker dependencies',
     'working-directory: ./textlingo-desktop/agent-worker',
+    'name: Build and test agent worker',
+    'npm run typecheck && npm run test && npm run build',
+    'name: Backend service checks and tests',
+    'OPENKOTO_TEST_DATABASE_URL:',
+    'name: Build frontend production bundle',
+    'name: Desktop Rust format, check, and tests',
+    'cargo check --all-features --all-targets',
+    'name: Playwright E2E',
+    'npm run e2e',
 )
 
 REQUIRED_PUBLISH_SNIPPETS = (
@@ -27,6 +36,13 @@ REQUIRED_PUBLISH_SNIPPETS = (
     'bash script/verify_pdf_sidecar_binary.sh',
     'name: install agent worker dependencies',
     'working-directory: ./textlingo-desktop/agent-worker',
+    'name: verify Apple release credentials (macos only)',
+    'Missing Apple release secrets:',
+    'base64 -D > certificate.p12',
+    'codesign --verify --deep --strict --verbose=2 "$APP"',
+    'spctl --assess --type execute --verbose=4 "$APP"',
+    'xcrun stapler validate "$APP"',
+    'spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"',
 )
 
 REQUIRED_MACOS_MATRIX_ROWS = (
@@ -85,7 +101,10 @@ def main() -> int:
         print("\n".join(missing))
         return 1
 
-    print("release workflows install all Node workspaces, verify sidecars, and publish the macOS app and DMG")
+    print(
+        "release workflows gate Backend and Node workspaces, preflight Apple credentials, "
+        "and verify signed, notarized macOS app and DMG artifacts"
+    )
     return 0
 
 

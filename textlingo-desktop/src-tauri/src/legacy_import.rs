@@ -1,9 +1,10 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::AppHandle;
@@ -27,16 +28,28 @@ const BOOKMARKS_DIR: &str = "bookmarks";
 const AGENT_TASKS_DIR: &str = "agent_tasks";
 const ARTIFACTS_DIR: &str = "artifacts/articles";
 const LEGACY_SCHEMA_VERSION: &str = "legacy-import-v1";
+const SOURCE_REPORT_KEY: &str = "source_report";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyImportSourceReport {
+    schema_version: String,
+    source_sha256: String,
+    total_items: usize,
+    source_failed_items: usize,
+    item_counts: BTreeMap<String, usize>,
+}
 
 #[tauri::command]
 pub async fn run_legacy_import_cmd(app_handle: AppHandle) -> Result<LegacyImportBatch, String> {
     let mut request = build_legacy_import_request(&app_handle)?;
-    assign_client_import_id(&mut request)?;
+    let report = finalize_legacy_import_request(&mut request)?;
     let client = backend_client_for_app(&app_handle)?;
-    client
+    let batch = client
         .create_legacy_import(&request)
         .await
-        .map_err(backend_error_to_string)
+        .map_err(backend_error_to_string)?;
+    verify_legacy_import_batch(&request, &report, &batch)?;
+    Ok(batch)
 }
 
 #[tauri::command]
@@ -394,6 +407,99 @@ fn assign_client_import_id(request: &mut LegacyImportRequest) -> Result<(), Stri
     Ok(())
 }
 
+fn finalize_legacy_import_request(
+    request: &mut LegacyImportRequest,
+) -> Result<LegacyImportSourceReport, String> {
+    let report = build_source_report(request)?;
+    let metadata = request.metadata.as_object_mut().ok_or_else(|| {
+        "Legacy import metadata must be an object before source reporting".to_string()
+    })?;
+    metadata.insert(
+        SOURCE_REPORT_KEY.to_string(),
+        serde_json::to_value(&report)
+            .map_err(|error| format!("Failed to serialize legacy import source report: {error}"))?,
+    );
+    assign_client_import_id(request)?;
+    Ok(report)
+}
+
+fn build_source_report(request: &LegacyImportRequest) -> Result<LegacyImportSourceReport, String> {
+    let mut canonical = request.clone();
+    canonical.client_import_id.clear();
+    if let Some(metadata) = canonical.metadata.as_object_mut() {
+        metadata.remove(SOURCE_REPORT_KEY);
+    }
+    let source_sha256 = request_sha256(&canonical)?;
+    let item_counts = BTreeMap::from([
+        ("config".to_string(), usize::from(request.config.is_some())),
+        ("materials".to_string(), request.materials.len()),
+        ("word_packs".to_string(), request.word_packs.len()),
+        (
+            "favorite_vocabularies".to_string(),
+            request.favorite_vocabularies.len(),
+        ),
+        (
+            "favorite_grammars".to_string(),
+            request.favorite_grammars.len(),
+        ),
+        ("bookmarks".to_string(), request.bookmarks.len()),
+        ("agent_tasks".to_string(), request.agent_tasks.len()),
+        ("artifacts".to_string(), request.artifacts.len()),
+        ("failed_items".to_string(), request.failed_items.len()),
+    ]);
+    let total_items = item_counts.values().sum();
+    Ok(LegacyImportSourceReport {
+        schema_version: request.schema_version.clone(),
+        source_sha256,
+        total_items,
+        source_failed_items: request.failed_items.len(),
+        item_counts,
+    })
+}
+
+fn request_sha256(request: &LegacyImportRequest) -> Result<String, String> {
+    let bytes = serde_json::to_vec(request)
+        .map_err(|error| format!("Failed to checksum legacy import request: {error}"))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn verify_legacy_import_batch(
+    request: &LegacyImportRequest,
+    report: &LegacyImportSourceReport,
+    batch: &LegacyImportBatch,
+) -> Result<(), String> {
+    // Backend normalizes material segments into its own DTO before hashing, so a Desktop-side
+    // reserialization is not byte-identical for requests containing segments. Verify the server
+    // hash shape plus the exact client id/source report/counters/results instead. A future
+    // end-to-end checksum must be an explicit Backend source-payload-checksum contract.
+    let expected_report = serde_json::to_value(report)
+        .map_err(|error| format!("Failed to verify legacy import source report: {error}"))?;
+    let reported_source = batch.metadata.get(SOURCE_REPORT_KEY);
+    let counters_total = batch.imported_items + batch.skipped_items + batch.failed_items;
+    if batch.client_import_id != request.client_import_id
+        || !is_sha256(&batch.request_sha256)
+        || batch.schema_version != request.schema_version
+        || batch.total_items != report.total_items as i32
+        || counters_total != batch.total_items
+        || batch.items.len() != report.total_items
+        || reported_source != Some(&expected_report)
+    {
+        return Err(
+            "Legacy import verification failed; source JSON was retained and must not be deleted. Compare client_import_id, request checksum, source report, counters, and item results before retrying."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 fn redact_sensitive_config(value: Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
@@ -434,6 +540,7 @@ fn is_sensitive_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_client::LegacyImportItemResult;
 
     #[test]
     fn redacts_config_secrets_recursively() {
@@ -494,5 +601,90 @@ mod tests {
             payload.metadata.unwrap()["legacy_article_id"],
             "youtube-video-id"
         );
+    }
+
+    #[test]
+    fn source_report_and_server_batch_are_checksum_verifiable() {
+        let mut request = LegacyImportRequest {
+            client_import_id: String::new(),
+            schema_version: LEGACY_SCHEMA_VERSION.to_string(),
+            source_label: Some("test".to_string()),
+            metadata: json!({"app_data_dir": "/tmp/test"}),
+            config: None,
+            failed_items: vec![failed_item(
+                "artifact",
+                "broken",
+                "invalid JSON".to_string(),
+                None,
+            )],
+            materials: Vec::new(),
+            word_packs: Vec::new(),
+            favorite_vocabularies: Vec::new(),
+            favorite_grammars: Vec::new(),
+            bookmarks: Vec::new(),
+            agent_tasks: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        let report = finalize_legacy_import_request(&mut request).unwrap();
+        let metadata = json!({SOURCE_REPORT_KEY: report.clone()});
+        let batch = LegacyImportBatch {
+            id: Uuid::new_v4().to_string(),
+            client_import_id: request.client_import_id.clone(),
+            request_sha256: "a".repeat(64),
+            schema_version: LEGACY_SCHEMA_VERSION.to_string(),
+            source_label: Some("test".to_string()),
+            status: "completed_with_failures".to_string(),
+            total_items: 1,
+            imported_items: 0,
+            skipped_items: 0,
+            failed_items: 1,
+            metadata,
+            created_at: "2026-07-15T00:00:00Z".to_string(),
+            finished_at: Some("2026-07-15T00:00:01Z".to_string()),
+            items: vec![LegacyImportItemResult {
+                id: Uuid::new_v4().to_string(),
+                source_kind: "artifact".to_string(),
+                source_id: "broken".to_string(),
+                target_kind: None,
+                target_id: None,
+                status: "failed".to_string(),
+                error: Some("invalid JSON".to_string()),
+                payload: Value::Null,
+                created_at: "2026-07-15T00:00:00Z".to_string(),
+            }],
+        };
+
+        verify_legacy_import_batch(&request, &report, &batch).unwrap();
+        let mut tampered = batch;
+        tampered.request_sha256 = "invalid".to_string();
+        let error = verify_legacy_import_batch(&request, &report, &tampered).unwrap_err();
+        assert!(error.contains("source JSON was retained"));
+    }
+
+    #[test]
+    fn source_report_is_deterministic_and_does_not_include_secrets() {
+        let mut request = LegacyImportRequest {
+            client_import_id: String::new(),
+            schema_version: LEGACY_SCHEMA_VERSION.to_string(),
+            source_label: None,
+            metadata: json!({"app_data_dir": "/tmp/test"}),
+            config: Some(json!({"api_key": "[redacted]"})),
+            failed_items: Vec::new(),
+            materials: Vec::new(),
+            word_packs: Vec::new(),
+            favorite_vocabularies: Vec::new(),
+            favorite_grammars: Vec::new(),
+            bookmarks: Vec::new(),
+            agent_tasks: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        let first = finalize_legacy_import_request(&mut request).unwrap();
+        let first_id = request.client_import_id.clone();
+        let second = finalize_legacy_import_request(&mut request).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first_id, request.client_import_id);
+        assert_eq!(first.total_items, 1);
+        assert!(!serde_json::to_string(&first).unwrap().contains("api_key"));
     }
 }

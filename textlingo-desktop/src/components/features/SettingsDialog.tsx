@@ -8,10 +8,15 @@ import { Input } from "../ui/input";
 import { Select } from "../ui/select";
 import { Settings, Plus, Trash2, Edit2, Check, RefreshCw, Loader2, HelpCircle, Boxes, MessageSquare, Palette, Languages, Settings2, ScrollText, AudioLines } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useTheme } from "../theme-provider";
-import { LogsPanel } from "./LogsPanel";
 import type { AppConfig, ModelConfig, PromptFeature } from "../../lib/tauri";
-import { applyFontSettings, FONT_PRESETS, normalizeFontFamily } from "../../lib/fontSettings";
+import { applyFontSettings } from "../../lib/fontSettings";
+import { AppearanceSettingsPanel } from "./settings/AppearanceSettingsPanel";
+import {
+  AdvancedSettingsPanel,
+  normalizeBatchTranslationConcurrency,
+} from "./settings/AdvancedSettingsPanel";
+import { LanguageSettingsPanel } from "./settings/LanguageSettingsPanel";
+import { RuntimeLogsSettingsPanel } from "./settings/RuntimeLogsSettingsPanel";
 import {
   getKimiModelsUrl,
   isKimiProvider,
@@ -40,22 +45,6 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
   "ollama": "http://localhost:11434/v1",
   "lmstudio": "http://localhost:1234/v1",
 };
-
-const DEFAULT_BATCH_TRANSLATION_CONCURRENCY = 3;
-const MIN_BATCH_TRANSLATION_CONCURRENCY = 1;
-const MAX_BATCH_TRANSLATION_CONCURRENCY = 10;
-
-function normalizeBatchTranslationConcurrency(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return DEFAULT_BATCH_TRANSLATION_CONCURRENCY;
-  }
-
-  return Math.min(
-    MAX_BATCH_TRANSLATION_CONCURRENCY,
-    Math.max(MIN_BATCH_TRANSLATION_CONCURRENCY, Math.trunc(parsed)),
-  );
-}
 
 const BUILTIN_PROMPT_FEATURE_DEFAULTS: Record<string, PromptFeature> = {
   "chat.default": {
@@ -240,7 +229,6 @@ interface SettingsDialogProps {
 
 export function SettingsDialog({ isOpen, onClose, onSave }: SettingsDialogProps) {
   const { t, i18n } = useTranslation();
-  const { themeName, themeMode, setThemeName, setThemeMode } = useTheme();
   const [config, setConfig] = useState<AppConfig>({
     model_configs: [],
     target_language: "zh-CN",
@@ -654,11 +642,6 @@ export function SettingsDialog({ isOpen, onClose, onSave }: SettingsDialogProps)
     setConfig({ ...config, active_asr_model_id: configId });
   };
 
-  const handleInterfaceLanguageChange = async (lng: string) => {
-    setConfig({ ...config, interface_language: lng });
-    await i18n.changeLanguage(lng);
-  };
-
   useEffect(() => {
     if (isOpen) {
       applyFontSettings(config);
@@ -904,36 +887,6 @@ export function SettingsDialog({ isOpen, onClose, onSave }: SettingsDialogProps)
     // For providers without preset models, enable custom model input
     const needsCustomModel = ["openai-compatible", "lmstudio"].includes(provider);
     setUseCustomModel(needsCustomModel);
-  };
-
-  const INTERFACE_LANGUAGES = [
-    { value: "en", label: t("settings.interfaceLanguages.en") },
-    { value: "zh", label: t("settings.interfaceLanguages.zh") },
-    { value: "ja", label: t("settings.interfaceLanguages.ja") },
-  ];
-
-  const TARGET_LANGUAGES = [
-    { value: "en", label: t("settings.languages.en") },
-    { value: "zh-CN", label: t("settings.languages.zh-CN") },
-    { value: "zh-TW", label: t("settings.languages.zh-TW") },
-    { value: "ja", label: t("settings.languages.ja") },
-    { value: "ko", label: t("settings.languages.ko") },
-    { value: "es", label: t("settings.languages.es") },
-    { value: "fr", label: t("settings.languages.fr") },
-    { value: "de", label: t("settings.languages.de") },
-    { value: "ru", label: t("settings.languages.ru") },
-    { value: "ar", label: t("settings.languages.ar") },
-  ];
-
-  const selectedFontPresetValue = (value: string | undefined) => {
-    const normalized = normalizeFontFamily(value) ?? "";
-    if (!normalized) return "";
-    return FONT_PRESETS.some((preset) => preset.value === normalized) ? normalized : "__custom__";
-  };
-
-  const updateFontFamily = (key: "ui_font_family" | "reader_font_family", value: string) => {
-    const normalized = normalizeFontFamily(value);
-    setConfig({ ...config, [key]: normalized });
   };
 
   const handleSaveAndClose = async () => {
@@ -1755,204 +1708,19 @@ export function SettingsDialog({ isOpen, onClose, onSave }: SettingsDialogProps)
           </div>
           )}
 
-          {/* Appearance Section */}
           {activeSection === "appearance" && (
-          <div className="space-y-4">
-
-            {/* Theme Name */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                {t("settings.theme.themeName")}
-              </label>
-              <Select
-                value={themeName}
-                onChange={(e) => setThemeName(e.target.value as any)}
-              >
-                <option value="seoul">{t("settings.theme.seoul")}</option>
-                <option value="tokyo">{t("settings.theme.tokyo")}</option>
-                <option value="california">{t("settings.theme.california")}</option>
-              </Select>
-            </div>
-
-            {/* Theme Mode */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                {t("settings.theme.themeMode")}
-              </label>
-              <Select
-                value={themeMode}
-                onChange={(e) => setThemeMode(e.target.value as any)}
-              >
-                <option value="light">{t("settings.theme.light")}</option>
-                <option value="dark">{t("settings.theme.dark")}</option>
-                <option value="system">{t("settings.theme.system")}</option>
-              </Select>
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="rounded-lg border border-border bg-card/50 p-4">
-                <label className="mb-2 block text-sm font-medium text-foreground">
-                  {t("settings.fonts.uiFont", "UI font")}
-                </label>
-                <Select
-                  value={selectedFontPresetValue(config.ui_font_family)}
-                  onChange={(event) => {
-                    if (event.target.value !== "__custom__") {
-                      updateFontFamily("ui_font_family", event.target.value);
-                    }
-                  }}
-                >
-                  {FONT_PRESETS.map((preset) => (
-                    <option key={preset.labelKey} value={preset.value}>
-                      {t(preset.labelKey, preset.fallbackLabel)}
-                    </option>
-                  ))}
-                  <option value="__custom__">{t("settings.fonts.custom", "Custom")}</option>
-                </Select>
-                <label className="mt-3 mb-2 block text-xs font-medium text-muted-foreground">
-                  {t("settings.fonts.customInput", "Custom font-family")}
-                </label>
-                <Input
-                  aria-label={t("settings.fonts.uiFontInput", "UI font family")}
-                  value={config.ui_font_family ?? ""}
-                  onChange={(event) => updateFontFamily("ui_font_family", event.target.value)}
-                  placeholder={t("settings.fonts.inputPlaceholder", "e.g. \"PingFang SC\", sans-serif")}
-                />
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {t("settings.fonts.uiHelp", "Applies to navigation, buttons, dialogs and most interface text.")}
-                </p>
-                <div
-                  className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
-                  style={{ fontFamily: normalizeFontFamily(config.ui_font_family) }}
-                >
-                  {t("settings.fonts.preview", "The quick brown fox jumps over OpenKoto. 中文字体预览。")}
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-border bg-card/50 p-4">
-                <label className="mb-2 block text-sm font-medium text-foreground">
-                  {t("settings.fonts.readerFont", "Reader font")}
-                </label>
-                <Select
-                  value={selectedFontPresetValue(config.reader_font_family)}
-                  onChange={(event) => {
-                    if (event.target.value !== "__custom__") {
-                      updateFontFamily("reader_font_family", event.target.value);
-                    }
-                  }}
-                >
-                  {FONT_PRESETS.map((preset) => (
-                    <option key={preset.labelKey} value={preset.value}>
-                      {t(preset.labelKey, preset.fallbackLabel)}
-                    </option>
-                  ))}
-                  <option value="__custom__">{t("settings.fonts.custom", "Custom")}</option>
-                </Select>
-                <label className="mt-3 mb-2 block text-xs font-medium text-muted-foreground">
-                  {t("settings.fonts.customInput", "Custom font-family")}
-                </label>
-                <Input
-                  aria-label={t("settings.fonts.readerFontInput", "Reader font family")}
-                  value={config.reader_font_family ?? ""}
-                  onChange={(event) => updateFontFamily("reader_font_family", event.target.value)}
-                  placeholder={t("settings.fonts.inputPlaceholder", "e.g. \"PingFang SC\", sans-serif")}
-                />
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {t("settings.fonts.readerHelp", "Applies to article text and plain-text reading areas.")}
-                </p>
-                <div
-                  className="openkoto-reader-font mt-3 rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed text-foreground"
-                  style={{ fontFamily: normalizeFontFamily(config.reader_font_family) }}
-                >
-                  {t("settings.fonts.preview", "The quick brown fox jumps over OpenKoto. 中文字体预览。")}
-                </div>
-              </div>
-            </div>
-          </div>
+            <AppearanceSettingsPanel config={config} onConfigChange={setConfig} />
           )}
 
-          {/* Language Section */}
           {activeSection === "language" && (
-          <div className="space-y-4">
-
-            {/* Interface Language */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                {t("settings.interfaceLanguage")}
-              </label>
-              <Select
-                value={config.interface_language}
-                onChange={(e) => handleInterfaceLanguageChange(e.target.value)}
-              >
-                {INTERFACE_LANGUAGES.map((lang) => (
-                  <option key={lang.value} value={lang.value}>
-                    {lang.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            {/* Target Language */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                {t("settings.targetLanguage")}
-              </label>
-              <Select
-                value={config.target_language}
-                onChange={(e) => setConfig({ ...config, target_language: e.target.value })}
-              >
-                {TARGET_LANGUAGES.map((lang) => (
-                  <option key={lang.value} value={lang.value}>
-                    {lang.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          </div>
+            <LanguageSettingsPanel config={config} onConfigChange={setConfig} />
           )}
 
-          {/* Advanced Section */}
           {activeSection === "advanced" && (
-          <div className="space-y-4">
-
-            {/* Batch Explanation Concurrency */}
-            <div>
-              <label
-                htmlFor="batch-translation-concurrency"
-                className="block text-sm font-medium text-foreground mb-2"
-              >
-                {t("settings.batchTranslationConcurrency", "Batch explanation concurrency")}
-              </label>
-              <Input
-                id="batch-translation-concurrency"
-                type="number"
-                min={MIN_BATCH_TRANSLATION_CONCURRENCY}
-                max={MAX_BATCH_TRANSLATION_CONCURRENCY}
-                step={1}
-                value={config.batch_translation_concurrency ?? DEFAULT_BATCH_TRANSLATION_CONCURRENCY}
-                onChange={(e) =>
-                  setConfig({
-                    ...config,
-                    batch_translation_concurrency: normalizeBatchTranslationConcurrency(e.target.value),
-                  })
-                }
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t(
-                  "settings.batchTranslationConcurrencyHelp",
-                  "Controls how many segments are explained at the same time. Higher values are faster but may hit model rate limits.",
-                )}
-              </p>
-            </div>
-          </div>
+            <AdvancedSettingsPanel config={config} onConfigChange={setConfig} />
           )}
 
-          {/* Runtime Logs Section */}
-          {activeSection === "logs" && (
-          <div className="h-full">
-            <LogsPanel />
-          </div>
-          )}
+          {activeSection === "logs" && <RuntimeLogsSettingsPanel />}
         </div>
       </div>
     </Dialog>

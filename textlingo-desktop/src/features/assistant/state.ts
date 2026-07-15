@@ -83,6 +83,8 @@ export function useAssistantTaskCenter({
   const [artifacts, setArtifacts] = useState<AssistantArtifact[]>([]);
   const [isListLoading, setIsListLoading] = useState(true);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [isTimelineLoading, setIsTimelineLoading] = useState(false);
+  const [isArtifactsLoading, setIsArtifactsLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<"cancel" | "retry" | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -90,6 +92,8 @@ export function useAssistantTaskCenter({
   const [artifactsError, setArtifactsError] = useState<string | null>(null);
   const listRequest = useRef(0);
   const detailRequest = useRef(0);
+  const timelineRequest = useRef(0);
+  const artifactsRequest = useRef(0);
 
   const loadList = useCallback(async (quiet = false) => {
     const requestId = ++listRequest.current;
@@ -116,6 +120,11 @@ export function useAssistantTaskCenter({
 
   const loadDetail = useCallback(async (taskId: string, quiet = false) => {
     const requestId = ++detailRequest.current;
+    // A task switch supersedes any section-only retry from the previous task.
+    ++timelineRequest.current;
+    ++artifactsRequest.current;
+    setIsTimelineLoading(false);
+    setIsArtifactsLoading(false);
     if (!quiet) setIsDetailLoading(true);
     setDetailError(null);
     setTimelineError(null);
@@ -151,10 +160,42 @@ export function useAssistantTaskCenter({
     }
   }, [api]);
 
+  const loadTimeline = useCallback(async (taskId: string) => {
+    const requestId = ++timelineRequest.current;
+    setIsTimelineLoading(true);
+    setTimelineError(null);
+    try {
+      const nextTimeline = await api.timeline(taskId);
+      if (requestId === timelineRequest.current) setTimeline(nextTimeline);
+    } catch (error) {
+      if (requestId === timelineRequest.current) setTimelineError(errorMessage(error));
+    } finally {
+      if (requestId === timelineRequest.current) setIsTimelineLoading(false);
+    }
+  }, [api]);
+
+  const loadArtifacts = useCallback(async (taskId: string) => {
+    const requestId = ++artifactsRequest.current;
+    setIsArtifactsLoading(true);
+    setArtifactsError(null);
+    try {
+      const nextArtifacts = await api.artifacts(taskId);
+      if (requestId === artifactsRequest.current) setArtifacts(nextArtifacts);
+    } catch (error) {
+      if (requestId === artifactsRequest.current) setArtifactsError(errorMessage(error));
+    } finally {
+      if (requestId === artifactsRequest.current) setIsArtifactsLoading(false);
+    }
+  }, [api]);
+
   useEffect(() => { void loadList(); }, [loadList]);
   useEffect(() => {
     if (selectedTaskId) void loadDetail(selectedTaskId);
     else {
+      ++timelineRequest.current;
+      ++artifactsRequest.current;
+      setIsTimelineLoading(false);
+      setIsArtifactsLoading(false);
       setDetail(null);
       setTimeline([]);
       setArtifacts([]);
@@ -225,12 +266,16 @@ export function useAssistantTaskCenter({
     sourceReferences,
     isListLoading,
     isDetailLoading,
+    isTimelineLoading,
+    isArtifactsLoading,
     pendingAction,
     listError,
     detailError,
     timelineError,
     artifactsError,
     refresh: () => Promise.all([loadList(), selectedTaskId ? loadDetail(selectedTaskId) : Promise.resolve()]),
+    refreshTimeline: () => selectedTaskId ? loadTimeline(selectedTaskId) : Promise.resolve(),
+    refreshArtifacts: () => selectedTaskId ? loadArtifacts(selectedTaskId) : Promise.resolve(),
     cancelSelected,
     retrySelected,
   };

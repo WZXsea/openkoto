@@ -125,7 +125,7 @@ info "checking syntax, formatting, locales, and version"
 bash -n script/verify_pr12_assistant_observability.sh
 git diff --check
 node -e 'for (const file of ["en", "ja", "zh"]) JSON.parse(require("fs").readFileSync(`textlingo-desktop/src/locales/${file}.json`, "utf8"))'
-EXPECTED_VERSION=0.10.0 bash script/verify_release_version.sh
+EXPECTED_VERSION="${EXPECTED_VERSION:-0.10.0}" bash script/verify_release_version.sh
 
 info "checking Backend task, timeline, retry, and action contracts"
 for pattern in \
@@ -209,7 +209,7 @@ fi
 
 if [ "$RUN_PR11" -eq 1 ]; then
   info "running PR-11 and earlier regression guardrails"
-  EXPECTED_VERSION=0.10.0 bash script/verify_pr11_reading_home.sh --run-pr10
+  EXPECTED_VERSION="${EXPECTED_VERSION:-0.10.0}" bash script/verify_pr11_reading_home.sh --run-pr10
 fi
 
 info "PR-12 Assistant observability guardrails passed"

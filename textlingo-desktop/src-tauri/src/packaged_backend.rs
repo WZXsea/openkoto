@@ -210,12 +210,20 @@ async fn start_packaged_backend(app_handle: AppHandle) -> Result<PackagedBackend
     }
     cleanup_recorded_runtime_processes(&backend_dir, &backend_binary)?;
     ensure_packaged_backend_port_available()?;
-    if let Some(backup_dir) = create_upgrade_backup_if_needed(
+    let upgrade_backup_dir = create_upgrade_backup_if_needed(
         &app_data_dir,
         &backend_dir,
         recorded_sha256.as_deref(),
         &backend_sha256,
-    )? {
+    )
+    .map_err(|error| {
+        upgrade_recovery_diagnostic(
+            &format!("pre-upgrade backup validation failed: {error}"),
+            None,
+            &backend_dir,
+        )
+    })?;
+    if let Some(backup_dir) = upgrade_backup_dir.as_deref() {
         LogStore::global().push(
             LogLevel::Info,
             "backup",
@@ -225,9 +233,15 @@ async fn start_packaged_backend(app_handle: AppHandle) -> Result<PackagedBackend
             ),
         );
     }
-    let secret = read_or_create_secret(&backend_dir.join("jwt_secret"))?;
+    let secret = read_or_create_secret(&backend_dir.join("jwt_secret")).map_err(|error| {
+        upgrade_recovery_diagnostic(&error, upgrade_backup_dir.as_deref(), &backend_dir)
+    })?;
     let bind_addr = PACKAGED_BACKEND_BIND.to_string();
-    let database_runtime = prepare_database_runtime(&app_handle, &backend_dir).await?;
+    let database_runtime = prepare_database_runtime(&app_handle, &backend_dir)
+        .await
+        .map_err(|error| {
+            upgrade_recovery_diagnostic(&error, upgrade_backup_dir.as_deref(), &backend_dir)
+        })?;
 
     let mut command = Command::new(&backend_binary);
     command
@@ -250,7 +264,11 @@ async fn start_packaged_backend(app_handle: AppHandle) -> Result<PackagedBackend
             if database_runtime.managed_postgres {
                 stop_packaged_postgres_process(&manager);
             }
-            return Err(format!("failed to spawn packaged backend: {error}"));
+            return Err(upgrade_recovery_diagnostic(
+                &format!("failed to spawn packaged backend: {error}"),
+                upgrade_backup_dir.as_deref(),
+                &backend_dir,
+            ));
         }
     };
     let pid = child.id();
@@ -268,23 +286,39 @@ async fn start_packaged_backend(app_handle: AppHandle) -> Result<PackagedBackend
         .replace(child);
     write_pid_file(&backend_dir.join(BACKEND_PID_FILE), pid);
 
-    if let Err(error) = wait_for_backend_health(&backend_url).await {
+    if let Err(error) = wait_for_backend_health_or_exit(&manager, &backend_url).await {
         stop_packaged_backend_process(&manager);
         if database_runtime.managed_postgres {
             stop_packaged_postgres_process(&manager);
         }
-        return Err(error);
-    }
-    if let Err(error) = fs::write(backend_dir.join(BACKEND_SHA256_FILE), &backend_sha256) {
-        stop_packaged_backend_process(&manager);
-        if database_runtime.managed_postgres {
-            stop_packaged_postgres_process(&manager);
-        }
-        return Err(format!(
-            "failed to persist packaged backend fingerprint: {error}"
+        return Err(upgrade_recovery_diagnostic(
+            &error,
+            upgrade_backup_dir.as_deref(),
+            &backend_dir,
         ));
     }
-    persist_backend_url(&app_handle, &backend_url)?;
+    if let Err(error) = persist_backend_url(&app_handle, &backend_url) {
+        stop_packaged_backend_process(&manager);
+        if database_runtime.managed_postgres {
+            stop_packaged_postgres_process(&manager);
+        }
+        return Err(upgrade_recovery_diagnostic(
+            &format!("failed to persist packaged backend URL: {error}"),
+            upgrade_backup_dir.as_deref(),
+            &backend_dir,
+        ));
+    }
+    if let Err(error) = write_atomic_text(&backend_dir.join(BACKEND_SHA256_FILE), &backend_sha256) {
+        stop_packaged_backend_process(&manager);
+        if database_runtime.managed_postgres {
+            stop_packaged_postgres_process(&manager);
+        }
+        return Err(upgrade_recovery_diagnostic(
+            &format!("failed to persist packaged backend fingerprint: {error}"),
+            upgrade_backup_dir.as_deref(),
+            &backend_dir,
+        ));
+    }
 
     Ok(PackagedBackendStatus {
         enabled: true,
@@ -374,8 +408,9 @@ async fn start_bundled_postgres(
     fs::create_dir_all(&socket_dir)
         .map_err(|error| format!("failed to create PostgreSQL socket directory: {error}"))?;
 
-    if !data_dir.join("PG_VERSION").is_file() {
-        run_initdb(&runtime, &data_dir)?;
+    match inspect_postgres_data_dir(&data_dir)? {
+        PostgresDataDirState::Missing => initialize_postgres_data_dir(&runtime, &data_dir)?,
+        PostgresDataDirState::Ready => {}
     }
 
     let port = find_free_loopback_port()?;
@@ -463,6 +498,62 @@ fn run_initdb(runtime: &BundledPostgresRuntime, data_dir: &Path) -> Result<(), S
         "bundled initdb failed: {}",
         format_command_output(&output)
     ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostgresDataDirState {
+    Missing,
+    Ready,
+}
+
+fn inspect_postgres_data_dir(data_dir: &Path) -> Result<PostgresDataDirState, String> {
+    if !data_dir.exists() {
+        return Ok(PostgresDataDirState::Missing);
+    }
+    if !data_dir.is_dir() {
+        return Err(format!(
+            "packaged PostgreSQL data path is not a directory: {}",
+            data_dir.display()
+        ));
+    }
+    let version_path = data_dir.join("PG_VERSION");
+    let version = fs::read_to_string(&version_path).map_err(|error| {
+        format!(
+            "packaged PostgreSQL data directory is incomplete; PG_VERSION cannot be read and existing data will not be overwritten: {error}"
+        )
+    })?;
+    if version.trim().parse::<u32>().is_err()
+        || !data_dir.join("base").is_dir()
+        || !data_dir.join("global").is_dir()
+        || !data_dir.join("postgresql.conf").is_file()
+    {
+        return Err(
+            "packaged PostgreSQL data directory is incomplete; refusing to initialize or overwrite existing data"
+                .to_string(),
+        );
+    }
+    Ok(PostgresDataDirState::Ready)
+}
+
+fn initialize_postgres_data_dir(
+    runtime: &BundledPostgresRuntime,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let parent = data_dir
+        .parent()
+        .ok_or_else(|| "packaged PostgreSQL data directory has no parent".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create PostgreSQL data parent: {error}"))?;
+    let staging_dir = parent.join(format!(".postgres-data-init-{}", Uuid::new_v4().simple()));
+    let result = (|| {
+        run_initdb(runtime, &staging_dir)?;
+        fs::rename(&staging_dir, data_dir)
+            .map_err(|error| format!("failed to commit initialized PostgreSQL data: {error}"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&staging_dir);
+    }
+    result
 }
 
 async fn ensure_bundled_database(
@@ -594,6 +685,41 @@ fn file_sha256(path: &Path) -> Result<String, String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+fn write_atomic_text(path: &Path, value: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    let staging = parent.join(format!(".fingerprint-{}.tmp", Uuid::new_v4().simple()));
+    let result = (|| {
+        fs::write(&staging, value)
+            .map_err(|error| format!("failed to write {}: {error}", staging.display()))?;
+        set_private_file_permissions(&staging)?;
+        fs::rename(&staging, path)
+            .map_err(|error| format!("failed to replace {}: {error}", path.display()))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staging);
+    }
+    result
+}
+
+fn upgrade_recovery_diagnostic(
+    error: &str,
+    backup_dir: Option<&Path>,
+    backend_dir: &Path,
+) -> String {
+    let backup = backup_dir.map_or_else(
+        || "No validated pre-upgrade backup was committed by this attempt; preserve the current data directory and diagnose before retrying.".to_string(),
+        |path| format!("Validated pre-upgrade backup: {}.", path.display()),
+    );
+    format!(
+        "{error}. Existing application data was not deleted and the new backend fingerprint was not committed. {backup} Keep the application stopped before recovery; inspect Desktop logs and validate/dry-restore the backup before replacing {}.",
+        backend_dir.display()
+    )
+}
+
 fn write_pid_file(path: &Path, pid: u32) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -623,8 +749,23 @@ fn process_command(_pid: u32) -> Option<String> {
 }
 
 fn command_matches_binary(command: &str, binary: &Path, required_argument: Option<&Path>) -> bool {
-    command.starts_with(binary.to_string_lossy().as_ref())
-        && required_argument.is_none_or(|path| command.contains(path.to_string_lossy().as_ref()))
+    command_starts_with_executable(command, binary.to_string_lossy().as_ref())
+        && required_argument
+            .is_none_or(|path| has_bounded_text(command, path.to_string_lossy().as_ref()))
+}
+
+fn command_starts_with_executable(command: &str, executable: &str) -> bool {
+    command
+        .strip_prefix(executable)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+fn has_bounded_text(value: &str, expected: &str) -> bool {
+    value.match_indices(expected).any(|(start, _)| {
+        let before = value[..start].chars().next_back();
+        let after = value[start + expected.len()..].chars().next();
+        before.is_none_or(char::is_whitespace) && after.is_none_or(char::is_whitespace)
+    })
 }
 
 fn cleanup_recorded_process(
@@ -686,10 +827,45 @@ fn ensure_packaged_backend_port_available() -> Result<(), String> {
     TcpListener::bind(PACKAGED_BACKEND_BIND)
         .map(|listener| drop(listener))
         .map_err(|error| {
+            let occupant = packaged_backend_port_occupant()
+                .map(|value| format!(" Detected listener: {value}."))
+                .unwrap_or_default();
             format!(
-                "packaged backend port {PACKAGED_BACKEND_BIND} is unavailable; refusing to stop an unrelated process: {error}"
+                "packaged backend port {PACKAGED_BACKEND_BIND} is unavailable; refusing to stop an unrelated process: {error}.{occupant} Close the owning application or configure an external backend, then retry."
             )
         })
+}
+
+#[cfg(unix)]
+fn packaged_backend_port_occupant() -> Option<String> {
+    let port = PACKAGED_BACKEND_BIND.rsplit(':').next()?;
+    let output = Command::new("lsof")
+        .args([
+            "-nP",
+            &format!("-iTCP:{port}"),
+            "-sTCP:LISTEN",
+            "-Fp",
+            "-Fc",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let output_text = String::from_utf8_lossy(&output.stdout);
+    let values = output_text
+        .lines()
+        .filter_map(|line| line.strip_prefix('p').or_else(|| line.strip_prefix('c')))
+        .filter(|value| !value.trim().is_empty())
+        .take(4)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then(|| values.join("/"))
+}
+
+#[cfg(not(unix))]
+fn packaged_backend_port_occupant() -> Option<String> {
+    None
 }
 
 #[cfg(unix)]
@@ -718,10 +894,27 @@ fn is_pid_running(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-async fn wait_for_backend_health(backend_url: &str) -> Result<(), String> {
+async fn wait_for_backend_health_or_exit(
+    manager: &PackagedBackendManager,
+    backend_url: &str,
+) -> Result<(), String> {
     for _ in 0..80 {
         if backend_health_has_expected_version(backend_url).await {
             return Ok(());
+        }
+        let exited = manager
+            .child
+            .lock()
+            .map_err(|_| "packaged backend process lock poisoned".to_string())?
+            .as_mut()
+            .map(|child| child.try_wait())
+            .transpose()
+            .map_err(|error| format!("failed to inspect packaged backend process: {error}"))?
+            .flatten();
+        if let Some(status) = exited {
+            return Err(format!(
+                "backend sidecar exited before health verification with {status}; startup or database migration failed, inspect backend log output"
+            ));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -1007,6 +1200,16 @@ mod tests {
             binary,
             Some(data)
         ));
+        assert!(!command_matches_binary(
+            &format!("{}-wrapper -D {}", binary.display(), data.display()),
+            binary,
+            Some(data)
+        ));
+        assert!(!command_matches_binary(
+            &format!("{} -D {}-other", binary.display(), data.display()),
+            binary,
+            Some(data)
+        ));
     }
 
     #[test]
@@ -1080,6 +1283,85 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.as_bytes().len() >= 32);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn incomplete_postgres_data_is_never_reinitialized() {
+        let root = std::env::temp_dir().join(format!(
+            "openkoto-postgres-data-state-{}",
+            Uuid::new_v4().simple()
+        ));
+        assert_eq!(
+            inspect_postgres_data_dir(&root).unwrap(),
+            PostgresDataDirState::Missing
+        );
+
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("orphan"), b"must survive").unwrap();
+        let error = inspect_postgres_data_dir(&root).unwrap_err();
+        assert!(error.contains("will not be overwritten"));
+        assert_eq!(fs::read(root.join("orphan")).unwrap(), b"must survive");
+
+        fs::write(root.join("PG_VERSION"), b"16").unwrap();
+        fs::create_dir_all(root.join("base")).unwrap();
+        fs::create_dir_all(root.join("global")).unwrap();
+        fs::write(root.join("postgresql.conf"), b"test").unwrap();
+        assert_eq!(
+            inspect_postgres_data_dir(&root).unwrap(),
+            PostgresDataDirState::Ready
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upgrade_failure_diagnostic_points_to_validated_recovery_copy() {
+        let backend_dir = Path::new("/tmp/openkoto/backend");
+        let backup_dir = Path::new("/tmp/openkoto/backend/backups/pre-upgrade-test");
+        let message =
+            upgrade_recovery_diagnostic("migration failed", Some(backup_dir), backend_dir);
+
+        assert!(message.contains("Existing application data was not deleted"));
+        assert!(message.contains("new backend fingerprint was not committed"));
+        assert!(message.contains(backup_dir.to_string_lossy().as_ref()));
+        assert!(message.contains("validate/dry-restore"));
+    }
+
+    #[test]
+    fn fingerprint_write_replaces_file_without_staging_residue() {
+        let root = std::env::temp_dir().join(format!(
+            "openkoto-fingerprint-write-{}",
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(BACKEND_SHA256_FILE);
+        fs::write(&path, "old").unwrap();
+        write_atomic_text(&path, &"a".repeat(64)).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a".repeat(64));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recorded_pid_with_unmatched_command_is_never_terminated() {
+        let pid_file = std::env::temp_dir().join(format!(
+            "openkoto-unmatched-pid-{}",
+            Uuid::new_v4().simple()
+        ));
+        let current_pid = std::process::id();
+        fs::write(&pid_file, current_pid.to_string()).unwrap();
+
+        let error = cleanup_recorded_process(
+            &pid_file,
+            Path::new("/definitely/not/the/current/executable"),
+            None,
+            "backend",
+        )
+        .unwrap_err();
+        assert!(error.contains("refusing to stop it"));
+        assert!(is_pid_running(current_pid));
+        let _ = fs::remove_file(pid_file);
     }
 
     fn restore_env(key: &str, previous: Option<std::ffi::OsString>) {

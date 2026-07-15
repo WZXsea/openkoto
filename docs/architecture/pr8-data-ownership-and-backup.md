@@ -38,7 +38,7 @@ PostgreSQL 是 Backend-first 材料、素材分段、文件元数据、用户、
 3. PostgreSQL 的 Docker volume 或打包 `postgres-data` 可以做停机物理快照，但跨版本恢复仍必须遵循 PostgreSQL 官方兼容性要求，并在副本上先验证。
 
 #### PR-8 升级备份实现边界
-Desktop 的 `data_backup` 模块会在打包 Backend 二进制发生变化且已有 PostgreSQL 数据目录时生成 `backend/backups/pre-upgrade-*`，保存 PostgreSQL 快照、可选的 `config.json`、可选的 `jwt_secret` 和 `backend/files` 的大小/SHA-256 清单，并执行 dry restore 检查。该升级备份目前只记录 `backend/files` 清单，不复制文件字节，也不包含 books、videos、legacy JSON 或日志；这些对象仍必须由外部备份任务按本页范围保存。升级备份属于回滚保护，不替代完整的数据库、文件和 secret 备份。
+Desktop 的 `data_backup` 模块会在打包 Backend 二进制发生变化且已有 PostgreSQL 数据目录时生成 `backend/backups/pre-upgrade-*`。当前格式会复制停机后的 PostgreSQL 物理快照、`backend/files` 文件字节及目录结构，并按存在情况复制 `config.json` 和 `jwt_secret`；`manifest.json` 记录全部快照文件及文件存储子集的大小/SHA-256，`manifest.sha256` 校验清单本身。备份提交前必须完成逐文件校验和 dry restore，失败时删除 staging 目录且不提交新 Backend 指纹。该升级备份仍不包含 books、videos、legacy JSON 或日志；这些对象必须由外部备份任务按本页范围保存。升级备份属于回滚保护，不替代跨设备完整备份和 PostgreSQL 跨大版本迁移方案。
 
 ### 恢复顺序
 1. 停止 Desktop、打包 Backend、PostgreSQL 写入进程，保留故障现场和当前目录清单；恢复前不得让旧进程继续写入。

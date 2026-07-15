@@ -140,9 +140,57 @@ export function AssistantTaskCenter({
 
                   {detail.retry_lineage.length > 0 && <section className="rounded-2xl border border-border bg-card p-4"><h3 className="text-sm font-semibold">重试链路</h3><div className="mt-3 flex flex-wrap items-center gap-2">{detail.retry_lineage.map((entry, index) => <span key={entry.task_id} className="flex items-center gap-2"><button type="button" onClick={() => state.setSelectedTaskId(entry.task_id)} className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">尝试 {entry.attempt != null ? entry.attempt : index + 1} · {STATUS_LABELS[entry.status]}</button>{index < detail.retry_lineage.length - 1 && <span className="text-muted-foreground">→</span>}</span>)}</div></section>}
 
-                  <section className="rounded-2xl border border-border bg-card p-4"><h3 className="text-sm font-semibold">运行时间线</h3>{state.timelineError ? <p className="mt-3 text-sm text-destructive" role="alert">时间线暂不可用：{state.timelineError}</p> : state.timeline.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">暂无时间线记录</p> : <ol className="mt-4 space-y-4">{state.timeline.map((event) => <li key={event.id} className="relative border-l border-border pl-4"><span className={`absolute -left-1.5 top-1 h-3 w-3 rounded-full border-2 border-background ${event.level === "error" ? "bg-destructive" : "bg-primary"}`} /><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{event.stage || event.event_type}</span>{event.from_status && event.to_status && <span className="text-xs text-muted-foreground">{STATUS_LABELS[event.from_status]} → {STATUS_LABELS[event.to_status]}</span>}<time className="ml-auto text-[11px] text-muted-foreground"><Clock3 size={11} className="mr-1 inline" />{formatDate(event.occurred_at)}</time></div>{event.message && <p className="mt-1 whitespace-pre-wrap break-words text-sm text-muted-foreground">{event.message}</p>}</li>)}</ol>}</section>
+                  <section className="rounded-2xl border border-border bg-card p-4">
+                    <h3 className="text-sm font-semibold">运行时间线</h3>
+                    {state.isTimelineLoading ? (
+                      <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                        <Loader2 size={14} className="animate-spin" />正在重新加载时间线
+                      </p>
+                    ) : state.timelineError ? (
+                      <div className="mt-3 text-sm text-destructive" role="alert">
+                        <p>时间线暂不可用：{state.timelineError}</p>
+                        <Button variant="outline" size="sm" className="mt-3" onClick={() => void state.refreshTimeline()}>
+                          重试时间线
+                        </Button>
+                      </div>
+                    ) : state.timeline.length === 0 ? (
+                      <p className="mt-3 text-sm text-muted-foreground">暂无时间线记录</p>
+                    ) : (
+                      <ol className="mt-4 space-y-4">
+                        {state.timeline.map((event) => (
+                          <li key={event.id} className="relative border-l border-border pl-4">
+                            <span className={`absolute -left-1.5 top-1 h-3 w-3 rounded-full border-2 border-background ${event.level === "error" ? "bg-destructive" : "bg-primary"}`} />
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-medium">{event.stage || event.event_type}</span>
+                              {event.from_status && event.to_status && <span className="text-xs text-muted-foreground">{STATUS_LABELS[event.from_status]} → {STATUS_LABELS[event.to_status]}</span>}
+                              <time className="ml-auto text-[11px] text-muted-foreground"><Clock3 size={11} className="mr-1 inline" />{formatDate(event.occurred_at)}</time>
+                            </div>
+                            {event.message && <p className="mt-1 whitespace-pre-wrap break-words text-sm text-muted-foreground">{event.message}</p>}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </section>
 
-                  <section><h3 className="mb-3 text-sm font-semibold">任务产物</h3>{state.artifactsError ? <div className="flex items-start gap-2 rounded-2xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300" role="alert"><AlertCircle size={16} className="mt-0.5 shrink-0" /><span>任务产物不可用：{state.artifactsError}</span></div> : state.artifacts.length === 0 ? <div className="flex items-center gap-2 rounded-2xl border border-dashed border-border p-4 text-sm text-muted-foreground"><Ban size={16} />当前任务没有可查看的产物</div> : <div className="space-y-3">{state.artifacts.map((artifact) => <AssistantArtifactViewer key={artifact.id} artifact={artifact} />)}</div>}</section>
+                  <section>
+                    <h3 className="mb-3 text-sm font-semibold">任务产物</h3>
+                    {state.isArtifactsLoading ? (
+                      <div className="flex items-center gap-2 rounded-2xl border border-border p-4 text-sm text-muted-foreground" role="status">
+                        <Loader2 size={14} className="animate-spin" />正在重新加载任务产物
+                      </div>
+                    ) : state.artifactsError ? (
+                      <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300" role="alert">
+                        <div className="flex items-start gap-2"><AlertCircle size={16} className="mt-0.5 shrink-0" /><span>任务产物不可用：{state.artifactsError}</span></div>
+                        <Button variant="outline" size="sm" className="mt-3" onClick={() => void state.refreshArtifacts()}>
+                          重试产物
+                        </Button>
+                      </div>
+                    ) : state.artifacts.length === 0 ? (
+                      <div className="flex items-center gap-2 rounded-2xl border border-dashed border-border p-4 text-sm text-muted-foreground"><Ban size={16} />当前任务没有可查看的产物</div>
+                    ) : (
+                      <div className="space-y-3">{state.artifacts.map((artifact) => <AssistantArtifactViewer key={artifact.id} artifact={artifact} />)}</div>
+                    )}
+                  </section>
                 </div>
               )}
       </div>
