@@ -5,7 +5,7 @@ import type { Annotation } from "../types";
 import type { AppScreen, MaterialViewMode } from "./navigation";
 import { DEFAULT_MATERIAL_FILTERS, type MaterialFilters } from "../features/materials/types";
 
-type ReaderReturnScreen = "home" | "materials" | "favorites" | "annotations" | "learning";
+type ReaderReturnScreen = "home" | "materials" | "assistant" | "favorites" | "annotations" | "learning";
 
 export function useAppStore() {
   const [articles, setArticles] = useState<Article[]>([]);
@@ -19,6 +19,7 @@ export function useAppStore() {
   const [materialsScrollTop, setMaterialsScrollTop] = useState(0);
   const [activeScreen, setActiveScreen] = useState<AppScreen>("home");
   const [readerReturnScreen, setReaderReturnScreen] = useState<ReaderReturnScreen>("home");
+  const [focusedLearningItemId, setFocusedLearningItemId] = useState<string | null>(null);
   const [activeAnnotation, setActiveAnnotation] = useState<Annotation | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const onboardingDismissedRef = useRef(false);
@@ -39,8 +40,8 @@ export function useAppStore() {
     showReaderArticle(article);
   }, [showReaderArticle]);
 
-  const openAnnotationSource = useCallback((article: Article, annotation: Annotation) => {
-    setReaderReturnScreen("annotations");
+  const openAnnotationSource = useCallback((article: Article, annotation: Annotation, options?: { returnScreen?: ReaderReturnScreen }) => {
+    setReaderReturnScreen(options?.returnScreen ?? "annotations");
     setActiveAnnotation(annotation);
     showReaderArticle(article);
   }, [showReaderArticle]);
@@ -86,6 +87,13 @@ export function useAppStore() {
     setActiveScreen("materials");
   }, []);
 
+  const openAssistant = useCallback(() => {
+    setSelectedArticle(null);
+    setActiveAnnotation(null);
+    setReaderReturnScreen("assistant");
+    setActiveScreen("assistant");
+  }, []);
+
   const openAnnotations = useCallback(() => {
     setSelectedArticle(null);
     setActiveAnnotation(null);
@@ -97,6 +105,15 @@ export function useAppStore() {
     setSelectedArticle(null);
     setActiveAnnotation(null);
     setReaderReturnScreen("learning");
+    setFocusedLearningItemId(null);
+    setActiveScreen("learning");
+  }, []);
+
+  const openLearningItem = useCallback((learningItemId: string) => {
+    setSelectedArticle(null);
+    setActiveAnnotation(null);
+    setReaderReturnScreen("learning");
+    setFocusedLearningItemId(learningItemId);
     setActiveScreen("learning");
   }, []);
 
@@ -166,6 +183,7 @@ export function useAppStore() {
     config,
     dismissOnboarding,
     editingArticle,
+    focusedLearningItemId,
     goHome,
     hasDismissedOnboarding,
     isEditDialogOpen,
@@ -176,9 +194,11 @@ export function useAppStore() {
     openArticleById,
     openAnnotationSource,
     openAnnotations,
+    openAssistant,
     openFavorites,
     openKtvExport,
     openLearning,
+    openLearningItem,
     openMaterials,
     openNextArticle,
     openPreviousArticle,

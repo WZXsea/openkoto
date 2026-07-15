@@ -188,6 +188,34 @@ vi.mock("./components/features/AnnotationWorkbench", () => ({
   ),
 }));
 
+vi.mock("./components/features/AssistantTaskCenter", () => ({
+  AssistantTaskCenter: ({
+    onNavigateSource,
+  }: {
+    onNavigateSource: (reference: Record<string, unknown>) => void;
+  }) => (
+    <div>
+      <div>AssistantTaskCenter</div>
+      <button type="button" onClick={() => onNavigateSource({
+        target: "source",
+        articleId: "article-1",
+        label: "Task evidence",
+        locator: { version: 1, kind: "text_range", start_offset: 0, end_offset: 6, quote: { exact: "Source" } },
+      })}>
+        Open Assistant source
+      </button>
+      <button type="button" onClick={() => onNavigateSource({
+        target: "learning_item",
+        articleId: "article-1",
+        learningItemId: "learning-1",
+        label: "Learning item",
+      })}>
+        Open Assistant learning item
+      </button>
+    </div>
+  ),
+}));
+
 vi.mock("./components/features/SettingsDialog", () => ({
   SettingsButton: ({ onSave }: { onSave?: () => void }) => <button type="button" onClick={onSave}>settings</button>,
 }));
@@ -306,6 +334,85 @@ describe("App onboarding", () => {
         payload: expect.objectContaining({ material_id: "article-1", kind: "highlight" }),
       });
     });
+  });
+
+  it("opens Assistant evidence in the immersive reader and returns to the task center", async () => {
+    const article = {
+      id: "article-1",
+      title: "Article One",
+      content: "Source text",
+      source_type: "article",
+      created_at: "2026-07-15T00:00:00Z",
+      translated: false,
+      segments: [],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") return Promise.resolve({ onboarding_completed: true, model_configs: [], prompt_features: [] });
+      if (command === "backend_check_session_cmd") return Promise.resolve(authenticatedBackendSession);
+      if (command === "list_articles_cmd") return Promise.resolve([article]);
+      if (command === "material_library_get_reading_progress_cmd") return Promise.resolve(null);
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Assistant" }));
+    expect(await screen.findByText("AssistantTaskCenter")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open Assistant source" }));
+
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+    expect(screen.queryByLabelText("主导航")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
+    expect(await screen.findByText("AssistantTaskCenter")).toBeInTheDocument();
+  });
+
+  it("opens an Assistant learning-item reference in the learning workbench", async () => {
+    const now = "2026-07-15T00:00:00Z";
+    const linkedItem = {
+      id: "learning-1",
+      material_id: "article-1",
+      segment_id: null,
+      item_type: "word",
+      text: "focused term",
+      source_sentence: "Source text",
+      context_before: null,
+      context_after: null,
+      meaning_in_context: "linked meaning",
+      definition_en: null,
+      definition_zh: null,
+      collocations: [],
+      examples: [],
+      tags: [],
+      quality_flags: [],
+      status: "accepted",
+      priority: 0,
+      difficulty: null,
+      ai_explanation: null,
+      review_state: {},
+      source_material_title: "Article One",
+      source_type: "article",
+      source_segment_order: null,
+      accepted_at: now,
+      rejected_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+    invokeMock.mockImplementation((command: string, args?: { query?: { status?: string } }) => {
+      if (command === "get_config") return Promise.resolve({ onboarding_completed: true, model_configs: [], prompt_features: [] });
+      if (command === "backend_check_session_cmd") return Promise.resolve(authenticatedBackendSession);
+      if (command === "list_articles_cmd") return Promise.resolve([]);
+      if (command === "list_learning_items_cmd") return Promise.resolve(args?.query?.status === "accepted" ? [linkedItem] : []);
+      if (command === "get_learning_item_cmd") return Promise.resolve(linkedItem);
+      if (command === "get_daily_learning_review_cmd") return Promise.resolve({ total_events: 0, event_counts: {}, unique_learning_items: 0, events: [] });
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Assistant" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open Assistant learning item" }));
+
+    expect(await screen.findByDisplayValue("focused term")).toBeInTheDocument();
+    expect(screen.getByTestId("learning-workbench")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("get_learning_item_cmd", { id: "learning-1" });
   });
 
   it("waits for the packaged backend before restoring the session", async () => {

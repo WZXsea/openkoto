@@ -133,6 +133,18 @@ pub struct AgentTaskDto {
     pub started_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub root_task_id: Option<String>,
+    #[serde(default)]
+    pub retry_of_task_id: Option<String>,
+    #[serde(default = "default_attempt")]
+    pub attempt: i32,
+    #[serde(default)]
+    pub input_snapshot: Option<Value>,
+    #[serde(default)]
+    pub output_version: i32,
+    #[serde(default)]
+    pub legacy_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1410,6 +1422,8 @@ fn bookmark_from_record(record: BookmarkRecord) -> BookmarkDto {
 }
 
 fn agent_task_from_record(record: AgentTaskRecord) -> AgentTaskDto {
+    let task_id = record.id.clone();
+    let input_snapshot = record.input.clone();
     AgentTaskDto {
         id: record.id,
         task_type: record.task_type,
@@ -1426,7 +1440,17 @@ fn agent_task_from_record(record: AgentTaskRecord) -> AgentTaskDto {
         updated_at: record.updated_at,
         started_at: record.started_at,
         finished_at: record.finished_at,
+        root_task_id: Some(task_id),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: Some(input_snapshot),
+        output_version: 0,
+        legacy_status: None,
     }
+}
+
+fn default_attempt() -> i32 {
+    1
 }
 
 fn artifact_from_record(record: ArtifactRecord) -> ArtifactDto {

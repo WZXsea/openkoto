@@ -35,6 +35,8 @@ import { ArticleExplanationPanel } from "./ArticleExplanationPanel";
 import { LearningCandidateBox, type ReaderSelectionContext } from "./LearningCandidateBox";
 import { ArticleMindMapPanel } from "./ArticleMindMapPanel";
 import { AssistantSidebarShell, type AssistantPanelMode } from "./AssistantSidebarShell";
+import { AssistantTaskCenter } from "./AssistantTaskCenter";
+import type { AssistantSourceReference } from "../../features/assistant";
 import { MarkdownContent } from "../ui/MarkdownContent";
 import { VideoSubtitlePlayer, ViewMode } from "./VideoSubtitlePlayer";
 import {
@@ -99,6 +101,7 @@ export interface ArticleReaderProps {
   onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
   materialRevision?: string;
   contentSha256?: string;
+  onNavigateAssistantSource?: (reference: AssistantSourceReference) => void;
 }
 
 export function ArticleReader({
@@ -117,6 +120,7 @@ export function ArticleReader({
   onAnnotationDraftCreated,
   materialRevision,
   contentSha256,
+  onNavigateAssistantSource,
 }: ArticleReaderProps) {
   const { t } = useTranslation();
   const assistantModeStorageKey = "article-reader-assistant-mode";
@@ -142,7 +146,7 @@ export function ArticleReader({
   // Segment Explorer State
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [isGeneratingExplanation, setIsGeneratingExplanation] = useState(false);
-  const [activeTab, setActiveTab] = useState<"explanation" | "mind_map" | "chat" | "agent">("explanation");
+  const [activeTab, setActiveTab] = useState<"explanation" | "mind_map" | "chat" | "agent" | "tasks">("explanation");
 
   // Video Sync State
   const activeSegmentRef = useRef<HTMLElement>(null);
@@ -1853,6 +1857,18 @@ export function ArticleReader({
         />
       ) : aiDisabledPanel,
     },
+    {
+      value: "tasks",
+      label: "任务",
+      content: (
+        <AssistantTaskCenter
+          mode="reader"
+          articles={[article]}
+          initialArticleId={article.id}
+          onNavigateSource={onNavigateAssistantSource ?? (() => undefined)}
+        />
+      ),
+    },
   ] as const;
 
   return (
@@ -1864,7 +1880,7 @@ export function ArticleReader({
       assistantPaneTestId="article-reader-assistant-pane"
       defaultTab="explanation"
       activeTab={activeTab}
-      onTabChange={(value) => setActiveTab(value as "explanation" | "mind_map" | "chat" | "agent")}
+      onTabChange={(value) => setActiveTab(value as "explanation" | "mind_map" | "chat" | "agent" | "tasks")}
       tabs={sidebarTabs as unknown as { value: string; label: string; content: React.ReactNode | ((context: { panelMode: AssistantPanelMode }) => React.ReactNode); }[]}
       mainContent={mainContent}
     />

@@ -1,3 +1,7 @@
+use crate::assistant::actions::{
+    assistant_action_from_result_payload, execute_registered_assistant_action,
+};
+use crate::assistant::dto::AssistantTimelineIngestRequest;
 use crate::backend_client::{BackendClient, PatchMaterialRequest};
 use crate::moonshot::moonshot_base_url;
 use crate::storage::{
@@ -13,6 +17,7 @@ use crate::types::{
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -72,7 +77,7 @@ impl WorkerRuntimeState {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum WorkerEvent {
     #[serde(rename = "worker.ready")]
@@ -105,7 +110,7 @@ impl WorkerEvent {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskStartedPayload {
     pub task_id: String,
     #[allow(dead_code)]
@@ -113,22 +118,24 @@ pub struct WorkerTaskStartedPayload {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskProgressPayload {
     pub task_id: String,
     pub stage: String,
     pub progress: f64,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default = "default_worker_event_timestamp")]
+    pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerHeartbeatPayload {
     pub worker_session_id: String,
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerReadyPayload {
     pub worker_session_id: String,
     pub timestamp: String,
@@ -147,19 +154,21 @@ pub struct WorkerTaskLogPayload {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskResultPayload {
     pub task_id: String,
     #[serde(default = "default_worker_task_result_artifact_type")]
     pub artifact_type: String,
     pub content: Value,
+    #[serde(default = "default_worker_event_timestamp")]
+    pub timestamp: String,
 }
 
 fn default_worker_task_result_artifact_type() -> String {
     "mind_map".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskErrorPayload {
     pub task_id: String,
     #[serde(default)]
@@ -167,6 +176,12 @@ pub struct WorkerTaskErrorPayload {
     pub message: String,
     #[serde(default)]
     pub details: Option<String>,
+    #[serde(default = "default_worker_event_timestamp")]
+    pub timestamp: String,
+}
+
+fn default_worker_event_timestamp() -> String {
+    Utc::now().to_rfc3339()
 }
 
 #[derive(Debug, Deserialize)]
@@ -280,6 +295,28 @@ impl AgentWorkerManager {
         self.stdin.lock().unwrap().take();
         *self.runtime_state.lock().unwrap() = WorkerRuntimeState::default();
         Ok(())
+    }
+
+    pub fn cancel_task(&self, task_id: &str) -> Result<bool, String> {
+        let mut guard = self.stdin.lock().unwrap();
+        let Some(stdin) = guard.as_mut() else {
+            self.record_log(
+                WorkerLogLevel::Info,
+                "task",
+                format!("cancel requested for inactive task {task_id}"),
+            );
+            return Ok(false);
+        };
+        let request = build_worker_cancel_request(task_id);
+        writeln!(stdin, "{}", request)
+            .and_then(|_| stdin.flush())
+            .map_err(|error| format!("Failed to cancel agent worker task: {error}"))?;
+        self.record_log(
+            WorkerLogLevel::Info,
+            "task",
+            format!("cancel requested for task {task_id}"),
+        );
+        Ok(true)
     }
 
     pub fn ensure_started(&self, app_handle: &AppHandle) -> Result<(), String> {
@@ -686,6 +723,17 @@ pub fn build_assistant_worker_request(
     })
 }
 
+pub fn build_worker_cancel_request(task_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("cancel-{task_id}-{}", Uuid::new_v4()),
+        "type": "request",
+        "method": "agent.cancel",
+        "params": {
+            "task_id": task_id,
+        }
+    })
+}
+
 pub fn parse_worker_event_line(line: &str) -> Result<WorkerEvent, String> {
     let envelope: WorkerEventEnvelope =
         serde_json::from_str(line).map_err(|e| format!("Failed to parse worker event: {}", e))?;
@@ -872,18 +920,6 @@ fn new_mind_map_artifact(task_id: &str, article_id: &str, content: Value) -> Art
         created_at: now.clone(),
         updated_at: now,
     }
-}
-
-fn extract_open_material_id(content: &Value) -> Option<String> {
-    content
-        .get("action")
-        .and_then(|value| value.as_object())
-        .filter(|action| {
-            action.get("kind").and_then(|value| value.as_str()) == Some("open_material")
-        })
-        .and_then(|action| action.get("material_id"))
-        .and_then(|value| value.as_str())
-        .map(ToOwned::to_owned)
 }
 
 pub fn mark_running_tasks_interrupted_in_dir(
@@ -1243,10 +1279,112 @@ fn worker_event_task_id(event: &WorkerEvent) -> Option<&str> {
         WorkerEvent::TaskProgress { payload } => Some(&payload.task_id),
         WorkerEvent::TaskResult { payload } => Some(&payload.task_id),
         WorkerEvent::TaskError { payload } => Some(&payload.task_id),
-        WorkerEvent::TaskLog { .. }
-        | WorkerEvent::WorkerReady { .. }
-        | WorkerEvent::WorkerHeartbeat { .. } => None,
+        WorkerEvent::TaskLog { payload } => Some(&payload.task_id),
+        WorkerEvent::WorkerReady { .. } | WorkerEvent::WorkerHeartbeat { .. } => None,
     }
+}
+
+fn agent_task_status_name(status: &AgentTaskStatus) -> String {
+    serde_json::to_value(status)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn worker_event_timestamp(event: &WorkerEvent) -> String {
+    match event {
+        WorkerEvent::TaskStarted { payload } => payload.timestamp.clone(),
+        WorkerEvent::TaskProgress { payload } => payload.timestamp.clone(),
+        WorkerEvent::TaskLog { payload } => payload.timestamp.clone(),
+        WorkerEvent::TaskResult { payload } => payload.timestamp.clone(),
+        WorkerEvent::TaskError { payload } => payload.timestamp.clone(),
+        WorkerEvent::WorkerReady { payload } => payload.timestamp.clone(),
+        WorkerEvent::WorkerHeartbeat { payload } => payload.timestamp.clone(),
+    }
+}
+
+fn worker_event_stable_id(task_id: &str, event: &WorkerEvent) -> Result<String, String> {
+    let serialized = serde_json::to_vec(event)
+        .map_err(|error| format!("Failed to serialize worker event for timeline: {error}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(task_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(serialized);
+    Ok(format!("worker:{}", hex::encode(hasher.finalize())))
+}
+
+pub fn worker_event_timeline_request(
+    before: &AgentTask,
+    after: &AgentTask,
+    event: &WorkerEvent,
+) -> Result<AssistantTimelineIngestRequest, String> {
+    let ignored_terminal = is_terminal_task_status(&before.status);
+    let event_type = if ignored_terminal {
+        "worker.late_event_ignored".to_string()
+    } else {
+        event.event_name().to_string()
+    };
+    let from_status = agent_task_status_name(&before.status);
+    let to_status = agent_task_status_name(&after.status);
+    let (stage, message, error, mut metadata) = match event {
+        WorkerEvent::TaskStarted { payload } => (
+            after.stage.clone(),
+            after.message.clone(),
+            None,
+            serde_json::json!({ "task_type": payload.task_type }),
+        ),
+        WorkerEvent::TaskProgress { payload } => (
+            Some(payload.stage.clone()),
+            payload.message.clone(),
+            None,
+            serde_json::json!({ "progress": payload.progress.clamp(0.0, 1.0) }),
+        ),
+        WorkerEvent::TaskLog { payload } => (
+            after.stage.clone(),
+            Some(payload.message.clone()),
+            None,
+            serde_json::json!({
+                "level": payload.level,
+                "source": payload.source,
+            }),
+        ),
+        WorkerEvent::TaskResult { payload } => (
+            after.stage.clone(),
+            after.message.clone(),
+            None,
+            serde_json::json!({ "artifact_type": payload.artifact_type }),
+        ),
+        WorkerEvent::TaskError { payload } => (
+            after.stage.clone(),
+            Some(payload.message.clone()),
+            after
+                .error
+                .clone()
+                .or_else(|| Some(payload.message.clone())),
+            serde_json::json!({
+                "code": payload.code,
+                "details": payload.details,
+            }),
+        ),
+        WorkerEvent::WorkerReady { .. } | WorkerEvent::WorkerHeartbeat { .. } => {
+            (None, None, None, serde_json::json!({}))
+        }
+    };
+    if ignored_terminal {
+        metadata["original_event_type"] = Value::String(event.event_name().to_string());
+        metadata["terminal_status"] = Value::String(from_status.clone());
+    }
+    Ok(AssistantTimelineIngestRequest {
+        event_id: worker_event_stable_id(&before.id, event)?,
+        event_type,
+        from_status: Some(from_status),
+        to_status: Some(to_status),
+        stage,
+        message,
+        error,
+        metadata,
+        created_at: worker_event_timestamp(event),
+    })
 }
 
 #[derive(Default)]
@@ -1272,7 +1410,9 @@ async fn sync_worker_event_backend(
         .get_agent_task(task_id)
         .await
         .map_err(|error| error.to_string())?;
+    let task_before_event = task.clone();
     let artifact = apply_worker_event_to_task(&mut task, runtime_state, event)?;
+    let timeline = worker_event_timeline_request(&task_before_event, &task, event)?;
 
     let artifact = match artifact {
         Some(artifact) => {
@@ -1284,8 +1424,19 @@ async fn sync_worker_event_backend(
         }
         None => None,
     };
-    let task = client
-        .save_agent_task(&task)
+    let task_changed = serde_json::to_value(&task_before_event)
+        .map_err(|error| error.to_string())?
+        != serde_json::to_value(&task).map_err(|error| error.to_string())?;
+    let task = if task_changed {
+        client
+            .save_agent_task(&task)
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        task
+    };
+    client
+        .ingest_agent_task_timeline_event(task_id, &timeline)
         .await
         .map_err(|error| error.to_string())?;
     if let Some(artifact) = artifact.as_ref() {
@@ -1341,21 +1492,13 @@ pub async fn recover_worker_checkpoints_from_backend(
     let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
     for task_id in task_ids {
         let checkpoint = load_worker_task_checkpoint_in_dir(data_dir, &task_id)?;
-        if is_terminal_task_status(&checkpoint.status)
-            && !matches!(checkpoint.status, AgentTaskStatus::Interrupted)
-        {
-            continue;
-        }
-        let mut task = client
+        let backend_task = client
             .get_agent_task(&task_id)
             .await
             .map_err(|error| error.to_string())?;
-        if !is_terminal_task_status(&task.status) {
-            task.status = AgentTaskStatus::Interrupted;
-            task.stage = Some("worker_restarted".to_string());
-            task.error = Some("Agent worker restarted before the task completed".to_string());
-            task.updated_at = Utc::now().to_rfc3339();
-            task.finished_at = Some(task.updated_at.clone());
+        let backend_is_terminal = is_terminal_task_status(&backend_task.status);
+        let mut task = reconcile_task_after_restart(&checkpoint, &backend_task, Utc::now());
+        if !backend_is_terminal {
             task = client
                 .save_agent_task(&task)
                 .await
@@ -1364,6 +1507,27 @@ pub async fn recover_worker_checkpoints_from_backend(
         persist_worker_task_checkpoint_after_backend(data_dir, Ok(task))?;
     }
     Ok(())
+}
+
+pub fn reconcile_task_after_restart(
+    checkpoint: &AgentTask,
+    backend_task: &AgentTask,
+    now: DateTime<Utc>,
+) -> AgentTask {
+    if is_terminal_task_status(&backend_task.status) {
+        return backend_task.clone();
+    }
+    if is_terminal_task_status(&checkpoint.status) {
+        return checkpoint.clone();
+    }
+
+    let mut interrupted = backend_task.clone();
+    interrupted.status = AgentTaskStatus::Interrupted;
+    interrupted.stage = Some("worker_restarted".to_string());
+    interrupted.error = Some("Agent worker restarted before the task completed".to_string());
+    interrupted.updated_at = now.to_rfc3339();
+    interrupted.finished_at = Some(interrupted.updated_at.clone());
+    interrupted
 }
 
 fn spawn_stderr_listener(
@@ -1429,11 +1593,24 @@ fn emit_worker_event(
                             &format!("assistant-agent-result://{}", payload.task_id),
                             &payload.content,
                         );
-                        if let Some(material_id) = extract_open_material_id(&payload.content) {
-                            let _ = app_handle.emit(
-                                "agent://open-material",
-                                serde_json::json!({ "materialId": material_id }),
-                            );
+                        if let Some(action) = assistant_action_from_result_payload(&payload.content)
+                        {
+                            let action_app_handle = app_handle.clone();
+                            let action_task_id = payload.task_id.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(error) = execute_registered_assistant_action(
+                                    &action_app_handle,
+                                    &action_task_id,
+                                    &action,
+                                )
+                                .await
+                                {
+                                    eprintln!(
+                                        "[AgentWorker] Failed to audit Assistant action for task {}: {}",
+                                        action_task_id, error.message
+                                    );
+                                }
+                            });
                         }
                     }
                     _ => {

@@ -1,6 +1,6 @@
 use openkoto_desktop_lib::{
     commands::{
-        filter_material_summaries, material_summary_from_article,
+        default_task_source_locator, filter_material_summaries, material_summary_from_article,
         require_active_agent_model_config, MaterialSummary,
     },
     ffmpeg::{
@@ -20,6 +20,8 @@ use openkoto_desktop_lib::{
         MaterialImportCommitState, MaterialImportRecoveryStrategy, ModelConfig,
     },
 };
+
+use openkoto_desktop_lib::source_locator::{SourceAnchor, SourceLocator};
 
 fn sample_model_config() -> ModelConfig {
     ModelConfig {
@@ -63,6 +65,38 @@ fn sample_material_summary(id: &str, title: &str, material_type: &str) -> Materi
         created_at: "2026-03-08T00:00:00Z".to_string(),
         translated: false,
     }
+}
+
+#[test]
+fn default_agent_task_locator_targets_the_first_material_segment() {
+    let mut article = sample_article_defaults();
+    article.book_type = Some("pdf".to_string());
+    article.segments = vec![ArticleSegment {
+        id: "segment-7".to_string(),
+        article_id: article.id.clone(),
+        order: 7,
+        text: "Source context".to_string(),
+        reading_text: None,
+        translation: None,
+        explanation: None,
+        start_time: None,
+        end_time: None,
+        created_at: "2026-07-15T00:00:00Z".to_string(),
+        is_new_paragraph: true,
+    }];
+
+    let value = default_task_source_locator(&article).expect("locator");
+    let locator: SourceLocator = serde_json::from_value(value).unwrap();
+    locator.validate().unwrap();
+    assert_eq!(locator.reader_kind.as_deref(), Some("pdf"));
+    assert!(matches!(
+        locator.anchor,
+        SourceAnchor::Segment {
+            segment_order: 7,
+            total_segments: 1,
+            segment_id: Some(ref id),
+        } if id == "segment-7"
+    ));
 }
 
 #[test]

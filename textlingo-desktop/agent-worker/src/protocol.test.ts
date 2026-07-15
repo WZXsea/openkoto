@@ -5,6 +5,7 @@ import {
   createTaskLogEvent,
   createTaskStartedEvent,
   createWorkerReadyEvent,
+  parseAgentCancelRequest,
   parseAgentRunRequest,
 } from "./protocol.js";
 
@@ -110,5 +111,19 @@ describe("protocol", () => {
     }
     expect(request.params.input.user_message).toBe("打开标题带 N1 的 PDF");
     expect(request.params.input.available_materials).toHaveLength(1);
+  });
+
+  it("parses a task-scoped agent.cancel request", () => {
+    const request = parseAgentCancelRequest(
+      JSON.stringify({
+        id: "cancel-1",
+        type: "request",
+        method: "agent.cancel",
+        params: { task_id: "task-agent-1" },
+      }),
+    );
+
+    expect(request.method).toBe("agent.cancel");
+    expect(request.params.task_id).toBe("task-agent-1");
   });
 });

@@ -101,6 +101,21 @@ export function parseAgentRunRequest(raw: string): AgentRunRequest {
   return agentRunRequestSchema.parse(JSON.parse(raw));
 }
 
+export const agentCancelRequestSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("request"),
+  method: z.literal("agent.cancel"),
+  params: z.object({
+    task_id: z.string().min(1),
+  }),
+});
+
+export type AgentCancelRequest = z.infer<typeof agentCancelRequestSchema>;
+
+export function parseAgentCancelRequest(raw: string): AgentCancelRequest {
+  return agentCancelRequestSchema.parse(JSON.parse(raw));
+}
+
 const timestampSchema = z.string().datetime({ offset: true }).or(z.string().min(1));
 
 const workerReadyEventSchema = z.object({
@@ -141,6 +156,7 @@ const taskProgressEventSchema = z.object({
     stage: z.string().min(1),
     progress: z.number(),
     message: z.string().optional(),
+    timestamp: timestampSchema,
   }),
 });
 
@@ -163,6 +179,7 @@ const taskResultEventSchema = z.object({
     task_id: z.string().min(1),
     artifact_type: z.string().min(1).default("mind_map"),
     content: z.unknown(),
+    timestamp: timestampSchema,
   }),
 });
 
@@ -174,6 +191,7 @@ const taskErrorEventSchema = z.object({
     code: z.string().min(1),
     message: z.string().min(1),
     details: z.string().optional(),
+    timestamp: timestampSchema,
   }),
 });
 
@@ -254,6 +272,7 @@ export function createTaskProgressEvent(
       stage,
       progress,
       message,
+      timestamp: isoNow(),
     },
   };
 }
@@ -289,6 +308,7 @@ export function createTaskResultEvent(
       task_id: taskId,
       artifact_type: artifactType,
       content,
+      timestamp: isoNow(),
     },
   };
 }
@@ -307,6 +327,7 @@ export function createTaskErrorEvent(
       code,
       message,
       details,
+      timestamp: isoNow(),
     },
   };
 }
@@ -338,6 +359,7 @@ export type WorkerResultEvent = {
   payload: {
     task_id: string;
     content: unknown;
+    timestamp: string;
   };
 };
 export type WorkerErrorEvent = {
@@ -346,5 +368,6 @@ export type WorkerErrorEvent = {
   payload: {
     task_id: string;
     message: string;
+    timestamp: string;
   };
 };

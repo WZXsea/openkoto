@@ -166,12 +166,31 @@ describe("ArticleReader agent mode", () => {
     expect(screen.getByRole("button", { name: "讲解" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "对话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "任务" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "快问" })).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Agent" }));
 
     expect(screen.getByText("当前支持")).toBeInTheDocument();
     expect(screen.getByText("查看当前素材")).toBeInTheDocument();
+  });
+
+  it("loads current-material task history inside the immersive reader", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "assistant_task_list_cmd") return Promise.resolve({ items: [], total: 0 });
+      if (command === "get_resource_server_info_cmd") {
+        return Promise.resolve({ base_url: "http://127.0.0.1:19420", token: "test-token" });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<ArticleReader article={createArticle()} />);
+    await userEvent.click(screen.getByRole("button", { name: "任务" }));
+
+    expect(await screen.findByText("当前素材的工作流")).toBeInTheDocument();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("assistant_task_list_cmd", {
+      query: { status: undefined, article_id: "article-1", limit: 100, offset: 0 },
+    }));
   });
 
   it("lets media articles import subtitles from a local srt file", async () => {

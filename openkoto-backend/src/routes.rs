@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Instant};
 
 use axum::{
     extract::{DefaultBodyLimit, State},
-    routing::{get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -10,8 +10,8 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use crate::{
-    annotations, auth, config::AppConfig, error::AppError, files, learning, learning_activity,
-    learning_items, legacy_imports, material_library, materials,
+    annotations, assistant, auth, config::AppConfig, error::AppError, files, learning,
+    learning_activity, learning_items, legacy_imports, material_library, materials,
 };
 
 #[derive(Clone)]
@@ -222,11 +222,37 @@ pub fn build_router(state: AppState) -> Router {
             "/learning-review/activity-heatmap",
             get(learning_activity::get_activity_heatmap),
         )
+        .route("/agent-tasks", get(assistant::list_agent_tasks))
         .route(
             "/agent-tasks/{id}",
-            get(learning::get_agent_task).put(learning::upsert_agent_task),
+            get(assistant::get_agent_task).put(assistant::put_agent_task),
         )
-        .route("/artifacts/{id}", put(learning::upsert_artifact))
+        .route(
+            "/agent-tasks/{id}/timeline",
+            get(assistant::get_task_timeline).post(assistant::ingest_task_timeline),
+        )
+        .route(
+            "/agent-tasks/{id}/cancel",
+            post(assistant::cancel_agent_task),
+        )
+        .route("/agent-tasks/{id}/retry", post(assistant::retry_agent_task))
+        .route(
+            "/agent-tasks/{id}/artifacts",
+            get(assistant::list_task_artifacts),
+        )
+        .route(
+            "/agent-tasks/{id}/actions",
+            get(assistant::list_task_actions).post(assistant::audit_task_action),
+        )
+        .route(
+            "/assistant/action-registry",
+            get(assistant::get_action_registry),
+        )
+        .route("/artifacts", get(assistant::list_artifacts))
+        .route(
+            "/artifacts/{id}",
+            get(assistant::get_artifact_by_id).put(assistant::put_artifact),
+        )
         .route("/artifacts/{article_id}/{id}", get(learning::get_artifact))
         .route(
             "/legacy-imports",

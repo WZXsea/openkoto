@@ -61,6 +61,7 @@ export function createResultEvent(taskId: string, content: unknown): WorkerResul
     payload: {
       task_id: next.payload.task_id,
       content: next.payload.content,
+      timestamp: next.payload.timestamp,
     },
   };
 }
@@ -73,6 +74,7 @@ export function createErrorEvent(taskId: string, message: string): WorkerErrorEv
     payload: {
       task_id: next.payload.task_id,
       message: next.payload.message,
+      timestamp: next.payload.timestamp,
     },
   };
 }
@@ -95,6 +97,7 @@ export async function executeAgentRunRequest(
     promptRunner?: MindMapTaskDeps["promptRunner"];
     workspaceRoot?: string;
     writeEvent?: (event: TaskResultEvent) => void;
+    signal?: AbortSignal;
   },
 ) {
   if (request.params.task_type === "mind_map.generate") {
@@ -119,6 +122,7 @@ export async function executeAgentRunRequest(
         promptRunner: deps.promptRunner,
         workspaceRoot: deps.workspaceRoot,
         providerConfig: request.params.provider_config,
+        signal: deps.signal,
       },
     );
   }
@@ -140,8 +144,14 @@ export async function executeAgentRunRequest(
         promptRunner: deps.promptRunner,
         workspaceRoot: deps.workspaceRoot,
         providerConfig: request.params.provider_config,
+        signal: deps.signal,
       },
     );
+    if (deps.signal?.aborted) {
+      const error = new Error("Agent task cancelled");
+      error.name = "AbortError";
+      throw error;
+    }
     deps.writeEvent?.(createTaskResultEvent(request.params.task_id, result, "article_answer"));
     return result;
   }
@@ -153,7 +163,8 @@ export async function handleAgentRunRequest(
   request: AgentRunRequest,
   deps: {
     writeEvent: (event: TaskStartedEvent | TaskProgressEvent | TaskResultEvent | TaskErrorEvent) => void;
-    runTask: (request: AgentRunRequest) => Promise<void>;
+    runTask: (request: AgentRunRequest, signal?: AbortSignal) => Promise<void>;
+    signal?: AbortSignal;
   },
 ) {
   deps.writeEvent(createTaskStartedEvent(request.params.task_id, request.params.task_type));
@@ -171,13 +182,15 @@ export async function handleAgentRunRequest(
   }
 
   try {
-    await deps.runTask(request);
+    await deps.runTask(request, deps.signal);
   } catch (error) {
+    const cancelled =
+      deps.signal?.aborted || (error instanceof Error && error.name === "AbortError");
     deps.writeEvent(
       createTaskErrorEvent(
         request.params.task_id,
-        "internal_error",
-        "Agent runtime execution failed",
+        cancelled ? "task_cancelled" : "internal_error",
+        cancelled ? "Agent task cancelled" : "Agent runtime execution failed",
         error instanceof Error ? error.message : String(error),
       ),
     );

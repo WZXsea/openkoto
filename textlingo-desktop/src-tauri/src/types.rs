@@ -716,6 +716,14 @@ pub struct AgentTaskInput {
     pub max_depth: i32,
     pub evidence_mode: String,
     pub prefer_structure: String,
+    #[serde(default)]
+    pub user_message: Option<String>,
+    #[serde(default)]
+    pub conversation: Vec<AssistantConversationMessage>,
+    #[serde(default)]
+    pub source_locator: Option<serde_json::Value>,
+    #[serde(default)]
+    pub learning_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -742,6 +750,46 @@ pub struct AgentTask {
     pub started_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub root_task_id: Option<String>,
+    #[serde(default)]
+    pub retry_of_task_id: Option<String>,
+    #[serde(default = "default_agent_task_attempt")]
+    pub attempt: i32,
+    #[serde(default = "empty_json_object")]
+    pub input_snapshot: serde_json::Value,
+    #[serde(
+        default = "default_agent_task_output_version",
+        deserialize_with = "deserialize_agent_task_output_version"
+    )]
+    pub output_version: i32,
+    #[serde(default)]
+    pub legacy_status: Option<String>,
+}
+
+fn default_agent_task_attempt() -> i32 {
+    1
+}
+
+fn default_agent_task_output_version() -> i32 {
+    0
+}
+
+fn deserialize_agent_task_output_version<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| serde::de::Error::custom("output_version must be an i32")),
+        serde_json::Value::String(value) => value
+            .parse::<i32>()
+            .map_err(|_| serde::de::Error::custom("output_version must be an i32")),
+        _ => Err(serde::de::Error::custom("output_version must be an i32")),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -752,6 +800,10 @@ pub enum ArtifactType {
     PptOutline,
     PptSlides,
     ArticleAnswer,
+    StructuredReport,
+    File,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

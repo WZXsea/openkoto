@@ -2,6 +2,18 @@
 
 This guide describes the current OpenKoto Desktop packaging and release process.
 
+## 0.10.0 PR-12 Packaging
+
+Version `0.10.0` adds the observable Assistant workflow: global and reader-scoped task
+views, durable timelines, cancellation, retry lineage, artifact viewing, source return,
+and audited in-app actions. External software writes remain disabled in phase one.
+
+The WZX Apple Silicon prerelease is published from
+`wzx/pr12-assistant-observability` with tag
+`wzx-v0.10.0-pr12-assistant-observability`. Before upload, run the PR-12 isolated
+database gate, historical regression chain, packaged runtime smoke, checksum
+verification, and local 0.9.0-to-0.10.0 upgrade validation.
+
 ## 0.9.0 PR-11 Packaging
 
 Version `0.9.0` adds the reading-first home, responsive left navigation, dedicated
@@ -37,8 +49,8 @@ GitHub Actions currently builds macOS packages for Apple Silicon and Intel. Wind
 The build workflow is triggered when you push a tag starting with `v`.
 
 ```bash
-git tag v0.9.0
-git push origin v0.9.0
+git tag v0.10.0
+git push origin v0.10.0
 ```
 
 ### 2. Monitor Build
@@ -62,8 +74,9 @@ npm run tauri:build:packaged
 ```
 The output will be in `src-tauri/target/release/bundle/dmg`.
 
-Run the PR-11 acceptance gate, which chains the earlier regression gates, from the repository root:
+Run the PR-12 acceptance gate and historical regression chain from the repository root:
 
 ```bash
-bash script/verify_pr11_reading_home.sh --full
+bash script/verify_pr12_assistant_observability.sh --full --start-db
+bash script/verify_pr12_assistant_observability.sh --run-pr11
 ```

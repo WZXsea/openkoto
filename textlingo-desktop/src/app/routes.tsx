@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArticleReader } from "../components/features/ArticleReader";
 import { AnnotationWorkbench } from "../components/features/AnnotationWorkbench";
+import { AssistantTaskCenter } from "../components/features/AssistantTaskCenter";
 import { BookReader } from "../components/features/BookReader";
 import { FavoritesPage } from "../components/features/FavoritesPage";
 import { HomePage } from "../components/features/HomePage";
@@ -9,6 +10,7 @@ import { KtvExportPage } from "../components/features/KtvExportPage";
 import { LearningWorkbench } from "../components/features/LearningWorkbench";
 import { MaterialsWorkbenchPage } from "../components/features/MaterialsWorkbenchPage";
 import { createAnnotationsApi } from "../features/annotations";
+import type { AssistantSourceReference } from "../features/assistant";
 import type { Article } from "../lib/tauri";
 import { createMaterialsApi } from "../features/materials/api";
 import type { MaterialArticle, MaterialFilters } from "../features/materials/types";
@@ -30,6 +32,7 @@ interface AppRoutesProps {
   articles: Article[];
   canUseKtvExport: boolean;
   isLoading: boolean;
+  focusedLearningItemId: string | null;
   selectedArticle: Article | null;
   selectedIndex: number;
   viewMode: MaterialViewMode;
@@ -47,6 +50,7 @@ interface AppRoutesProps {
   onOpenMaterials: () => void;
   onNextArticle: () => void;
   onNavigateAnnotationSource: (annotation: Annotation) => void;
+  onNavigateAssistantSource: (reference: AssistantSourceReference) => void;
   onOpenKtvExport: () => void;
   onPreviousArticle: () => void;
   onRefresh: () => Promise<Article[]>;
@@ -84,6 +88,7 @@ export function AppRoutes({
   articles,
   canUseKtvExport,
   isLoading,
+  focusedLearningItemId,
   selectedArticle,
   selectedIndex,
   viewMode,
@@ -101,6 +106,7 @@ export function AppRoutes({
   onOpenMaterials,
   onNextArticle,
   onNavigateAnnotationSource,
+  onNavigateAssistantSource,
   onOpenKtvExport,
   onPreviousArticle,
   onRefresh,
@@ -227,7 +233,7 @@ export function AppRoutes({
       <>
         {progressError && <p className="px-4 pt-3 text-sm text-destructive" role="alert">阅读进度未保存：{progressError}</p>}
         {annotationMessage && <p className="px-4 pt-2 text-xs text-muted-foreground" role="status">{annotationMessage}</p>}
-        <ArticleReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onNext={onNextArticle} onPrev={onPreviousArticle} hasNext={selectedIndex < articles.length - 1} hasPrev={selectedIndex > 0} onUpdate={onArticleUpdate} onOpenKtvExport={canUseKtvExport ? onOpenKtvExport : undefined} initialProgress={initialProgress} onProgressChange={handleReadingProgress} annotation={readerAnnotation} onAnnotationResolved={handleAnnotationResolved} onAnnotationDraftCreated={handleAnnotationDraftCreated} />
+        <ArticleReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onNext={onNextArticle} onPrev={onPreviousArticle} hasNext={selectedIndex < articles.length - 1} hasPrev={selectedIndex > 0} onUpdate={onArticleUpdate} onOpenKtvExport={canUseKtvExport ? onOpenKtvExport : undefined} initialProgress={initialProgress} onProgressChange={handleReadingProgress} annotation={readerAnnotation} onAnnotationResolved={handleAnnotationResolved} onAnnotationDraftCreated={handleAnnotationDraftCreated} onNavigateAssistantSource={onNavigateAssistantSource} />
       </>
     );
   }
@@ -260,6 +266,14 @@ export function AppRoutes({
     );
   }
 
+  if (activeScreen === "assistant") {
+    return (
+      <div className="h-full min-h-0 w-full p-3 sm:p-5">
+        <AssistantTaskCenter articles={articles} onNavigateSource={onNavigateAssistantSource} />
+      </div>
+    );
+  }
+
   if (activeScreen === "learning") {
     return (
       <div className="h-full w-full max-w-[1600px] mx-auto p-4 sm:p-6">
@@ -269,6 +283,7 @@ export function AppRoutes({
         </div>
         <LearningWorkbench
           className="h-[calc(100%-3.5rem)]"
+          initialItemId={focusedLearningItemId ?? undefined}
           materials={articles.map(({ id, title, source_type }) => ({
             id,
             title,

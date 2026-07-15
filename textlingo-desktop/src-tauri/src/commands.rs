@@ -3,6 +3,9 @@ use crate::agent_worker::{
     AgentWorkerStatusSnapshot,
 };
 use crate::ai_service::{get_ai_service, get_or_create_ai_service, AIServiceCache};
+use crate::assistant::actions::{
+    assistant_action_from_result_payload, execute_registered_assistant_action,
+};
 use crate::backend_client::{
     AcceptLearningItemRequest, AcceptLearningItemResponse, Annotation, BackendClient,
     BackendClientError, BackendHealthResponse, BackendUser, BulkOrganizeLearningItemsRequest,
@@ -1877,29 +1880,54 @@ async fn ensure_backend_task_references_artifact(
     let mut task = match client.get_agent_task(task_id).await {
         Ok(task) => task,
         Err(BackendClientError::Backend { status, .. }) if status == StatusCode::NOT_FOUND => {
-            AgentTask {
+            let input = AgentTaskInput {
+                article_id: article_id.to_string(),
+                display_language: "zh-CN".to_string(),
+                max_depth: 0,
+                evidence_mode: "manual".to_string(),
+                prefer_structure: "manual".to_string(),
+                user_message: None,
+                conversation: Vec::new(),
+                source_locator: None,
+                learning_item_id: None,
+            };
+            let queued = AgentTask {
                 id: task_id.to_string(),
                 task_type: AgentTaskType::MindMapGenerate,
-                status: AgentTaskStatus::Succeeded,
+                status: AgentTaskStatus::Queued,
                 article_id: article_id.to_string(),
-                input: AgentTaskInput {
-                    article_id: article_id.to_string(),
-                    display_language: "zh-CN".to_string(),
-                    max_depth: 0,
-                    evidence_mode: "manual".to_string(),
-                    prefer_structure: "manual".to_string(),
-                },
-                progress: 1.0,
-                stage: Some("manual_artifact".to_string()),
-                message: Some("Manual mind map artifact saved".to_string()),
+                input_snapshot: serde_json::to_value(&input)
+                    .map_err(|error| format!("Failed to snapshot manual task input: {error}"))?,
+                input,
+                progress: 0.0,
+                stage: Some("queued".to_string()),
+                message: Some("Manual mind map artifact queued".to_string()),
                 error: None,
                 worker_session_id: None,
                 artifact_ids: Vec::new(),
                 created_at: now.clone(),
                 updated_at: now.clone(),
-                started_at: Some(now.clone()),
-                finished_at: Some(now.clone()),
-            }
+                started_at: None,
+                finished_at: None,
+                root_task_id: Some(task_id.to_string()),
+                retry_of_task_id: None,
+                attempt: 1,
+                output_version: 1,
+                legacy_status: None,
+            };
+            let mut running = client
+                .save_agent_task(&queued)
+                .await
+                .map_err(backend_error_to_string)?;
+            running.status = AgentTaskStatus::Running;
+            running.stage = Some("manual_artifact".to_string());
+            running.message = Some("Saving manual mind map artifact".to_string());
+            running.started_at = Some(now.clone());
+            running.updated_at = now.clone();
+            client
+                .save_agent_task(&running)
+                .await
+                .map_err(backend_error_to_string)?
         }
         Err(error) => return Err(backend_error_to_string(error)),
     };
@@ -2152,6 +2180,28 @@ pub fn material_summary_from_article(article: &Article) -> MaterialSummary {
     }
 }
 
+pub fn default_task_source_locator(article: &Article) -> Option<serde_json::Value> {
+    let first = article.segments.first()?;
+    let reader_kind = match article
+        .book_type
+        .as_deref()
+        .or(article.source_type.as_deref())
+    {
+        Some("pdf") => "pdf",
+        Some("epub") => "epub",
+        Some("youtube") | Some("local_video") | Some("video") => "media",
+        _ => "article",
+    };
+    Some(serde_json::json!({
+        "version": 1,
+        "kind": "segment",
+        "reader_kind": reader_kind,
+        "segment_order": first.order,
+        "total_segments": article.segments.len(),
+        "segment_id": first.id,
+    }))
+}
+
 pub fn filter_material_summaries(
     items: &[MaterialSummary],
     keyword: Option<&str>,
@@ -2188,7 +2238,7 @@ fn builtin_agent_turn_payload(
     user_message: &str,
     current_material: &MaterialSummary,
     available_materials: &[MaterialSummary],
-) -> Option<(serde_json::Value, Option<String>)> {
+) -> Option<serde_json::Value> {
     let normalized = user_message.trim().to_lowercase();
     if normalized.is_empty() {
         return None;
@@ -2210,13 +2260,10 @@ fn builtin_agent_turn_payload(
                 "未完整翻译"
             }
         );
-        return Some((
-            serde_json::json!({
-                "reply": reply,
-                "action": { "kind": "get_current_material" }
-            }),
-            None,
-        ));
+        return Some(serde_json::json!({
+            "reply": reply,
+            "action": { "kind": "get_current_material" }
+        }));
     }
 
     if matches!(
@@ -2239,13 +2286,10 @@ fn builtin_agent_turn_payload(
                 available_materials.len() - 20
             ));
         }
-        return Some((
-            serde_json::json!({
-                "reply": lines.join("\n"),
-                "action": { "kind": "list_materials" }
-            }),
-            None,
-        ));
+        return Some(serde_json::json!({
+            "reply": lines.join("\n"),
+            "action": { "kind": "list_materials" }
+        }));
     }
 
     let open_prefixes = ["打开素材", "open material"];
@@ -2254,38 +2298,29 @@ fn builtin_agent_turn_payload(
         .find_map(|prefix| normalized.strip_prefix(prefix).map(str::trim));
     if let Some(target) = open_target {
         if target.is_empty() {
-            return Some((
-                serde_json::json!({
-                    "reply": "请提供要打开的素材标题或 ID。你也可以先点击“列出素材”查看可用素材。",
-                    "action": null
-                }),
-                None,
-            ));
+            return Some(serde_json::json!({
+                "reply": "请提供要打开的素材标题或 ID。你也可以先点击“列出素材”查看可用素材。",
+                "action": null
+            }));
         }
 
         let matched = available_materials.iter().find(|material| {
             material.id.to_lowercase() == target || material.title.to_lowercase().contains(target)
         });
         if let Some(material) = matched {
-            return Some((
-                serde_json::json!({
-                    "reply": format!("正在打开素材：{}", material.title),
-                    "action": {
-                        "kind": "open_material",
-                        "material_id": material.id
-                    }
-                }),
-                Some(material.id.clone()),
-            ));
+            return Some(serde_json::json!({
+                "reply": format!("正在打开素材：{}", material.title),
+                "action": {
+                    "kind": "open_material",
+                    "material_id": material.id
+                }
+            }));
         }
 
-        return Some((
-            serde_json::json!({
-                "reply": format!("没有找到匹配“{}”的素材。请检查标题或 ID。", target),
-                "action": null
-            }),
-            None,
-        ));
+        return Some(serde_json::json!({
+            "reply": format!("没有找到匹配“{}”的素材。请检查标题或 ID。", target),
+            "action": null
+        }));
     }
 
     None
@@ -2295,28 +2330,42 @@ async fn complete_builtin_agent_turn(
     app_handle: &AppHandle,
     mut task: AgentTask,
     payload: serde_json::Value,
-    open_material_id: Option<String>,
 ) -> Result<AgentTask, String> {
     let now = chrono::Utc::now().to_rfc3339();
+    task.status = AgentTaskStatus::Running;
+    task.progress = 0.5;
+    task.stage = Some("builtin_action".to_string());
+    task.message = Some("Handling Assistant action locally".to_string());
+    task.updated_at = now.clone();
+    task.started_at = Some(task.started_at.unwrap_or_else(|| now.clone()));
+    task = persist_agent_task_backend(app_handle, &task).await?;
+
+    if let Some(action) = assistant_action_from_result_payload(&payload) {
+        if let Err(error) = execute_registered_assistant_action(app_handle, &task.id, &action).await
+        {
+            task.status = AgentTaskStatus::Failed;
+            task.stage = Some("action_audit_failed".to_string());
+            task.error = Some(error.message.clone());
+            task.updated_at = chrono::Utc::now().to_rfc3339();
+            task.finished_at = Some(task.updated_at.clone());
+            let failed = persist_agent_task_backend(app_handle, &task).await?;
+            let _ = app_handle.emit("agent-task-updated", &failed);
+            return Err(error.message);
+        }
+    }
+
     task.status = AgentTaskStatus::Succeeded;
     task.progress = 1.0;
     task.stage = Some("done".to_string());
     task.message = Some("Agent turn handled locally".to_string());
     task.error = None;
     task.updated_at = now.clone();
-    task.started_at = Some(task.started_at.unwrap_or_else(|| now.clone()));
     task.finished_at = Some(now);
     let task = persist_agent_task_backend(app_handle, &task).await?;
 
     let _ = app_handle.emit(&format!("assistant-agent-progress://{}", task.id), &task);
     let _ = app_handle.emit(&format!("assistant-agent-result://{}", task.id), &payload);
     let _ = app_handle.emit("agent-task-updated", &task);
-    if let Some(material_id) = open_material_id {
-        let _ = app_handle.emit(
-            "agent://open-material",
-            serde_json::json!({ "materialId": material_id }),
-        );
-    }
 
     Ok(task)
 }
@@ -2600,18 +2649,26 @@ pub async fn create_mind_map_task_cmd(
     let active_model = require_active_agent_model_config(load_config(&app_handle)?)?;
     let provider_config = resolve_runtime_provider_config(&active_model);
     let now = chrono::Utc::now().to_rfc3339();
+    let task_id = Uuid::new_v4().to_string();
+    let input = AgentTaskInput {
+        article_id: article_id.clone(),
+        display_language: display_language.unwrap_or_else(|| "zh-CN".to_string()),
+        max_depth: max_depth.unwrap_or(3),
+        evidence_mode: "strict".to_string(),
+        prefer_structure: "topic_tree".to_string(),
+        user_message: None,
+        conversation: Vec::new(),
+        source_locator: default_task_source_locator(&article),
+        learning_item_id: None,
+    };
     let task = AgentTask {
-        id: Uuid::new_v4().to_string(),
+        id: task_id.clone(),
         task_type: AgentTaskType::MindMapGenerate,
         status: AgentTaskStatus::Queued,
         article_id: article_id.clone(),
-        input: AgentTaskInput {
-            article_id: article_id.clone(),
-            display_language: display_language.unwrap_or_else(|| "zh-CN".to_string()),
-            max_depth: max_depth.unwrap_or(3),
-            evidence_mode: "strict".to_string(),
-            prefer_structure: "topic_tree".to_string(),
-        },
+        input_snapshot: serde_json::to_value(&input)
+            .map_err(|error| format!("Failed to snapshot mind map task input: {error}"))?,
+        input,
         progress: 0.0,
         stage: Some("queued".to_string()),
         message: None,
@@ -2622,12 +2679,22 @@ pub async fn create_mind_map_task_cmd(
         updated_at: now,
         started_at: None,
         finished_at: None,
+        root_task_id: Some(task_id),
+        retry_of_task_id: None,
+        attempt: 1,
+        output_version: 1,
+        legacy_status: None,
     };
     let task = persist_agent_task_backend(&app_handle, &task).await?;
     if let Err(error) =
         worker_manager.submit_mind_map_task(&app_handle, &task, &article, &provider_config)
     {
-        let mut failed_task = task.clone();
+        let mut running_task = task.clone();
+        running_task.status = AgentTaskStatus::Running;
+        running_task.stage = Some("dispatching".to_string());
+        running_task.updated_at = chrono::Utc::now().to_rfc3339();
+        running_task.started_at = Some(running_task.updated_at.clone());
+        let mut failed_task = persist_agent_task_backend(&app_handle, &running_task).await?;
         failed_task.status = AgentTaskStatus::Failed;
         failed_task.error = Some(error.clone());
         failed_task.stage = Some("failed_to_start".to_string());
@@ -2655,18 +2722,25 @@ pub async fn run_agent_turn_cmd(
     let article = get_article(app_handle.clone(), article_id.clone()).await?;
     let articles = list_articles_cmd(app_handle.clone()).await?;
     let now = chrono::Utc::now().to_rfc3339();
+    let input = AgentTaskInput {
+        article_id: article_id.clone(),
+        display_language: display_language.unwrap_or_else(|| "zh-CN".to_string()),
+        max_depth: 0,
+        evidence_mode: "none".to_string(),
+        prefer_structure: "none".to_string(),
+        user_message: Some(user_message.clone()),
+        conversation: conversation.clone(),
+        source_locator: default_task_source_locator(&article),
+        learning_item_id: None,
+    };
     let task = AgentTask {
-        id: task_id,
+        id: task_id.clone(),
         task_type: AgentTaskType::AssistantAgentTurn,
         status: AgentTaskStatus::Queued,
         article_id: article_id.clone(),
-        input: AgentTaskInput {
-            article_id: article_id.clone(),
-            display_language: display_language.unwrap_or_else(|| "zh-CN".to_string()),
-            max_depth: 0,
-            evidence_mode: "none".to_string(),
-            prefer_structure: "none".to_string(),
-        },
+        input_snapshot: serde_json::to_value(&input)
+            .map_err(|error| format!("Failed to snapshot assistant task input: {error}"))?,
+        input,
         progress: 0.0,
         stage: Some("queued".to_string()),
         message: None,
@@ -2677,6 +2751,11 @@ pub async fn run_agent_turn_cmd(
         updated_at: now,
         started_at: None,
         finished_at: None,
+        root_task_id: Some(task_id),
+        retry_of_task_id: None,
+        attempt: 1,
+        output_version: 1,
+        legacy_status: None,
     };
     let task = persist_agent_task_backend(&app_handle, &task).await?;
 
@@ -2686,10 +2765,10 @@ pub async fn run_agent_turn_cmd(
         .map(material_summary_from_article)
         .collect::<Vec<_>>();
 
-    if let Some((payload, open_material_id)) =
+    if let Some(payload) =
         builtin_agent_turn_payload(&user_message, &current_material, &available_materials)
     {
-        return complete_builtin_agent_turn(&app_handle, task, payload, open_material_id).await;
+        return complete_builtin_agent_turn(&app_handle, task, payload).await;
     }
 
     let active_model = require_active_agent_model_config(load_config(&app_handle)?)?;
@@ -2704,7 +2783,12 @@ pub async fn run_agent_turn_cmd(
         available_materials,
         &provider_config,
     ) {
-        let mut failed_task = task.clone();
+        let mut running_task = task.clone();
+        running_task.status = AgentTaskStatus::Running;
+        running_task.stage = Some("dispatching".to_string());
+        running_task.updated_at = chrono::Utc::now().to_rfc3339();
+        running_task.started_at = Some(running_task.updated_at.clone());
+        let mut failed_task = persist_agent_task_backend(&app_handle, &running_task).await?;
         failed_task.status = AgentTaskStatus::Failed;
         failed_task.error = Some(error.clone());
         failed_task.stage = Some("failed_to_start".to_string());
@@ -3708,6 +3792,17 @@ pub async fn list_learning_items_cmd(
 ) -> Result<Vec<LearningItem>, String> {
     backend_client_for_app(&app_handle)?
         .list_learning_items(query.as_ref())
+        .await
+        .map_err(backend_error_to_string)
+}
+
+#[tauri::command]
+pub async fn get_learning_item_cmd(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<LearningItem, String> {
+    backend_client_for_app(&app_handle)?
+        .get_learning_item(&id)
         .await
         .map_err(backend_error_to_string)
 }
@@ -6679,8 +6774,7 @@ mod builtin_agent_turn_tests {
     fn builtin_agent_turn_reports_current_material() {
         let current = material("a1", "Current Article", "web");
         let payload = builtin_agent_turn_payload("查看当前素材", &current, &[current.clone()])
-            .expect("current material prompt should be handled locally")
-            .0;
+            .expect("current material prompt should be handled locally");
 
         assert_eq!(payload["action"]["kind"], "get_current_material");
         assert!(payload["reply"]
@@ -6694,8 +6788,7 @@ mod builtin_agent_turn_tests {
         let current = material("a1", "Current Article", "web");
         let materials = vec![current.clone(), material("a2", "Second Article", "article")];
         let payload = builtin_agent_turn_payload("列出素材", &current, &materials)
-            .expect("list materials prompt should be handled locally")
-            .0;
+            .expect("list materials prompt should be handled locally");
 
         assert_eq!(payload["action"]["kind"], "list_materials");
         let reply = payload["reply"].as_str().expect("reply should be a string");
@@ -6707,11 +6800,9 @@ mod builtin_agent_turn_tests {
     fn builtin_agent_turn_opens_matching_material() {
         let current = material("a1", "Current Article", "web");
         let materials = vec![current.clone(), material("a2", "Second Article", "article")];
-        let (payload, open_id) =
-            builtin_agent_turn_payload("打开素材 second", &current, &materials)
-                .expect("open material prompt should be handled locally");
+        let payload = builtin_agent_turn_payload("打开素材 second", &current, &materials)
+            .expect("open material prompt should be handled locally");
 
-        assert_eq!(open_id.as_deref(), Some("a2"));
         assert_eq!(payload["action"]["kind"], "open_material");
         assert_eq!(payload["action"]["material_id"], "a2");
     }

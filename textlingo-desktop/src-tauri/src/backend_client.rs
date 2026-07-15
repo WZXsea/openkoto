@@ -4,6 +4,10 @@ use reqwest::{multipart, Client, StatusCode};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use crate::assistant::dto::{
+    AssistantActionAudit, AssistantActionAuditRequest, AssistantTaskListBackendResponse,
+    AssistantTaskListQuery, AssistantTaskTimelineEvent, AssistantTimelineIngestRequest,
+};
 use crate::types::{
     AgentTask, AppConfig, Article, ArticleSegment, Artifact, Bookmark, BulkMaterialIdsRequest,
     BulkMaterialTagsRequest, BulkOperationResponse, CreateMaterialImportJobRequest,
@@ -1315,6 +1319,16 @@ impl BackendClient {
         self.parse_response(response).await
     }
 
+    pub async fn get_learning_item(&self, id: &str) -> Result<LearningItem, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/learning-items/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
     pub async fn create_learning_item(
         &self,
         payload: &CreateLearningItemRequest,
@@ -1808,6 +1822,109 @@ impl BackendClient {
         let response = self
             .client
             .get(self.url(&format!("/agent-tasks/{id}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn list_agent_tasks(
+        &self,
+        query: &AssistantTaskListQuery,
+    ) -> Result<AssistantTaskListBackendResponse, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url("/agent-tasks"))
+            .bearer_auth(&self.auth_token)
+            .query(query)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_agent_task_timeline(
+        &self,
+        id: &str,
+    ) -> Result<Vec<AssistantTaskTimelineEvent>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/agent-tasks/{id}/timeline")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn ingest_agent_task_timeline_event(
+        &self,
+        id: &str,
+        payload: &AssistantTimelineIngestRequest,
+    ) -> Result<AssistantTaskTimelineEvent, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/agent-tasks/{id}/timeline")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn cancel_agent_task(&self, id: &str) -> Result<AgentTask, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/agent-tasks/{id}/cancel")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn retry_agent_task(&self, id: &str) -> Result<AgentTask, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/agent-tasks/{id}/retry")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn list_agent_task_artifacts(
+        &self,
+        id: &str,
+    ) -> Result<Vec<Artifact>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/agent-tasks/{id}/artifacts")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn record_agent_task_action(
+        &self,
+        id: &str,
+        payload: &AssistantActionAuditRequest,
+    ) -> Result<AssistantTaskTimelineEvent, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/agent-tasks/{id}/actions")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn list_agent_task_actions(
+        &self,
+        id: &str,
+    ) -> Result<Vec<AssistantActionAudit>, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/agent-tasks/{id}/actions")))
             .bearer_auth(&self.auth_token)
             .send()
             .await?;

@@ -2,10 +2,12 @@ use std::{fs, path::PathBuf, thread::sleep, time::Duration};
 
 use openkoto_desktop_lib::{
     agent_worker::{
-        apply_worker_event_in_dir, build_assistant_worker_request, build_mind_map_worker_request,
-        build_status_snapshot, mark_running_tasks_interrupted_in_dir, parse_worker_event_line,
-        push_worker_log, resolve_runtime_provider_config, worker_bundle_is_fresh,
-        worker_event_log_entry, WorkerHealth, WorkerLogEntry, WorkerLogLevel, WorkerRuntimeState,
+        apply_worker_event_in_dir, apply_worker_event_to_task, build_assistant_worker_request,
+        build_mind_map_worker_request, build_status_snapshot, build_worker_cancel_request,
+        mark_running_tasks_interrupted_in_dir, parse_worker_event_line, push_worker_log,
+        reconcile_task_after_restart, resolve_runtime_provider_config, worker_bundle_is_fresh,
+        worker_event_log_entry, worker_event_timeline_request, WorkerHealth, WorkerLogEntry,
+        WorkerLogLevel, WorkerRuntimeState,
     },
     storage::{
         load_legacy_agent_task_in_dir, load_legacy_artifact_in_dir, save_legacy_agent_task_in_dir,
@@ -59,6 +61,10 @@ fn sample_task(status: AgentTaskStatus) -> AgentTask {
             max_depth: 3,
             evidence_mode: "strict".to_string(),
             prefer_structure: "topic_tree".to_string(),
+            user_message: None,
+            conversation: Vec::new(),
+            source_locator: None,
+            learning_item_id: None,
         },
         progress: 0.0,
         stage: Some("queued".to_string()),
@@ -70,6 +76,12 @@ fn sample_task(status: AgentTaskStatus) -> AgentTask {
         updated_at: "2026-03-07T00:00:00Z".to_string(),
         started_at: None,
         finished_at: None,
+        root_task_id: Some("task-1".to_string()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: serde_json::json!({}),
+        output_version: 1,
+        legacy_status: None,
     }
 }
 
@@ -85,6 +97,10 @@ fn sample_assistant_task(status: AgentTaskStatus) -> AgentTask {
             max_depth: 0,
             evidence_mode: "none".to_string(),
             prefer_structure: "none".to_string(),
+            user_message: Some("查看当前素材".to_string()),
+            conversation: Vec::new(),
+            source_locator: None,
+            learning_item_id: None,
         },
         progress: 0.0,
         stage: Some("queued".to_string()),
@@ -96,6 +112,15 @@ fn sample_assistant_task(status: AgentTaskStatus) -> AgentTask {
         updated_at: "2026-03-07T00:00:00Z".to_string(),
         started_at: None,
         finished_at: None,
+        root_task_id: Some("task-assistant-1".to_string()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: serde_json::json!({
+            "user_message": "查看当前素材",
+            "conversation": []
+        }),
+        output_version: 1,
+        legacy_status: None,
     }
 }
 
@@ -365,6 +390,97 @@ fn running_tasks_can_be_marked_interrupted_after_restart() {
 
     assert_eq!(interrupted, vec![task.id]);
     assert!(matches!(stored.status, AgentTaskStatus::Interrupted));
+}
+
+#[test]
+fn cancel_request_targets_only_the_requested_task() {
+    let request = build_worker_cancel_request("task-42");
+
+    assert_eq!(request["method"], "agent.cancel");
+    assert_eq!(request["params"]["task_id"], "task-42");
+    assert!(request["id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("cancel-task-42-")));
+}
+
+#[test]
+fn restart_recovery_never_reopens_terminal_state() {
+    let now = chrono::Utc::now();
+    for status in [AgentTaskStatus::Queued, AgentTaskStatus::Running] {
+        let checkpoint = sample_task(status.clone());
+        let backend = sample_task(status);
+        let recovered = reconcile_task_after_restart(&checkpoint, &backend, now);
+        assert!(matches!(recovered.status, AgentTaskStatus::Interrupted));
+        assert_eq!(recovered.stage.as_deref(), Some("worker_restarted"));
+    }
+
+    let checkpoint_running = sample_task(AgentTaskStatus::Running);
+    let backend_cancelled = sample_task(AgentTaskStatus::Cancelled);
+    let recovered = reconcile_task_after_restart(&checkpoint_running, &backend_cancelled, now);
+    assert!(matches!(recovered.status, AgentTaskStatus::Cancelled));
+
+    let checkpoint_succeeded = sample_task(AgentTaskStatus::Succeeded);
+    let backend_running = sample_task(AgentTaskStatus::Running);
+    let recovered = reconcile_task_after_restart(&checkpoint_succeeded, &backend_running, now);
+    assert!(matches!(recovered.status, AgentTaskStatus::Succeeded));
+}
+
+#[test]
+fn late_worker_result_cannot_overwrite_cancelled_task() {
+    let mut task = sample_task(AgentTaskStatus::Cancelled);
+    task.finished_at = Some("2026-03-07T00:00:01Z".to_string());
+    let before = task.clone();
+    let event = parse_worker_event_line(
+        &serde_json::json!({
+            "type": "event",
+            "event": "task.result",
+            "payload": {
+                "task_id": task.id,
+                "artifact_type": "mind_map",
+                "content": sample_mind_map_result(),
+                "timestamp": "2026-03-07T00:00:02Z"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let artifact =
+        apply_worker_event_to_task(&mut task, &mut WorkerRuntimeState::default(), &event).unwrap();
+    let timeline = worker_event_timeline_request(&before, &task, &event).unwrap();
+
+    assert!(matches!(task.status, AgentTaskStatus::Cancelled));
+    assert!(task.artifact_ids.is_empty());
+    assert!(artifact.is_none());
+    assert_eq!(timeline.event_type, "worker.late_event_ignored");
+    assert_eq!(timeline.metadata["original_event_type"], "task.result");
+}
+
+#[test]
+fn worker_timeline_event_id_is_stable_for_backend_idempotency() {
+    let before = sample_task(AgentTaskStatus::Running);
+    let mut after = before.clone();
+    let raw = serde_json::json!({
+        "type": "event",
+        "event": "task.progress",
+        "payload": {
+            "task_id": before.id,
+            "stage": "generating",
+            "progress": 0.5,
+            "message": "Generating map",
+            "timestamp": "2026-03-07T00:00:02Z"
+        }
+    })
+    .to_string();
+    let first = parse_worker_event_line(&raw).unwrap();
+    apply_worker_event_to_task(&mut after, &mut WorkerRuntimeState::default(), &first).unwrap();
+    let first_timeline = worker_event_timeline_request(&before, &after, &first).unwrap();
+    let second = parse_worker_event_line(&raw).unwrap();
+    let second_timeline = worker_event_timeline_request(&before, &after, &second).unwrap();
+
+    assert_eq!(first_timeline.event_id, second_timeline.event_id);
+    assert_eq!(first_timeline.created_at, "2026-03-07T00:00:02Z");
+    assert_eq!(first_timeline.metadata["progress"], 0.5);
 }
 
 #[test]

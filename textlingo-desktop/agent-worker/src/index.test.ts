@@ -116,4 +116,78 @@ describe("worker host", () => {
     expect(runAgentTask).toHaveBeenCalledTimes(1);
     expect(events.some((event: any) => event.event === "task.started")).toBe(true);
   });
+
+  it("cancels only the requested running task", async () => {
+    const events: any[] = [];
+    let releaseOtherTask: (() => void) | undefined;
+    const runAgentTask = vi.fn(async (request: any, signal?: AbortSignal) => {
+      if (request.params.task_id === "task-cancel") {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        if (signal?.aborted) {
+          const error = new Error("cancelled");
+          error.name = "AbortError";
+          throw error;
+        }
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        releaseOtherTask = resolve;
+      });
+    });
+    const host = createWorkerHost({
+      workerSessionId: "worker-1",
+      version: "0.1.0",
+      writeEvent: (event) => events.push(event),
+      runAgentTask,
+    });
+
+    const makeRun = (taskId: string) => JSON.stringify({
+      id: `req-${taskId}`,
+      type: "request",
+      method: "agent.run",
+      params: {
+        task_id: taskId,
+        task_type: "assistant.agent_turn",
+        provider_config: {
+          kind: "native_google",
+          provider: "google",
+          model: "gemini-2.0-flash-exp",
+          api_key: "secret",
+        },
+        input: {
+          user_message: "查看当前素材",
+          conversation: [],
+          ui_context: { display_language: "zh-CN" },
+          current_material: null,
+          available_materials: [],
+        },
+      },
+    });
+
+    const cancelledRun = host.handleLine(makeRun("task-cancel"));
+    const otherRun = host.handleLine(makeRun("task-other"));
+    await Promise.resolve();
+    await host.handleLine(JSON.stringify({
+      id: "cancel-1",
+      type: "request",
+      method: "agent.cancel",
+      params: { task_id: "task-cancel" },
+    }));
+    await cancelledRun;
+    expect(events).toContainEqual(expect.objectContaining({
+      event: "task.error",
+      payload: expect.objectContaining({
+        task_id: "task-cancel",
+        code: "task_cancelled",
+      }),
+    }));
+    expect(events.some((event) =>
+      event.event === "task.error" && event.payload?.task_id === "task-other"
+    )).toBe(false);
+
+    releaseOtherTask?.();
+    await otherRun;
+  });
 });

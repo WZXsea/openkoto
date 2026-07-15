@@ -142,6 +142,7 @@ export interface OpenCodePromptRequest {
   prompt: string;
   system: string;
   config: Config;
+  signal?: AbortSignal;
 }
 
 export interface MindMapTaskDeps {
@@ -155,6 +156,16 @@ export interface MindMapTaskDeps {
   ) => void;
   workspaceRoot?: string;
   providerConfig: RuntimeProvider;
+  signal?: AbortSignal;
+}
+
+function throwIfCancelled(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+  const error = new Error("Agent task cancelled");
+  error.name = "AbortError";
+  throw error;
 }
 
 export function buildMindMapWorkspaceFiles(input: MindMapTaskInput): Record<string, string> {
@@ -543,6 +554,7 @@ function extractTextParts(response: SessionPromptResponse) {
 }
 
 export async function runOpenCodePrompt(request: OpenCodePromptRequest) {
+  throwIfCancelled(request.signal);
   const port = await findAvailablePort();
   const { client, server } = await createOpencode({
     hostname: "127.0.0.1",
@@ -550,7 +562,20 @@ export async function runOpenCodePrompt(request: OpenCodePromptRequest) {
     config: request.config,
   });
 
+  let sessionId: string | null = null;
+  const abortSession = () => {
+    if (!sessionId) {
+      return;
+    }
+    void client.session.abort({
+      path: { id: sessionId },
+      query: { directory: request.cwd },
+    });
+  };
+  request.signal?.addEventListener("abort", abortSession, { once: true });
+
   try {
+    throwIfCancelled(request.signal);
     const session = await client.session.create({
       query: {
         directory: request.cwd,
@@ -561,6 +586,14 @@ export async function runOpenCodePrompt(request: OpenCodePromptRequest) {
     });
     if (!session.data || session.error) {
       throw new Error(session.error ? JSON.stringify(session.error) : "Failed to create OpenCode session");
+    }
+    sessionId = session.data.id;
+    if (request.signal?.aborted) {
+      await client.session.abort({
+        path: { id: sessionId },
+        query: { directory: request.cwd },
+      });
+      throwIfCancelled(request.signal);
     }
 
     const response = await client.session.prompt({
@@ -588,13 +621,17 @@ export async function runOpenCodePrompt(request: OpenCodePromptRequest) {
       throw new Error(response.error ? JSON.stringify(response.error) : "OpenCode prompt failed");
     }
 
+    throwIfCancelled(request.signal);
+
     return parsePromptResult(extractTextParts(response.data));
   } finally {
+    request.signal?.removeEventListener("abort", abortSession);
     server.close();
   }
 }
 
 export async function runMindMapTask(input: MindMapTaskInput, deps: MindMapTaskDeps) {
+  throwIfCancelled(deps.signal);
   await deps.reportProgress(input.taskId, "planning", 0.1, "Preparing mind map task");
   const log =
     deps.log ??
@@ -608,6 +645,7 @@ export async function runMindMapTask(input: MindMapTaskInput, deps: MindMapTaskD
   try {
     const resolvedProvider = resolveProviderModel(deps.providerConfig);
     const promptRunner = deps.promptRunner ?? runOpenCodePrompt;
+    throwIfCancelled(deps.signal);
 
     await deps.reportProgress(input.taskId, "starting_agent", 0.2, "Starting OpenCode agent");
     await deps.reportProgress(
@@ -624,14 +662,17 @@ export async function runMindMapTask(input: MindMapTaskInput, deps: MindMapTaskD
       prompt: buildPrompt(input),
       system: buildSystemPrompt(input),
       config: resolvedProvider.config,
+      signal: deps.signal,
     });
 
+    throwIfCancelled(deps.signal);
     log("info", "OpenCode agent returned a final result", "provider");
     await deps.reportProgress(input.taskId, "validating", 0.75, "Validating mind map output");
     const normalized = normalizeMindMapResult(parsePromptResult(result), input);
     const parsed = parseMindMapResult(normalized);
     log("info", "Mind map result validated", "recipe");
     await deps.reportProgress(input.taskId, "saving", 0.9, "Saving mind map artifact");
+    throwIfCancelled(deps.signal);
     const artifact = await deps.saveArtifact(input.taskId, "mind_map", parsed);
     log("info", `Mind map artifact saved: ${artifact.artifact_id}`, "runtime");
 

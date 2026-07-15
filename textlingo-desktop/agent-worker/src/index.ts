@@ -10,6 +10,7 @@ import {
   createTaskResultEvent,
   createWorkerHeartbeatEvent,
   createWorkerReadyEvent,
+  parseAgentCancelRequest,
   parseAgentRunRequest,
 } from "./protocol.js";
 import { runOpenCodePrompt } from "./mindMapTask.js";
@@ -23,8 +24,12 @@ export function createWorkerHost(deps: {
   workerSessionId: string;
   version: string;
   writeEvent: (event: unknown) => void;
-  runAgentTask: (request: ReturnType<typeof parseAgentRunRequest>) => Promise<void>;
+  runAgentTask: (
+    request: ReturnType<typeof parseAgentRunRequest>,
+    signal?: AbortSignal,
+  ) => Promise<void>;
 }) {
+  const activeTasks = new Map<string, AbortController>();
   deps.writeEvent(createWorkerReadyEvent(deps.workerSessionId, "opencode", deps.version));
 
   return {
@@ -37,11 +42,39 @@ export function createWorkerHost(deps: {
       }
 
       try {
+        const cancel = parseAgentCancelRequest(rawLine);
+        activeTasks.get(cancel.params.task_id)?.abort();
+        return;
+      } catch {
+        // Continue with task request parsing.
+      }
+
+      try {
         const request = parseAgentRunRequest(rawLine);
-        await handleAgentRunRequest(request, {
-          writeEvent: deps.writeEvent,
-          runTask: deps.runAgentTask,
-        });
+        const taskId = request.params.task_id;
+        if (activeTasks.has(taskId)) {
+          deps.writeEvent(
+            createTaskErrorEvent(
+              taskId,
+              "duplicate_task",
+              "Agent task is already running",
+            ),
+          );
+          return;
+        }
+        const controller = new AbortController();
+        activeTasks.set(taskId, controller);
+        try {
+          await handleAgentRunRequest(request, {
+            writeEvent: deps.writeEvent,
+            runTask: deps.runAgentTask,
+            signal: controller.signal,
+          });
+        } finally {
+          if (activeTasks.get(taskId) === controller) {
+            activeTasks.delete(taskId);
+          }
+        }
         return;
       } catch {
         // Fall through to legacy request parsing while the old runtime is still being removed.
@@ -78,7 +111,7 @@ async function main() {
     workerSessionId,
     version: "0.1.0",
     writeEvent,
-    async runAgentTask(request) {
+    async runAgentTask(request, signal) {
       await executeAgentRunRequest(request, {
         promptRunner: runOpenCodePrompt,
         workspaceRoot: join(tmpdir(), "textlingo-agent-worker"),
@@ -97,6 +130,7 @@ async function main() {
         writeEvent(event) {
           writeEvent(event);
         },
+        signal,
       });
     },
   });

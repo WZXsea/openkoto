@@ -54,6 +54,7 @@ export interface LearningWorkbenchProps {
   api?: LearningWorkbenchApi;
   materials?: LearningMaterialOption[];
   initialMaterialId?: string;
+  initialItemId?: string;
   onNavigateToSource: (item: LearningWorkbenchItem) => void;
   onError?: (message: string) => void;
   onSuccess?: (message: string) => void;
@@ -110,6 +111,7 @@ export function LearningWorkbench({
   api = defaultLearningWorkbenchApi,
   materials = [],
   initialMaterialId,
+  initialItemId,
   onNavigateToSource,
   onError,
   onSuccess,
@@ -137,6 +139,7 @@ export function LearningWorkbench({
   const [isPreviewPending, setIsPreviewPending] = useState(false);
   const [isMigrationPending, setIsMigrationPending] = useState(false);
   const loadRequestId = useRef(0);
+  const handledInitialItemId = useRef<string | null>(null);
 
   const buildQuery = useCallback((): ListLearningWorkbenchItemsQuery => ({
     status: status === "all" ? undefined : status,
@@ -156,11 +159,24 @@ export function LearningWorkbench({
     try {
       const listed = await api.list(buildQuery());
       if (requestId !== loadRequestId.current) return;
-      setItems(listed);
+      const focusItemId = initialItemId && handledInitialItemId.current !== initialItemId ? initialItemId : undefined;
+      let focusedItem = focusItemId ? listed.find((item) => item.id === focusItemId) : undefined;
+      if (focusItemId && !focusedItem && api.get) {
+        focusedItem = await api.get(focusItemId);
+        if (requestId !== loadRequestId.current) return;
+      }
+      if (focusItemId && focusedItem) handledInitialItemId.current = focusItemId;
+      const visibleItems = focusedItem && !listed.some((item) => item.id === focusedItem.id)
+        ? [focusedItem, ...listed]
+        : listed;
+      setItems(visibleItems);
       setSelectedIds((current) => new Set(Array.from(current).filter((id) => listed.some((item) => item.id === id))));
-      setActiveItemId((current) => current && listed.some((item) => item.id === current)
+      setActiveItemId((current) => focusedItem?.id ?? (current && visibleItems.some((item) => item.id === current)
         ? current
-        : listed[0]?.id ?? null);
+        : visibleItems[0]?.id ?? null));
+      if (focusedItem && status !== focusedItem.status && LEARNING_ITEM_STATUSES.includes(focusedItem.status as CanonicalLearningItemStatus)) {
+        setStatus(focusedItem.status);
+      }
     } catch (reason) {
       if (requestId !== loadRequestId.current) return;
       const message = String(reason);
@@ -169,7 +185,7 @@ export function LearningWorkbench({
     } finally {
       if (requestId === loadRequestId.current) setIsLoading(false);
     }
-  }, [api, buildQuery, onError]);
+  }, [api, buildQuery, initialItemId, onError, status]);
 
   useEffect(() => () => {
     loadRequestId.current += 1;

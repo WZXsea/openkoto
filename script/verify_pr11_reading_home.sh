@@ -79,7 +79,7 @@ info "checking shell syntax, formatting, locales, and version"
 bash -n script/verify_pr11_reading_home.sh
 git diff --check
 node -e 'for (const file of ["en", "ja", "zh"]) JSON.parse(require("fs").readFileSync(`textlingo-desktop/src/locales/${file}.json`, "utf8"))'
-EXPECTED_VERSION=0.9.0 bash script/verify_release_version.sh
+EXPECTED_VERSION="${EXPECTED_VERSION:-0.9.0}" bash script/verify_release_version.sh
 
 info "checking activity heatmap contract"
 for pattern in \

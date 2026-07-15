@@ -45,6 +45,16 @@ export interface AssistantTaskDeps {
   promptRunner?: (request: OpenCodePromptRequest) => Promise<unknown>;
   workspaceRoot?: string;
   providerConfig: RuntimeProvider;
+  signal?: AbortSignal;
+}
+
+function throwIfCancelled(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+  const error = new Error("Agent task cancelled");
+  error.name = "AbortError";
+  throw error;
 }
 
 function extractJsonText(text: string) {
@@ -175,6 +185,7 @@ function createToolLog(
 }
 
 export async function runAssistantTask(input: AssistantTaskInput, deps: AssistantTaskDeps) {
+  throwIfCancelled(deps.signal);
   const log =
     deps.log ??
     ((level: "debug" | "info" | "warn" | "error", message: string) => {
@@ -193,6 +204,7 @@ export async function runAssistantTask(input: AssistantTaskInput, deps: Assistan
   log("info", "Starting assistant agent turn", "provider");
 
   try {
+    throwIfCancelled(deps.signal);
     await deps.reportProgress(input.taskId, "thinking", 0.4, "Understanding the request");
     const result = await promptRunner({
       cwd,
@@ -200,8 +212,10 @@ export async function runAssistantTask(input: AssistantTaskInput, deps: Assistan
       prompt: buildPrompt(input),
       system: buildSystemPrompt(),
       config: resolvedProvider.config,
+      signal: deps.signal,
     });
 
+    throwIfCancelled(deps.signal);
     await deps.reportProgress(input.taskId, "finalizing", 0.8, "Preparing the final response");
     const normalized = normalizeAssistantTaskResult(parsePromptResult(result));
     const parsed = assistantTaskResultSchema.parse(normalized);

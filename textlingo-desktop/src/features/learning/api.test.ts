@@ -72,6 +72,15 @@ describe("learning workbench Tauri adapter", () => {
     expect(result[0].quality_flags).toEqual([]);
   });
 
+  it("loads a linked learning item by id for Assistant navigation", async () => {
+    invoke.mockResolvedValueOnce(createItem({ id: "learning-linked", quality_flags: undefined as never }));
+
+    await expect(createLearningWorkbenchApi().get?.("learning-linked")).resolves.toEqual(
+      expect.objectContaining({ id: "learning-linked", quality_flags: [] }),
+    );
+    expect(invoke).toHaveBeenCalledWith("get_learning_item_cmd", { id: "learning-linked" });
+  });
+
   it("uses the PR-10 update and partial-success bulk command contracts", async () => {
     invoke
       .mockResolvedValueOnce(createItem({ text: "mitigation" }))

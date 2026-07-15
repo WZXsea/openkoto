@@ -13,6 +13,7 @@ import type {
 
 export interface LearningWorkbenchApi {
   list(query?: ListLearningWorkbenchItemsQuery): Promise<LearningWorkbenchItem[]>;
+  get?(id: string): Promise<LearningWorkbenchItem>;
   update(id: string, payload: UpdateLearningWorkbenchItemInput): Promise<LearningWorkbenchItem>;
   bulkOrganize(items: BulkOrganizeLearningItemInput[]): Promise<BulkOrganizeLearningItemsResponse>;
   getDailyReview?(timezoneOffsetMinutes: number): Promise<LearningReview>;
@@ -54,6 +55,7 @@ export function createLearningWorkbenchApi(): LearningWorkbenchApi {
       });
       return items.map(normalizeItem);
     },
+    get: async (id) => normalizeItem(await invoke<LearningWorkbenchItem>("get_learning_item_cmd", { id })),
     update: async (id, payload) => normalizeItem(await invoke<LearningWorkbenchItem>("update_learning_item_cmd", {
       id,
       payload,

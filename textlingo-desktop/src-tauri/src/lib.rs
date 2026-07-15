@@ -1,6 +1,7 @@
 // Modules
 pub mod agent_worker;
 mod ai_service;
+pub mod assistant;
 pub mod backend_client;
 pub mod commands;
 pub mod data_backup;
@@ -88,6 +89,7 @@ pub fn run() {
             commands::update_article_segment,
             commands::delete_article_cmd,
             commands::list_learning_items_cmd,
+            commands::get_learning_item_cmd,
             commands::create_learning_item_cmd,
             commands::create_learning_item_from_selection_cmd,
             commands::update_learning_item_cmd,
@@ -120,6 +122,15 @@ pub fn run() {
             commands::get_artifact_cmd,
             commands::get_agent_worker_status_cmd,
             commands::stop_agent_worker_cmd,
+            assistant::commands::assistant_task_list_cmd,
+            assistant::commands::assistant_task_detail_cmd,
+            assistant::commands::assistant_task_timeline_cmd,
+            assistant::commands::assistant_task_cancel_cmd,
+            assistant::commands::assistant_task_retry_cmd,
+            assistant::commands::assistant_task_artifacts_cmd,
+            assistant::commands::assistant_artifact_detail_cmd,
+            assistant::commands::assistant_action_execute_cmd,
+            assistant::commands::assistant_task_actions_cmd,
             // AI operations
             commands::translate_text,
             commands::analyze_text,

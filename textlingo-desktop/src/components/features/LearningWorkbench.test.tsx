@@ -66,6 +66,26 @@ function createApi(items: LearningWorkbenchItem[] = [createItem()]): LearningWor
 afterEach(cleanup);
 
 describe("LearningWorkbench", () => {
+  it("focuses a linked learning item even when it is outside the default candidate filter", async () => {
+    const candidate = createItem();
+    const accepted = createItem({ id: "learning-linked", text: "linked evidence", status: "accepted" });
+    const api = createApi([candidate, accepted]);
+    api.get = vi.fn().mockResolvedValue(accepted);
+    vi.mocked(api.list).mockImplementation(async (query) => query?.status === "accepted" ? [accepted] : [candidate]);
+
+    render(
+      <LearningWorkbench
+        api={api}
+        initialItemId="learning-linked"
+        onNavigateToSource={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByDisplayValue("linked evidence")).toBeInTheDocument();
+    expect(api.get).toHaveBeenCalledWith("learning-linked");
+    await waitFor(() => expect(screen.getByLabelText("筛选状态")).toHaveValue("accepted"));
+  });
+
   it("loads candidates, filters through the API, and preserves source evidence navigation", async () => {
     const api = createApi();
     const onNavigateToSource = vi.fn();

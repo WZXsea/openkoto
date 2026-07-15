@@ -1306,36 +1306,7 @@ async fn import_artifact(
     payload: ArtifactDto,
 ) -> Result<ImportedTarget, AppError> {
     ensure_agent_task_for_artifact(pool, user_id, &payload).await?;
-    sqlx::query(
-        r#"
-        INSERT INTO artifacts (
-            user_id, id, task_id, article_id, artifact_type, version, content, metadata,
-            created_at, updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        ON CONFLICT (user_id, id) DO UPDATE
-        SET task_id = EXCLUDED.task_id,
-            article_id = EXCLUDED.article_id,
-            artifact_type = EXCLUDED.artifact_type,
-            version = EXCLUDED.version,
-            content = EXCLUDED.content,
-            metadata = EXCLUDED.metadata,
-            created_at = EXCLUDED.created_at,
-            updated_at = EXCLUDED.updated_at
-        "#,
-    )
-    .bind(user_id)
-    .bind(&payload.id)
-    .bind(&payload.task_id)
-    .bind(&payload.article_id)
-    .bind(payload.artifact_type)
-    .bind(payload.version)
-    .bind(payload.content)
-    .bind(payload.metadata)
-    .bind(payload.created_at)
-    .bind(payload.updated_at)
-    .execute(pool)
-    .await?;
+    crate::assistant::upsert_worker_artifact(pool, user_id, payload.clone()).await?;
 
     Ok(ImportedTarget {
         kind: "artifact",
@@ -1501,71 +1472,7 @@ async fn upsert_agent_task(
     user_id: Uuid,
     payload: &AgentTaskDto,
 ) -> Result<(), AppError> {
-    validate_required(
-        &payload.id,
-        "invalid_legacy_agent_task",
-        "agent task id is required",
-    )?;
-    validate_required(
-        &payload.article_id,
-        "invalid_legacy_agent_task",
-        "agent task article id is required",
-    )?;
-    if !payload.input.is_object() {
-        return Err(AppError::bad_request(
-            "invalid_legacy_agent_task",
-            "agent task input must be an object",
-        ));
-    }
-
-    sqlx::query(
-        r#"
-        INSERT INTO agent_tasks (
-            user_id, id, task_type, status, article_id, input, progress, stage, message, error,
-            worker_session_id, artifact_ids, created_at, updated_at, started_at, finished_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-        ON CONFLICT (user_id, id) DO UPDATE
-        SET task_type = EXCLUDED.task_type,
-            status = EXCLUDED.status,
-            article_id = EXCLUDED.article_id,
-            input = EXCLUDED.input,
-            progress = EXCLUDED.progress,
-            stage = EXCLUDED.stage,
-            message = EXCLUDED.message,
-            error = EXCLUDED.error,
-            worker_session_id = EXCLUDED.worker_session_id,
-            artifact_ids = (
-                SELECT COALESCE(jsonb_agg(value ORDER BY value), '[]'::jsonb)
-                FROM (
-                    SELECT DISTINCT value
-                    FROM jsonb_array_elements_text(agent_tasks.artifact_ids || EXCLUDED.artifact_ids) AS merged(value)
-                ) merged_values
-            ),
-            updated_at = EXCLUDED.updated_at,
-            started_at = COALESCE(agent_tasks.started_at, EXCLUDED.started_at),
-            finished_at = EXCLUDED.finished_at
-        "#,
-    )
-    .bind(user_id)
-    .bind(&payload.id)
-    .bind(&payload.task_type)
-    .bind(&payload.status)
-    .bind(&payload.article_id)
-    .bind(&payload.input)
-    .bind(payload.progress.clamp(0.0, 1.0))
-    .bind(&payload.stage)
-    .bind(&payload.message)
-    .bind(&payload.error)
-    .bind(&payload.worker_session_id)
-    .bind(serde_json::json!(payload.artifact_ids))
-    .bind(&payload.created_at)
-    .bind(&payload.updated_at)
-    .bind(&payload.started_at)
-    .bind(&payload.finished_at)
-    .execute(pool)
-    .await?;
-
+    crate::assistant::upsert_worker_task(pool, user_id, payload.clone()).await?;
     Ok(())
 }
 
@@ -1597,7 +1504,7 @@ async fn ensure_agent_task_for_artifact(
         task_type: "mind_map_generate".to_string(),
         status: "succeeded".to_string(),
         article_id: artifact.article_id.clone(),
-        input,
+        input: input.clone(),
         progress: 1.0,
         stage: Some("legacy_import".to_string()),
         message: Some("Synthetic task created for legacy artifact import".to_string()),
@@ -1608,6 +1515,12 @@ async fn ensure_agent_task_for_artifact(
         updated_at: artifact.updated_at.clone(),
         started_at: Some(artifact.created_at.clone()),
         finished_at: Some(artifact.updated_at.clone()),
+        root_task_id: Some(artifact.task_id.clone()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: Some(input),
+        output_version: 1,
+        legacy_status: None,
     };
     upsert_agent_task(pool, user_id, &task).await
 }

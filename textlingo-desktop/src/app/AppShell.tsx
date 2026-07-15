@@ -19,6 +19,7 @@ import { useAgentOpenMaterialListener } from "../lib/hooks/useAgentOpenMaterialL
 import { isPhase1CapabilityEnabled } from "../lib/phase1Capabilities";
 import type { Article, AppConfig, BackendSessionCheck } from "../lib/tauri";
 import type { Annotation } from "../types";
+import type { AssistantSourceReference } from "../features/assistant";
 import { useAppStore } from "./appStore";
 import { APP_NAVIGATION_ITEMS } from "./navigation";
 import { AppRoutes } from "./routes";
@@ -91,6 +92,7 @@ export function AppShell() {
     openArticle,
     openArticleById,
     openAnnotationSource,
+    openLearningItem,
     prependArticleIfMissing,
     refreshSelectedArticle,
     setArticles,
@@ -430,7 +432,7 @@ export function AppShell() {
 
   const handleSelectArticle = useCallback((article: Article) => {
     openArticle(article, {
-      returnScreen: store.activeScreen === "materials" || store.activeScreen === "favorites" || store.activeScreen === "learning" || store.activeScreen === "annotations"
+      returnScreen: store.activeScreen === "materials" || store.activeScreen === "assistant" || store.activeScreen === "favorites" || store.activeScreen === "learning" || store.activeScreen === "annotations"
         ? store.activeScreen
         : "home",
     });
@@ -451,6 +453,44 @@ export function AppShell() {
         console.error("Failed to open annotation source:", error);
       });
   }, [openAnnotationSource, prependArticleIfMissing, store.articles]);
+
+  const handleNavigateAssistantSource = useCallback((reference: AssistantSourceReference) => {
+    if (reference.target === "learning_item") {
+      openLearningItem(reference.learningItemId);
+      return;
+    }
+    const openSource = (article: Article) => {
+      prependArticleIfMissing(article);
+      if (!reference.locator) {
+        openArticle(article, { returnScreen: "assistant" });
+        return;
+      }
+      const now = new Date().toISOString();
+      const annotation: Annotation = {
+        id: `assistant-source:${reference.articleId}:task`,
+        material_id: reference.articleId,
+        kind: "excerpt",
+        locator: reference.locator,
+        source_text: reference.locator.quote?.exact ?? "",
+        tags: [],
+        learning_item_id: null,
+        created_at: now,
+        updated_at: now,
+      };
+      openAnnotationSource(article, annotation, { returnScreen: "assistant" });
+    };
+
+    const existing = store.articles.find((article) => article.id === reference.articleId);
+    if (existing) {
+      openSource(existing);
+      return;
+    }
+    void invoke<Article>("get_article", { id: reference.articleId })
+      .then(openSource)
+      .catch((error) => {
+        console.error("Failed to open Assistant source:", error);
+      });
+  }, [openAnnotationSource, openArticle, openLearningItem, prependArticleIfMissing, store.articles]);
 
   const handleArticleUpdate = useCallback(async () => {
     const refreshedArticles = await loadData();
@@ -494,9 +534,10 @@ export function AppShell() {
     );
   }
 
-  const navigateTo = (screen: "home" | "materials" | "learning" | "annotations") => {
+  const navigateTo = (screen: "home" | "materials" | "assistant" | "learning" | "annotations") => {
     if (screen === "home") store.goHome();
     else if (screen === "materials") store.openMaterials();
+    else if (screen === "assistant") store.openAssistant();
     else if (screen === "learning") store.openLearning();
     else store.openAnnotations();
   };
@@ -531,7 +572,7 @@ export function AppShell() {
                   aria-current={active ? "page" : undefined}
                   aria-label={label}
                   title={label}
-                  onClick={() => navigateTo(item.id as "home" | "materials" | "learning" | "annotations")}
+                  onClick={() => navigateTo(item.id as "home" | "materials" | "assistant" | "learning" | "annotations")}
                   className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring ${active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"}`}
                 >
                   <Icon size={18} className="shrink-0" /><span className="hidden md:inline">{label}</span>
@@ -569,6 +610,7 @@ export function AppShell() {
           articles={store.articles}
           canUseKtvExport={canUseKtvExport}
           isLoading={store.isLoading}
+          focusedLearningItemId={store.focusedLearningItemId}
           selectedArticle={store.selectedArticle}
           selectedIndex={store.selectedIndex}
           viewMode={store.viewMode}
@@ -586,6 +628,7 @@ export function AppShell() {
           onOpenMaterials={store.openMaterials}
           onNextArticle={store.openNextArticle}
           onNavigateAnnotationSource={handleNavigateAnnotationSource}
+          onNavigateAssistantSource={handleNavigateAssistantSource}
           onOpenKtvExport={store.openKtvExport}
           onPreviousArticle={store.openPreviousArticle}
           onRefresh={loadData}
