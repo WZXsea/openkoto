@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 import { ArticleReader } from "../components/features/ArticleReader";
 import { AnnotationWorkbench } from "../components/features/AnnotationWorkbench";
@@ -13,6 +14,7 @@ import { createAnnotationsApi } from "../features/annotations";
 import type { AssistantSourceReference } from "../features/assistant";
 import type { Article } from "../lib/tauri";
 import { createMaterialsApi } from "../features/materials/api";
+import { materialEditorApi } from "../features/editor";
 import type { MaterialArticle, MaterialFilters } from "../features/materials/types";
 import {
   toSourceLocator,
@@ -210,6 +212,13 @@ export function AppRoutes({
     }
   }, [annotationsApi, selectedArticle]);
 
+  const handleOpenEditableDerivative = useCallback(async () => {
+    if (!selectedArticle) return;
+    const result = await materialEditorApi.createEditableDerivative(selectedArticle.id);
+    const derivative = await invoke<Article>("get_article", { id: result.derivative_material_id });
+    onSelectArticle(derivative);
+  }, [onSelectArticle, selectedArticle]);
+
   if (selectedArticle) {
     if (activeScreen === "ktv-export" && canUseKtvExport) {
       return <KtvExportPage article={selectedArticle} onBack={onBackToReader} />;
@@ -224,7 +233,7 @@ export function AppRoutes({
         <>
           {progressError && <p className="px-4 pt-3 text-sm text-destructive" role="alert">阅读进度未保存：{progressError}</p>}
           {annotationMessage && <p className="px-4 pt-2 text-xs text-muted-foreground" role="status">{annotationMessage}</p>}
-          <BookReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onUpdate={onArticleUpdate} initialProgress={initialProgress} onProgressChange={handleReadingProgress} annotation={readerAnnotation} onAnnotationResolved={handleAnnotationResolved} onAnnotationDraftCreated={handleAnnotationDraftCreated} />
+          <BookReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onUpdate={onArticleUpdate} initialProgress={initialProgress} onProgressChange={handleReadingProgress} annotation={readerAnnotation} onAnnotationResolved={handleAnnotationResolved} onAnnotationDraftCreated={handleAnnotationDraftCreated} onOpenEditableDerivative={handleOpenEditableDerivative} />
         </>
       );
     }
@@ -233,7 +242,7 @@ export function AppRoutes({
       <>
         {progressError && <p className="px-4 pt-3 text-sm text-destructive" role="alert">阅读进度未保存：{progressError}</p>}
         {annotationMessage && <p className="px-4 pt-2 text-xs text-muted-foreground" role="status">{annotationMessage}</p>}
-        <ArticleReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onNext={onNextArticle} onPrev={onPreviousArticle} hasNext={selectedIndex < articles.length - 1} hasPrev={selectedIndex > 0} onUpdate={onArticleUpdate} onOpenKtvExport={canUseKtvExport ? onOpenKtvExport : undefined} initialProgress={initialProgress} onProgressChange={handleReadingProgress} annotation={readerAnnotation} onAnnotationResolved={handleAnnotationResolved} onAnnotationDraftCreated={handleAnnotationDraftCreated} onNavigateAssistantSource={onNavigateAssistantSource} />
+        <ArticleReader key={selectedArticle.id} article={selectedArticle} onBack={onBackToList} onNext={onNextArticle} onPrev={onPreviousArticle} hasNext={selectedIndex < articles.length - 1} hasPrev={selectedIndex > 0} onUpdate={onArticleUpdate} onOpenKtvExport={canUseKtvExport ? onOpenKtvExport : undefined} initialProgress={initialProgress} onProgressChange={handleReadingProgress} annotation={readerAnnotation} onAnnotationResolved={handleAnnotationResolved} onAnnotationDraftCreated={handleAnnotationDraftCreated} materialRevision={selectedArticle.current_revision !== undefined ? String(selectedArticle.current_revision) : selectedArticle.material_revision} contentSha256={selectedArticle.content_sha256} onNavigateAssistantSource={onNavigateAssistantSource} />
       </>
     );
   }

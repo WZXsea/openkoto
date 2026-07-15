@@ -10,8 +10,8 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use crate::{
-    annotations, assistant, auth, config::AppConfig, error::AppError, files, learning,
-    learning_activity, learning_items, legacy_imports, material_library, materials,
+    annotations, assistant, auth, config::AppConfig, document_editing, error::AppError, files,
+    learning, learning_activity, learning_items, legacy_imports, material_library, materials,
 };
 
 #[derive(Clone)]
@@ -90,6 +90,40 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/materials/{id}/learning-review",
             get(learning_activity::get_material_learning_review),
+        )
+        .route(
+            "/materials/{id}/document",
+            get(document_editing::get_document).put(document_editing::commit_document_edit),
+        )
+        .route(
+            "/materials/{id}/document/preview",
+            post(document_editing::preview_document_edit),
+        )
+        .route(
+            "/materials/{id}/document/draft",
+            get(document_editing::get_draft)
+                .put(document_editing::put_draft)
+                .delete(document_editing::delete_draft),
+        )
+        .route(
+            "/materials/{id}/revisions",
+            get(document_editing::list_revisions),
+        )
+        .route(
+            "/materials/{id}/revisions/{revision}",
+            get(document_editing::get_revision),
+        )
+        .route(
+            "/materials/{id}/revisions/{revision}/restore",
+            post(document_editing::restore_revision),
+        )
+        .route(
+            "/materials/{id}/segments/derived",
+            axum::routing::patch(document_editing::patch_segment_derived),
+        )
+        .route(
+            "/materials/{id}/editable-derivative",
+            post(document_editing::create_editable_derivative),
         )
         .route(
             "/materials/{id}",

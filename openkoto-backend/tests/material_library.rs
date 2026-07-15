@@ -1193,7 +1193,7 @@ async fn material_patch_preserves_omitted_sources_and_clears_explicit_null_sourc
     assert_eq!(preserved["book_path"], material["book_path"]);
     assert_eq!(preserved["book_type"], material["book_type"]);
 
-    let (status, replaced) = json_request(
+    let (status, deprecated_write) = json_request(
         ctx.app.clone(),
         Method::PATCH,
         &format!("/materials/{material_id}"),
@@ -1210,7 +1210,28 @@ async fn material_patch_preserves_omitted_sources_and_clears_explicit_null_sourc
         Some(&token),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "replace failed: {replaced}");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        deprecated_write["error"]["code"],
+        "deprecated_document_write"
+    );
+
+    let (status, replaced) = json_request(
+        ctx.app.clone(),
+        Method::PATCH,
+        &format!("/materials/{material_id}"),
+        json!({
+            "title": "Replacement article",
+            "source_type": "article",
+            "source_url": null,
+            "media_path": null,
+            "book_path": null,
+            "book_type": null
+        }),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "source patch failed: {replaced}");
     assert_eq!(replaced["source_type"], "article");
     assert!(replaced["source_url"].is_null());
     assert!(replaced["media_path"].is_null());

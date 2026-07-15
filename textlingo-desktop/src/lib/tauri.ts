@@ -226,7 +226,8 @@ export type TauriCommand = {
     segmentId: string,
     explanation?: any,
     reading?: string,
-    translation?: string
+    translation?: string,
+    expectedTextSha256?: string
   ) => Promise<Article>;
   delete_article_cmd: (id: string) => Promise<void>;
   list_learning_items_cmd: (query?: ListLearningItemsQuery) => Promise<LearningItem[]>;

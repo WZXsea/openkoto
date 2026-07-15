@@ -3,6 +3,7 @@ pub mod assistant;
 pub mod auth;
 pub mod config;
 pub mod database;
+pub mod document_editing;
 pub mod error;
 pub mod files;
 pub mod learning;

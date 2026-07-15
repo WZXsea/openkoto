@@ -618,7 +618,7 @@ async fn validate_segment(
         r#"
         SELECT EXISTS(
             SELECT 1 FROM material_segments
-            WHERE user_id = $1 AND material_id = $2 AND id = $3
+            WHERE user_id = $1 AND material_id = $2 AND id = $3 AND deleted_at IS NULL
         )
         "#,
     )
@@ -1213,7 +1213,7 @@ async fn fetch_conversion_source_sentence(
         return Ok(fallback.to_string());
     };
     Ok(sqlx::query_scalar::<_, String>(
-        "SELECT text FROM material_segments WHERE user_id = $1 AND id = $2",
+        "SELECT text FROM material_segments WHERE user_id = $1 AND id = $2 AND deleted_at IS NULL",
     )
     .bind(user_id)
     .bind(segment_id)

@@ -993,6 +993,8 @@ pub struct ArticleSegment {
     pub article_id: String,
     pub order: i32,
     pub text: String,
+    #[serde(default)]
+    pub text_sha256: Option<String>,
     pub reading_text: Option<String>,
     pub translation: Option<String>,
     pub explanation: Option<SegmentExplanation>,

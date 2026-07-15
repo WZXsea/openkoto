@@ -18,6 +18,10 @@ use crate::backend_client::{
     PatchMaterialRequest, RecordLocalPreviewRequest, UpdateAnnotationRequest,
     UpdateLearningItemRequest,
 };
+use crate::document_editor::{
+    article_patch_payload, commit_article_content, persist_article_derived_fields,
+    replace_backend_media_subtitles_legacy, replace_import_document,
+};
 use crate::feature_gate::require_external_tools_enabled;
 use crate::ktv_export::{export_ktv_video, prepare_ktv_segments, KtvExportConfig, KtvExportResult};
 use crate::moonshot::is_moonshot_provider;
@@ -1732,13 +1736,41 @@ where
                     for segment in &mut prepared.article.segments {
                         segment.article_id = duplicate.material_id.clone();
                     }
-                    client
-                        .patch_material_replacing_source_fields_with_file_hash(
+                    if matches!(
+                        existing.source_type.as_deref(),
+                        Some("youtube" | "local_video" | "audio")
+                    ) {
+                        client
+                            .patch_material_replacing_source_fields_with_file_hash(
+                                &duplicate.material_id,
+                                &article_patch_payload(&prepared.article),
+                                final_file_hash.as_deref(),
+                            )
+                            .await
+                    } else {
+                        match replace_import_document(
+                            &client,
                             &duplicate.material_id,
-                            &patch_material_payload_from_article(&prepared.article),
-                            final_file_hash.as_deref(),
+                            &prepared.article.content,
+                            &job.id,
                         )
                         .await
+                        {
+                            Ok(()) => {
+                                let mut metadata_patch = article_patch_payload(&prepared.article);
+                                metadata_patch.content = None;
+                                metadata_patch.segments = None;
+                                client
+                                    .patch_material_replacing_source_fields_with_file_hash(
+                                        &duplicate.material_id,
+                                        &metadata_patch,
+                                        final_file_hash.as_deref(),
+                                    )
+                                    .await
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
                 }
                 Err(error) => Err(error),
             }
@@ -1915,33 +1947,6 @@ fn create_material_payload_from_article(
     }
 }
 
-fn patch_material_payload_from_article(article: &Article) -> PatchMaterialRequest {
-    PatchMaterialRequest {
-        title: Some(article.title.clone()),
-        content: Some(article.content.clone()),
-        source_type: article.source_type.clone(),
-        source_url: article.source_url.clone(),
-        media_path: article.media_path.clone(),
-        book_path: article.book_path.clone(),
-        book_type: article.book_type.clone(),
-        translated: Some(article.translated),
-        active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
-        metadata: Some(article.metadata.clone()),
-        segments: Some(article.segments.clone()),
-    }
-}
-
-async fn replace_backend_article(
-    app_handle: &AppHandle,
-    article: &Article,
-) -> Result<Article, String> {
-    let client = backend_client_for_app(app_handle)?;
-    client
-        .patch_material(&article.id, &patch_material_payload_from_article(article))
-        .await
-        .map_err(backend_error_to_string)
-}
-
 // Helper function to create segments from content
 // 按句子分隔内容（使用.或。作为分隔符），并标记是否需要换行
 fn create_segments_from_content(article_id: &str, content: &str) -> Vec<ArticleSegment> {
@@ -1971,6 +1976,7 @@ fn create_segments_from_content(article_id: &str, content: &str) -> Vec<ArticleS
                 article_id: article_id.to_string(),
                 order,
                 text: text.to_string(),
+                text_sha256: None,
                 reading_text: None,
                 translation: None,
                 explanation: None,
@@ -2572,7 +2578,16 @@ pub async fn artifact_save_cmd(
     .await?;
     let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
     article.active_mind_map_artifact_id = Some(artifact.id.clone());
-    let _ = replace_backend_article(&app_handle, &article).await?;
+    backend_client_for_app(&app_handle)?
+        .patch_material(
+            &article.id,
+            &PatchMaterialRequest {
+                active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(backend_error_to_string)?;
     Ok(artifact)
 }
 
@@ -3268,10 +3283,8 @@ pub async fn resegment_article(
     app_handle: AppHandle,
     article_id: String,
 ) -> Result<Article, String> {
-    let mut article = get_article(app_handle.clone(), article_id).await?;
-
-    article.segments = create_segments_from_content(&article.id, &article.content);
-    replace_backend_article(&app_handle, &article).await
+    let article = get_article(app_handle.clone(), article_id.clone()).await?;
+    commit_article_content(&app_handle, &article_id, &article.content).await
 }
 
 #[tauri::command]
@@ -3301,22 +3314,22 @@ pub async fn update_article(
     source_url: Option<String>,
     translated: Option<bool>,
 ) -> Result<Article, String> {
-    let mut article = get_article(app_handle.clone(), id.clone()).await?;
-
-    if let Some(t) = title {
-        article.title = t;
+    let client = backend_client_for_app(&app_handle)?;
+    if let Some(content) = content {
+        commit_article_content(&app_handle, &id, &content).await?;
     }
-    if let Some(c) = content {
-        article.content = c;
-    }
-    if let Some(s) = source_url {
-        article.source_url = Some(s);
-    }
-    if let Some(t) = translated {
-        article.translated = t;
-    }
-
-    replace_backend_article(&app_handle, &article).await
+    client
+        .patch_material(
+            &id,
+            &PatchMaterialRequest {
+                title,
+                source_url,
+                translated,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(backend_error_to_string)
 }
 
 #[tauri::command]
@@ -3553,27 +3566,45 @@ pub async fn update_article_segment(
     app_handle: AppHandle,
     article_id: String,
     segment_id: String,
+    expected_text_sha256: Option<String>,
     explanation: Option<crate::types::SegmentExplanation>,
     reading: Option<String>,
     translation: Option<String>,
 ) -> Result<Article, String> {
-    let mut article = get_article(app_handle.clone(), article_id.clone()).await?;
-
-    if let Some(segment) = article.segments.iter_mut().find(|s| s.id == segment_id) {
-        if let Some(exp) = explanation {
-            segment.explanation = Some(exp);
-        }
-        if let Some(read) = reading {
-            segment.reading_text = Some(read);
-        }
-        if let Some(trans) = translation {
-            segment.translation = Some(trans);
-        }
-    } else {
-        return Err("Segment not found".to_string());
+    let mut update = serde_json::Map::from_iter([(
+        "segment_id".to_string(),
+        serde_json::Value::String(segment_id),
+    )]);
+    if let Some(expected_text_sha256) = expected_text_sha256 {
+        update.insert(
+            "expected_text_sha256".to_string(),
+            serde_json::Value::String(expected_text_sha256),
+        );
     }
-
-    replace_backend_article(&app_handle, &article).await
+    if let Some(reading) = reading {
+        update.insert(
+            "reading_text".to_string(),
+            serde_json::Value::String(reading),
+        );
+    }
+    if let Some(translation) = translation {
+        update.insert(
+            "translation".to_string(),
+            serde_json::Value::String(translation),
+        );
+    }
+    if let Some(explanation) = explanation {
+        update.insert(
+            "explanation".to_string(),
+            serde_json::to_value(explanation).map_err(|error| error.to_string())?,
+        );
+    }
+    let payload = serde_json::json!({ "updates": [update] });
+    backend_client_for_app(&app_handle)?
+        .update_segment_derived(&article_id, &payload)
+        .await
+        .map_err(backend_error_to_string)?;
+    get_article(app_handle, article_id).await
 }
 
 // AI commands
@@ -3737,7 +3768,7 @@ pub async fn translate_article(
     );
     article.translated = true;
 
-    replace_backend_article(&app_handle, &article).await
+    persist_article_derived_fields(&app_handle, &article).await
 }
 
 #[tauri::command]
@@ -4945,7 +4976,7 @@ pub async fn import_article_subtitles_cmd(
         "import_job_id".to_string(),
         serde_json::json!(job.id.clone()),
     );
-    let updated = match replace_backend_article(&app_handle, &article).await {
+    let updated = match replace_backend_media_subtitles_legacy(&app_handle, &article).await {
         Ok(article) => article,
         Err(error) => {
             mark_import_job_failed(
@@ -5034,7 +5065,7 @@ pub async fn prepare_ktv_segments_cmd(
     let article = get_article(app_handle.clone(), article_id.clone()).await?;
 
     let prepared = prepare_ktv_segments(article, language_hint.as_deref())?;
-    replace_backend_article(&app_handle, &prepared).await
+    persist_article_derived_fields(&app_handle, &prepared).await
 }
 
 #[tauri::command]
@@ -5198,7 +5229,7 @@ pub async fn extract_subtitles_cmd(
         .collect::<Vec<_>>()
         .join(" ");
 
-    let updated = replace_backend_article(&app_handle, &article).await?;
+    let updated = replace_backend_media_subtitles_legacy(&app_handle, &article).await?;
 
     println!("[ExtractSubtitles] 字幕提取完成并保存");
 
@@ -5694,7 +5725,7 @@ pub async fn delete_article_subtitles_cmd(app_handle: AppHandle, id: String) -> 
     article.segments = Vec::new();
     article.translated = false;
 
-    let _ = replace_backend_article(&app_handle, &article).await?;
+    let _ = replace_backend_media_subtitles_legacy(&app_handle, &article).await?;
     Ok(())
 }
 
@@ -5708,7 +5739,7 @@ pub async fn delete_article_analysis_cmd(app_handle: AppHandle, id: String) -> R
     }
     article.translated = false;
 
-    let _ = replace_backend_article(&app_handle, &article).await?;
+    let _ = persist_article_derived_fields(&app_handle, &article).await?;
     Ok(())
 }
 

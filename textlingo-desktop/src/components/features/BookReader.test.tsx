@@ -162,6 +162,20 @@ describe("BookReader", () => {
     expect(screen.getByTestId("article-mind-map-panel")).toBeInTheDocument();
   });
 
+  it("keeps the imported original immutable and opens an editable derivative through the route callback", async () => {
+    const onOpenEditableDerivative = vi.fn().mockResolvedValue(undefined);
+    render(
+      <BookReader
+        article={createBookArticle({ book_type: "pdf", book_path: "/tmp/book.pdf" })}
+        onOpenEditableDerivative={onOpenEditableDerivative}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "创建或打开可编辑副本" }));
+    expect(onOpenEditableDerivative).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("pdf-reader")).toBeInTheDocument();
+  });
+
   it("passes the reading-progress contract through to the active book reader", async () => {
     const onProgressChange = vi.fn();
     render(

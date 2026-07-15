@@ -14,6 +14,16 @@ export interface Article {
     book_type?: "epub" | "txt" | "pdf";
     created_at: string;
     translated: boolean;
+    /** 当前正文修订标识，用于编辑冲突检测与批注重定位。 */
+    material_revision?: string;
+    /** 后端规范正文的单调修订号。 */
+    current_revision?: number;
+    /** 当前规范化正文的 SHA-256。 */
+    content_sha256?: string;
+    updated_at?: string;
+    content_updated_at?: string | null;
+    /** 存在时表示当前素材是该不可变原件的可编辑派生稿。 */
+    editable_source_material_id?: string | null;
     active_mind_map_artifact_id?: string;
     segments?: ArticleSegment[];
     metadata?: Record<string, unknown>;
@@ -356,6 +366,7 @@ export interface ArticleSegment {
     article_id: string;
     order: number;
     text: string;
+    text_sha256?: string;
     reading_text?: string;
     translation?: string;
     explanation?: SegmentExplanation;

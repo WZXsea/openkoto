@@ -110,6 +110,52 @@ function Progress({ article }: { article: MaterialArticle }) {
   );
 }
 
+function groupEditableDerivatives(articles: MaterialArticle[]): MaterialArticle[] {
+  const bySource = new Map<string, MaterialArticle[]>();
+  const derivatives = new Set<string>();
+  for (const article of articles) {
+    if (!article.editable_source_material_id) continue;
+    derivatives.add(article.id);
+    const group = bySource.get(article.editable_source_material_id) ?? [];
+    group.push(article);
+    bySource.set(article.editable_source_material_id, group);
+  }
+  const grouped: MaterialArticle[] = [];
+  for (const article of articles) {
+    if (derivatives.has(article.id)) continue;
+    grouped.push(article, ...(bySource.get(article.id) ?? []));
+  }
+  for (const article of articles) {
+    if (derivatives.has(article.id) && !grouped.some((item) => item.id === article.id)) grouped.push(article);
+  }
+  return grouped;
+}
+
+function EditableRelation({
+  source,
+  hasDerivative,
+  onSelectArticle,
+}: {
+  source?: Article;
+  hasDerivative: boolean;
+  onSelectArticle: (article: Article) => void;
+}) {
+  if (source) {
+    return (
+      <button
+        type="button"
+        className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] text-primary hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => onSelectArticle(source)}
+        aria-label={`打开原件 ${source.title}`}
+      >
+        <Pencil size={11} /><span>可编辑稿</span><span className="truncate text-muted-foreground">· 原件：{source.title}</span>
+      </button>
+    );
+  }
+  if (!hasDerivative) return null;
+  return <span className="mt-1 inline-flex rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">原件 · 已有可编辑稿</span>;
+}
+
 export function ArticleList({
   articles,
   isLoading,
@@ -138,7 +184,15 @@ export function ArticleList({
   const [maintainingId, setMaintainingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const visibleArticles = useMemo(() => filterAndSortMaterials(articles, filters), [articles, filters]);
+  const visibleArticles = useMemo(
+    () => groupEditableDerivatives(filterAndSortMaterials(articles, filters)),
+    [articles, filters],
+  );
+  const articlesById = useMemo(() => new Map(articles.map((article) => [article.id, article])), [articles]);
+  const sourceIdsWithDerivative = useMemo(
+    () => new Set(articles.flatMap((article) => article.editable_source_material_id ? [article.editable_source_material_id] : [])),
+    [articles],
+  );
   const continueReading = useMemo(() => getContinueReadingMaterials(articles), [articles]);
   const tags = useMemo(() => getMaterialTags(articles), [articles]);
   const hasFilters = filters.query !== "" || filters.type !== "all" || filters.readingStatus !== "all" || filters.tag !== "all" || filters.createdFrom !== "" || filters.createdTo !== "" || filters.sort !== "recent";
@@ -335,12 +389,16 @@ export function ArticleList({
                   const lastOpened = getMaterialOpenedAt(article);
                   const tags = getMaterialTagLabels(article);
                   const isMedia = type === "video" || type === "audio";
+                  const editableSource = article.editable_source_material_id ? articlesById.get(article.editable_source_material_id) : undefined;
                   return (
                     <article key={article.id} className={`grid min-w-0 grid-cols-[32px_minmax(0,1fr)_36px] items-start gap-2 px-3 py-3 lg:grid-cols-[36px_minmax(220px,1fr)_minmax(120px,0.55fr)_minmax(150px,0.7fr)_132px_40px] lg:items-center lg:gap-3 ${selectedId === article.id ? "bg-primary/5" : "hover:bg-muted/30"}`}>
                       <input aria-label={`${t("materials.select", "选择")} ${article.title}`} type="checkbox" checked={isSelected} onClick={(event) => event.stopPropagation()} onChange={() => toggleSelected(article.id)} />
-                      <button type="button" onClick={() => onSelectArticle(article)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                        <span className="flex min-w-0 items-start gap-2"><MaterialTypeIcon type={type} /><span className="min-w-0"><span className="block break-words text-sm font-medium">{article.title || t("articleList.untitled", "未命名素材")}</span><span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"><span>{typeLabels[type]}</span>{article.import_status === "failed" && <span className="break-words text-destructive">{article.import_error || t("materials.importFailed", "导入失败")}</span>}{article.import_status === "importing" && <span>{t("materials.importing", "导入中")}</span>}<Progress article={article} /></span><span className="mt-1 block break-all text-xs text-muted-foreground lg:hidden">{article.source_name || article.source_url || "本地素材"}</span></span></span>
-                      </button>
+                      <div className="min-w-0">
+                        <button type="button" onClick={() => onSelectArticle(article)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                          <span className="flex min-w-0 items-start gap-2"><MaterialTypeIcon type={type} /><span className="min-w-0"><span className="block break-words text-sm font-medium">{article.title || t("articleList.untitled", "未命名素材")}</span><span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"><span>{typeLabels[type]}</span>{article.import_status === "failed" && <span className="break-words text-destructive">{article.import_error || t("materials.importFailed", "导入失败")}</span>}{article.import_status === "importing" && <span>{t("materials.importing", "导入中")}</span>}<Progress article={article} /></span><span className="mt-1 block break-all text-xs text-muted-foreground lg:hidden">{article.source_name || article.source_url || "本地素材"}</span></span></span>
+                        </button>
+                        <EditableRelation source={editableSource} hasDerivative={sourceIdsWithDerivative.has(article.id)} onSelectArticle={onSelectArticle} />
+                      </div>
                       <span className="hidden break-all text-xs text-muted-foreground lg:block">{article.source_name || article.source_url || "本地素材"}</span>
                       <span className="hidden min-w-0 flex-wrap gap-1 lg:flex">{tags.slice(0, 2).map((tag) => <span key={tag} className="max-w-full break-all rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>)}</span>
                       <span className="hidden text-xs text-muted-foreground lg:block"><Clock3 className="mr-1 inline" size={12} />{formatDate(lastOpened)}</span>
@@ -366,12 +424,16 @@ export function ArticleList({
                 const isSelected = selectedIds.includes(article.id);
                 const tags = getMaterialTagLabels(article);
                 const isMedia = type === "video" || type === "audio";
+                const editableSource = article.editable_source_material_id ? articlesById.get(article.editable_source_material_id) : undefined;
                 return (
                   <article key={article.id} className={`grid min-w-0 grid-cols-[28px_minmax(0,1fr)_36px] items-start gap-2 rounded-lg border border-border p-3 ${selectedId === article.id ? "bg-primary/5" : "hover:bg-muted/30"}`}>
                     <input aria-label={`${t("materials.select", "选择")} ${article.title}`} type="checkbox" checked={isSelected} onClick={(event) => event.stopPropagation()} onChange={() => toggleSelected(article.id)} />
-                    <button type="button" onClick={() => onSelectArticle(article)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                      <span className="flex min-w-0 items-start gap-2"><MaterialTypeIcon type={type} /><span className="min-w-0"><span className="block break-words text-sm font-medium">{article.title || t("articleList.untitled", "未命名素材")}</span><span className="mt-1 block break-all text-xs text-muted-foreground">{article.source_name || article.source_url || "本地素材"}</span><span className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"><span>{typeLabels[type]}</span><Progress article={article} /></span>{tags.length > 0 && <span className="mt-2 flex min-w-0 flex-wrap gap-1">{tags.slice(0, 3).map((tag) => <span key={tag} className="max-w-full break-all rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>)}</span>}</span></span>
-                    </button>
+                    <div className="min-w-0">
+                      <button type="button" onClick={() => onSelectArticle(article)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <span className="flex min-w-0 items-start gap-2"><MaterialTypeIcon type={type} /><span className="min-w-0"><span className="block break-words text-sm font-medium">{article.title || t("articleList.untitled", "未命名素材")}</span><span className="mt-1 block break-all text-xs text-muted-foreground">{article.source_name || article.source_url || "本地素材"}</span><span className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"><span>{typeLabels[type]}</span><Progress article={article} /></span>{tags.length > 0 && <span className="mt-2 flex min-w-0 flex-wrap gap-1">{tags.slice(0, 3).map((tag) => <span key={tag} className="max-w-full break-all rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>)}</span>}</span></span>
+                      </button>
+                      <EditableRelation source={editableSource} hasDerivative={sourceIdsWithDerivative.has(article.id)} onSelectArticle={onSelectArticle} />
+                    </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`${t("materials.actions", "操作")} ${article.title}`} onClick={(event) => event.stopPropagation()}><MoreHorizontal size={17} /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end">

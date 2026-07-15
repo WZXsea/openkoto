@@ -325,6 +325,7 @@ fn parse_srt(path: &Path) -> Result<Vec<ArticleSegment>, String> {
                         article_id: String::new(), // Will be set by caller
                         order: segments.len() as i32,
                         text,
+                        text_sha256: None,
                         reading_text: None,
                         translation: None,
                         explanation: None,

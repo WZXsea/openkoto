@@ -138,6 +138,11 @@ pub struct ArticleDto {
     pub book_path: Option<String>,
     pub book_type: Option<String>,
     pub created_at: String,
+    pub updated_at: String,
+    pub content_updated_at: String,
+    pub current_revision: i64,
+    pub content_sha256: Option<String>,
+    pub editable_source_material_id: Option<String>,
     pub translated: bool,
     pub active_mind_map_artifact_id: Option<String>,
     pub segments: Vec<ArticleSegmentDto>,
@@ -154,6 +159,7 @@ pub struct ArticleSegmentDto {
     #[serde(rename = "order")]
     pub order: i32,
     pub text: String,
+    pub text_sha256: Option<String>,
     pub reading_text: Option<String>,
     pub translation: Option<String>,
     pub explanation: Option<Value>,
@@ -177,6 +183,10 @@ struct MaterialRecord {
     active_mind_map_artifact_id: Option<String>,
     metadata: Value,
     created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    content_updated_at: DateTime<Utc>,
+    current_revision: i64,
+    editable_source_material_id: Option<Uuid>,
     normalized_source_url: Option<String>,
     content_sha256: Option<String>,
     file_sha256: Option<String>,
@@ -189,6 +199,7 @@ struct SegmentRecord {
     material_id: Uuid,
     segment_order: i32,
     text: String,
+    text_sha256: Option<String>,
     reading_text: Option<String>,
     translation: Option<String>,
     explanation: Option<Value>,
@@ -256,7 +267,8 @@ pub async fn list_materials(
         SELECT m.id, m.title, m.content, m.source_type, m.source_url, m.media_path,
                m.book_path, m.book_type, m.translated, m.active_mind_map_artifact_id,
                m.metadata, m.created_at, m.updated_at, m.normalized_source_url,
-               m.content_sha256, m.file_sha256, m.archived_at
+               m.content_sha256, m.file_sha256, m.archived_at,
+               m.content_updated_at, m.current_revision, m.editable_source_material_id
         FROM materials m
         LEFT JOIN reading_progress rp
           ON rp.user_id = m.user_id AND rp.material_id = m.id
@@ -410,7 +422,8 @@ pub async fn create_material(
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING id, title, content, source_type, source_url, media_path, book_path, book_type,
                   translated, active_mind_map_artifact_id, metadata, created_at, updated_at,
-                  normalized_source_url, content_sha256, file_sha256, archived_at
+                  normalized_source_url, content_sha256, file_sha256, archived_at,
+                  content_updated_at, current_revision, editable_source_material_id
         "#,
     )
     .bind(material_id)
@@ -433,7 +446,9 @@ pub async fn create_material(
 
     insert_segments(&mut tx, user.id, record.id, segment_inputs).await?;
     tx.commit().await?;
+    crate::document_editing::initialize_document(&state.pool, user.id, record.id).await?;
 
+    let record = fetch_material(&state.pool, user.id, record.id).await?;
     let segments = fetch_segments(&state.pool, user.id, record.id).await?;
     let tags = fetch_material_tags(&state.pool, user.id, record.id).await?;
     let progress = fetch_reading_progress(&state.pool, user.id, record.id).await?;
@@ -460,6 +475,25 @@ pub async fn patch_material(
     ApiJson(payload): ApiJson<PatchMaterialRequest>,
 ) -> Result<Json<ArticleDto>, AppError> {
     let existing = fetch_material(&state.pool, user.id, id).await?;
+    let attempts_document_write = payload.content.is_some() || payload.segments.is_some();
+    let existing_is_media = matches!(
+        existing.source_type.as_deref(),
+        Some("youtube" | "local_video" | "audio")
+    );
+    let requested_source_remains_media = payload.source_type.as_ref().is_none_or(|source_type| {
+        matches!(
+            source_type.as_deref(),
+            Some("youtube" | "local_video" | "audio")
+        )
+    });
+    let allows_media_subtitle_compat = existing_is_media && requested_source_remains_media;
+    if attempts_document_write && !allows_media_subtitle_compat {
+        return Err(AppError::bad_request(
+            "deprecated_document_write",
+            "text document content must be changed through /materials/{id}/document preview and commit endpoints",
+        ));
+    }
+    let updates_content = payload.content.is_some();
     let existing_normalized_source_url = existing
         .normalized_source_url
         .clone()
@@ -535,11 +569,13 @@ pub async fn patch_material(
             normalized_source_url = $13,
             content_sha256 = $14,
             file_sha256 = $15,
+            content_updated_at = CASE WHEN $16 THEN NOW() ELSE content_updated_at END,
             updated_at = NOW()
         WHERE id = $1 AND user_id = $2
         RETURNING id, title, content, source_type, source_url, media_path, book_path, book_type,
                   translated, active_mind_map_artifact_id, metadata, created_at, updated_at,
-                  normalized_source_url, content_sha256, file_sha256, archived_at
+                  normalized_source_url, content_sha256, file_sha256, archived_at,
+                  content_updated_at, current_revision, editable_source_material_id
         "#,
     )
     .bind(id)
@@ -557,6 +593,7 @@ pub async fn patch_material(
     .bind(normalized_source_url)
     .bind(content_sha256)
     .bind(file_sha256)
+    .bind(updates_content)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -576,17 +613,7 @@ pub async fn patch_material(
     .await?;
 
     if let Some(segments) = payload.segments {
-        sqlx::query(
-            r#"
-            DELETE FROM material_segments
-            WHERE material_id = $1 AND user_id = $2
-            "#,
-        )
-        .bind(record.id)
-        .bind(user.id)
-        .execute(&mut *tx)
-        .await?;
-        insert_segments(&mut tx, user.id, record.id, segments).await?;
+        replace_segments_compat(&mut tx, user.id, record.id, segments).await?;
     }
 
     tx.commit().await?;
@@ -714,7 +741,8 @@ async fn fetch_material(
         r#"
         SELECT id, title, content, source_type, source_url, media_path, book_path, book_type,
                translated, active_mind_map_artifact_id, metadata, created_at, updated_at,
-               normalized_source_url, content_sha256, file_sha256, archived_at
+               normalized_source_url, content_sha256, file_sha256, archived_at,
+               content_updated_at, current_revision, editable_source_material_id
         FROM materials
         WHERE id = $1 AND user_id = $2
         "#,
@@ -733,10 +761,10 @@ async fn fetch_segments(
 ) -> Result<Vec<SegmentRecord>, AppError> {
     sqlx::query_as::<_, SegmentRecord>(
         r#"
-        SELECT id, material_id, segment_order, text, reading_text, translation, explanation,
+        SELECT id, material_id, segment_order, text, text_sha256, reading_text, translation, explanation,
                start_time, end_time, is_new_paragraph, created_at
         FROM material_segments
-        WHERE user_id = $1 AND material_id = $2
+        WHERE user_id = $1 AND material_id = $2 AND deleted_at IS NULL
         ORDER BY segment_order ASC
         "#,
     )
@@ -757,10 +785,10 @@ async fn fetch_segments_bulk(
     }
     let records = sqlx::query_as::<_, SegmentRecord>(
         r#"
-        SELECT id, material_id, segment_order, text, reading_text, translation, explanation,
+        SELECT id, material_id, segment_order, text, text_sha256, reading_text, translation, explanation,
                start_time, end_time, is_new_paragraph, created_at
         FROM material_segments
-        WHERE user_id = $1 AND material_id = ANY($2)
+        WHERE user_id = $1 AND material_id = ANY($2) AND deleted_at IS NULL
         ORDER BY material_id, segment_order ASC
         "#,
     )
@@ -823,6 +851,171 @@ async fn insert_segments(
     Ok(())
 }
 
+async fn replace_segments_compat(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    material_id: Uuid,
+    segments: Vec<MaterialSegmentInput>,
+) -> Result<(), AppError> {
+    let existing_blocks = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT id FROM material_blocks
+        WHERE user_id = $1 AND material_id = $2 AND deleted_at IS NULL
+        ORDER BY block_order
+        "#,
+    )
+    .bind(user_id)
+    .bind(material_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE material_blocks SET block_order = block_order + 1000000 WHERE user_id = $1 AND material_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(material_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE material_segments SET segment_order = segment_order + 1000000 WHERE user_id = $1 AND material_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(material_id)
+    .execute(&mut **tx)
+    .await?;
+
+    let mut live_blocks = Vec::<Uuid>::new();
+    let mut live_segments = Vec::<Uuid>::new();
+    let mut paragraph_index = 0usize;
+    let mut block_segment_order = 0i32;
+    let mut current_block_id = None;
+    for (index, segment) in segments.into_iter().enumerate() {
+        let text = segment.text.trim().to_string();
+        if text.is_empty() {
+            return Err(AppError::bad_request(
+                "invalid_segment",
+                "segment text must not be empty",
+            ));
+        }
+        if index == 0 || segment.is_new_paragraph.unwrap_or(false) {
+            block_segment_order = 0;
+            let block_id = existing_blocks
+                .get(paragraph_index)
+                .copied()
+                .unwrap_or_else(Uuid::new_v4);
+            let block_row = sqlx::query_scalar::<_, Uuid>(
+                r#"
+                INSERT INTO material_blocks (
+                    id, user_id, material_id, block_order, block_type, attrs, deleted_at
+                ) VALUES ($1, $2, $3, $4, 'paragraph', '{}'::jsonb, NULL)
+                ON CONFLICT (id) DO UPDATE
+                SET block_order = EXCLUDED.block_order, deleted_at = NULL, updated_at = NOW()
+                WHERE material_blocks.user_id = EXCLUDED.user_id
+                  AND material_blocks.material_id = EXCLUDED.material_id
+                RETURNING id
+                "#,
+            )
+            .bind(block_id)
+            .bind(user_id)
+            .bind(material_id)
+            .bind(paragraph_index as i32)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if block_row.is_none() {
+                return Err(AppError::conflict(
+                    "document_block_id_conflict",
+                    "block id already belongs to another material",
+                ));
+            }
+            live_blocks.push(block_id);
+            current_block_id = Some(block_id);
+            paragraph_index += 1;
+        }
+        let block_id = current_block_id.expect("first segment initializes a block");
+        let segment_id = segment
+            .id
+            .as_deref()
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .unwrap_or_else(Uuid::new_v4);
+        let text_hash = crate::document_editing::source_text_sha256(&text);
+        let reading_hash = segment.reading_text.as_ref().map(|_| text_hash.clone());
+        let translation_hash = segment.translation.as_ref().map(|_| text_hash.clone());
+        let explanation_hash = segment.explanation.as_ref().map(|_| text_hash.clone());
+        let segment_row = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            INSERT INTO material_segments (
+                id, user_id, material_id, block_id, segment_order, block_segment_order,
+                text, reading_text, translation, explanation, start_time, end_time,
+                is_new_paragraph, text_sha256, reading_source_sha256,
+                translation_source_sha256, explanation_source_sha256, deleted_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                $14, $15, $16, $17, NULL
+            )
+            ON CONFLICT (id) DO UPDATE
+            SET block_id = EXCLUDED.block_id, segment_order = EXCLUDED.segment_order,
+                block_segment_order = EXCLUDED.block_segment_order, text = EXCLUDED.text,
+                reading_text = EXCLUDED.reading_text, translation = EXCLUDED.translation,
+                explanation = EXCLUDED.explanation, start_time = EXCLUDED.start_time,
+                end_time = EXCLUDED.end_time, is_new_paragraph = EXCLUDED.is_new_paragraph,
+                text_sha256 = EXCLUDED.text_sha256,
+                reading_source_sha256 = EXCLUDED.reading_source_sha256,
+                translation_source_sha256 = EXCLUDED.translation_source_sha256,
+                explanation_source_sha256 = EXCLUDED.explanation_source_sha256,
+                deleted_at = NULL, updated_at = NOW()
+            WHERE material_segments.user_id = EXCLUDED.user_id
+              AND material_segments.material_id = EXCLUDED.material_id
+            RETURNING id
+            "#,
+        )
+        .bind(segment_id)
+        .bind(user_id)
+        .bind(material_id)
+        .bind(block_id)
+        .bind(index as i32)
+        .bind(block_segment_order)
+        .bind(text)
+        .bind(segment.reading_text)
+        .bind(segment.translation)
+        .bind(segment.explanation)
+        .bind(segment.start_time)
+        .bind(segment.end_time)
+        .bind(block_segment_order == 0)
+        .bind(text_hash)
+        .bind(reading_hash)
+        .bind(translation_hash)
+        .bind(explanation_hash)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if segment_row.is_none() {
+            return Err(AppError::conflict(
+                "document_segment_id_conflict",
+                "segment id already belongs to another material",
+            ));
+        }
+        live_segments.push(segment_id);
+        block_segment_order += 1;
+    }
+
+    sqlx::query(
+        "UPDATE material_segments SET deleted_at = NOW(), updated_at = NOW() WHERE user_id = $1 AND material_id = $2 AND deleted_at IS NULL AND NOT (id = ANY($3))",
+    )
+    .bind(user_id)
+    .bind(material_id)
+    .bind(&live_segments)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE material_blocks SET deleted_at = NOW(), updated_at = NOW() WHERE user_id = $1 AND material_id = $2 AND deleted_at IS NULL AND NOT (id = ANY($3))",
+    )
+    .bind(user_id)
+    .bind(material_id)
+    .bind(&live_blocks)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 fn article_from_records(
     record: MaterialRecord,
     segments: Vec<SegmentRecord>,
@@ -839,6 +1032,11 @@ fn article_from_records(
         book_path: record.book_path,
         book_type: record.book_type,
         created_at: record.created_at.to_rfc3339(),
+        updated_at: record.updated_at.to_rfc3339(),
+        content_updated_at: record.content_updated_at.to_rfc3339(),
+        current_revision: record.current_revision,
+        content_sha256: record.content_sha256,
+        editable_source_material_id: record.editable_source_material_id.map(|id| id.to_string()),
         translated: record.translated,
         active_mind_map_artifact_id: record.active_mind_map_artifact_id,
         segments: segments.into_iter().map(segment_from_record).collect(),
@@ -850,11 +1048,15 @@ fn article_from_records(
 }
 
 fn segment_from_record(record: SegmentRecord) -> ArticleSegmentDto {
+    let text_sha256 = record
+        .text_sha256
+        .or_else(|| Some(crate::document_editing::source_text_sha256(&record.text)));
     ArticleSegmentDto {
         id: record.id.to_string(),
         article_id: record.material_id.to_string(),
         order: record.segment_order,
         text: record.text,
+        text_sha256,
         reading_text: record.reading_text,
         translation: record.translation,
         explanation: record.explanation,

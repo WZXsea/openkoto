@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/button";
-import { Textarea } from "../ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import {
   BookOpen,
@@ -47,6 +46,8 @@ import {
   type ReaderAnnotationReference,
 } from "../../features/reader";
 import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
+import { MaterialDocumentEditor, StructuredDocumentReader, materialEditorApi } from "../../features/editor";
+import type { MaterialDocument } from "../../features/editor";
 
 const DEFAULT_BATCH_TRANSLATION_CONCURRENCY = 3;
 const MIN_BATCH_TRANSLATION_CONCURRENCY = 1;
@@ -133,6 +134,7 @@ export function ArticleReader({
 
   // 本地段落状态 - 用于批量处理时的局部刷新
   const [localSegments, setLocalSegments] = useState(article.segments || []);
+  const [structuredDocument, setStructuredDocument] = useState<MaterialDocument | null>(null);
   const [annotationResolution, setAnnotationResolution] = useState<AnnotationResolution | undefined>();
 
   // 字幕提取状态
@@ -175,6 +177,22 @@ export function ArticleReader({
     loadAsrOptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [article.id]);
+
+  useEffect(() => {
+    if (article.media_path || article.book_path || article.book_type) {
+      setStructuredDocument(null);
+      return;
+    }
+    let cancelled = false;
+    void materialEditorApi.getDocument(article.id)
+      .then((document) => {
+        if (!cancelled && document && Array.isArray(document.blocks)) setStructuredDocument(document);
+      })
+      .catch(() => {
+        if (!cancelled) setStructuredDocument(null);
+      });
+    return () => { cancelled = true; };
+  }, [article.book_path, article.book_type, article.id, article.media_path]);
   const [isImportingSubtitles, setIsImportingSubtitles] = useState(false);
   const [pendingSubtitlePath, setPendingSubtitlePath] = useState("");
   const subtitleImportPreview = useMaterialImportPreview<Article>({
@@ -396,19 +414,6 @@ export function ArticleReader({
 
 
   
-  const handleSaveContent = async () => {
-    try {
-      await invoke("update_article", {
-        id: article.id,
-        content,
-      });
-      setIsEditing(false);
-      onUpdate?.();
-    } catch (err) {
-      setError(err as string);
-    }
-  };
-
   const handleTranslate = async () => {
     if (!canUseAi) {
       setError(aiUnavailableMessage);
@@ -818,7 +823,8 @@ export function ArticleReader({
                 segmentId: segment.id,
                 explanation: explanation,
                 reading: explanation.reading_text,
-                translation: explanation.translation
+                translation: explanation.translation,
+                expectedTextSha256: segment.text_sha256,
               });
 
               console.log(`[ArticleReader] Segment ${segment.id} saved, updating local state`);
@@ -895,7 +901,8 @@ export function ArticleReader({
           segmentId: targetId,
           explanation: explanation,
           reading: explanation.reading_text,
-          translation: explanation.translation
+          translation: explanation.translation,
+          expectedTextSha256: segment.text_sha256,
         });
         console.log(`[ArticleReader] Segment updated successfully`);
 
@@ -1151,6 +1158,24 @@ export function ArticleReader({
     }
   };
 
+  if (isEditing && !article.media_path && !article.book_path && !article.book_type) {
+    return (
+      <MaterialDocumentEditor
+        materialId={article.id}
+        title={article.title}
+        onCancel={() => {
+          setContent(article.content);
+          setIsEditing(false);
+          onUpdate?.();
+        }}
+        onCommitted={(document) => {
+          setStructuredDocument(document);
+          void refreshArticle();
+        }}
+      />
+    );
+  }
+
   const mainContent = (
     <>
         <MaterialImportPreviewDialogs
@@ -1260,29 +1285,14 @@ export function ArticleReader({
             )}
 
             <TabsContent value="content" className="flex-1 overflow-hidden outline-none mt-0">
-              {isEditing ? (
-                <div className="h-full flex flex-col p-4">
-                  <Textarea
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
-                    className="flex-1 font-mono text-sm resize-none bg-background text-foreground"
-                  />
-                  <div className="flex justify-end gap-2 mt-4">
-                    <Button variant="secondary" onClick={() => setIsEditing(false)}>
-                      {t("articleReader.cancel")}
-                    </Button>
-                    <Button onClick={handleSaveContent}>{t("articleReader.save")}</Button>
-                  </div>
-                </div>
-              ) : (
-                <div
-                  ref={readerContentRef}
-                  data-testid="article-reader-scroll"
-                  onMouseUp={handleReaderSelection}
-                  onKeyUp={handleReaderSelection}
-                  onScroll={handleReaderScroll}
-                  className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth"
-                >
+              <div
+                ref={readerContentRef}
+                data-testid="article-reader-scroll"
+                onMouseUp={handleReaderSelection}
+                onKeyUp={handleReaderSelection}
+                onScroll={handleReaderScroll}
+                className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth"
+              >
                   {annotationResolution && (
                     <div role="status" className="mb-3 text-xs text-muted-foreground" data-testid="article-annotation-status">
                       {annotationResolution.message}
@@ -1329,7 +1339,21 @@ export function ArticleReader({
                   })()}
 
                   {/* 非视频模式：段落式显示 */}
-                  {hasSegments && !article.media_path && (
+                  {structuredDocument && !article.media_path && (
+                    <StructuredDocumentReader
+                      blocks={structuredDocument.blocks}
+                      liveSegments={localSegments}
+                      fontSize={fontSize}
+                      viewMode={viewMode}
+                      selectedSegmentId={selectedSegmentId}
+                      activeSegmentRef={activeSegmentRef}
+                      annotationLocator={annotationResolution?.locator}
+                      annotationResolved={annotationResolution?.status !== "unresolved"}
+                      onSegmentClick={handleSegmentClick}
+                    />
+                  )}
+
+                  {hasSegments && !article.media_path && !structuredDocument && (
                     <div className="openkoto-reader-font max-w-3xl mx-auto pb-20">
                       {(() => {
                         const sortedSegments = [...localSegments].sort((a, b) => a.order - b.order);
@@ -1447,13 +1471,12 @@ export function ArticleReader({
                   )}
 
                   {/* 纯文本模式：Markdown 渲染 */}
-                  {!hasSegments && !article.media_path && (
+                  {!hasSegments && !article.media_path && !structuredDocument && (
                     <article className="openkoto-reader-font prose dark:prose-invert max-w-none pb-20 text-foreground">
                       <ReactMarkdown>{content}</ReactMarkdown>
                     </article>
                   )}
-                </div>
-              )}
+              </div>
             </TabsContent>
 
             <TabsContent value="analysis" className="flex-1 overflow-hidden p-4 mt-0">

@@ -62,6 +62,16 @@ vi.mock("./ArticleMindMapPanel", () => ({
   ArticleMindMapPanel: () => <div data-testid="article-mind-map-panel" />,
 }));
 
+vi.mock("../../features/editor", () => ({
+  materialEditorApi: { getDocument: vi.fn().mockResolvedValue(null) },
+  StructuredDocumentReader: () => <div data-testid="structured-document-reader" />,
+  MaterialDocumentEditor: ({ onCancel }: { onCancel: () => void }) => (
+    <div data-testid="material-document-editor">
+      <button type="button" onClick={onCancel}>返回阅读</button>
+    </div>
+  ),
+}));
+
 vi.mock("./VideoSubtitlePlayer", () => ({
   VideoSubtitlePlayer: ({
     onImportSubtitles,
@@ -173,6 +183,18 @@ describe("ArticleReader agent mode", () => {
 
     expect(screen.getByText("当前支持")).toBeInTheDocument();
     expect(screen.getByText("查看当前素材")).toBeInTheDocument();
+  });
+
+  it("hides the assistant while editing and restores its previous state after returning", async () => {
+    render(<ArticleReader article={createArticle()} />);
+
+    expect(screen.getByTestId("article-reader-assistant-pane")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "articleReader.edit" }));
+    expect(screen.getByTestId("material-document-editor")).toBeInTheDocument();
+    expect(screen.queryByTestId("article-reader-assistant-pane")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "返回阅读" }));
+    expect(screen.getByTestId("article-reader-assistant-pane")).toBeInTheDocument();
   });
 
   it("loads current-material task history inside the immersive reader", async () => {

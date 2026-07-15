@@ -1745,6 +1745,7 @@ fn transcription_to_segments(
             article_id: article_id.to_string(),
             order: i as i32,
             text: seg.content.clone(),
+            text_sha256: None,
             reading_text: None,
             translation: None,
             explanation: None,

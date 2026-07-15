@@ -1440,26 +1440,16 @@ async fn sync_worker_event_backend(
         .await
         .map_err(|error| error.to_string())?;
     if let Some(artifact) = artifact.as_ref() {
-        let mut article = client
+        let article = client
             .get_material(&artifact.article_id)
             .await
             .map_err(|error| error.to_string())?;
-        article.active_mind_map_artifact_id = Some(artifact.id.clone());
         client
             .patch_material(
                 &article.id,
                 &PatchMaterialRequest {
-                    title: Some(article.title.clone()),
-                    content: Some(article.content.clone()),
-                    source_type: article.source_type.clone(),
-                    source_url: article.source_url.clone(),
-                    media_path: article.media_path.clone(),
-                    book_path: article.book_path.clone(),
-                    book_type: article.book_type.clone(),
-                    translated: Some(article.translated),
-                    active_mind_map_artifact_id: article.active_mind_map_artifact_id.clone(),
-                    metadata: None,
-                    segments: Some(article.segments.clone()),
+                    active_mind_map_artifact_id: Some(artifact.id.clone()),
+                    ..Default::default()
                 },
             )
             .await

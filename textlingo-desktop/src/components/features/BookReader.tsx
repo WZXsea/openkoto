@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/button";
-import { ChevronLeft, BookOpen, PanelRightClose, PanelRightOpen, Languages, Loader2, Download, FileText, Split, File, Columns, Sparkles } from "lucide-react";
+import { ChevronLeft, BookOpen, PanelRightClose, PanelRightOpen, Languages, Loader2, Download, FileText, Split, File, Columns, Sparkles, FilePenLine } from "lucide-react";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -44,9 +44,10 @@ interface BookReaderProps {
     annotation?: ReaderAnnotationReference | null;
     onAnnotationResolved?: (resolution: AnnotationResolution) => void;
     onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
+    onOpenEditableDerivative?: () => Promise<void> | void;
 }
 
-export function BookReader({ article, onBack, initialProgress, onProgressChange, annotation, onAnnotationResolved, onAnnotationDraftCreated }: BookReaderProps) {
+export function BookReader({ article, onBack, initialProgress, onProgressChange, annotation, onAnnotationResolved, onAnnotationDraftCreated, onOpenEditableDerivative }: BookReaderProps) {
     const { t } = useTranslation();
     const assistantModeStorageKey = "book-reader-assistant-mode";
     const backToMaterialsLabel = t("bookReader.backToMaterials", "返回素材列表");
@@ -81,6 +82,8 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange,
     const [isTranslating, setIsTranslating] = useState(false);
     // 翻译进度百分比（null 表示尚未收到进度）
     const [translateProgress, setTranslateProgress] = useState<number | null>(null);
+    const [isCreatingDerivative, setIsCreatingDerivative] = useState(false);
+    const [derivativeError, setDerivativeError] = useState<string | null>(null);
 
     // 判断书籍类型
     const isEpub = article.book_type === "epub";
@@ -337,6 +340,19 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange,
         }
     };
 
+    const handleOpenEditableDerivative = async () => {
+        if (!onOpenEditableDerivative || isCreatingDerivative) return;
+        setIsCreatingDerivative(true);
+        setDerivativeError(null);
+        try {
+            await onOpenEditableDerivative();
+        } catch (error) {
+            setDerivativeError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsCreatingDerivative(false);
+        }
+    };
+
     const mainContent = (
         <div className="flex-1 flex flex-col min-w-0">
                 {/* 顶部工具栏 */}
@@ -365,6 +381,20 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange,
                     </div>
 
                     <div className="flex items-center gap-2">
+                        {onOpenEditableDerivative && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void handleOpenEditableDerivative()}
+                                disabled={isCreatingDerivative}
+                                className="gap-1.5"
+                                aria-label="创建或打开可编辑副本"
+                                title="原始文件保持不变，在可编辑副本中修改正文"
+                            >
+                                {isCreatingDerivative ? <Loader2 size={16} className="animate-spin" /> : <FilePenLine size={16} />}
+                                <span className="hidden lg:inline">{isCreatingDerivative ? "正在准备" : "编辑文本副本"}</span>
+                            </Button>
+                        )}
                         {isPdf && (
                             <>
                                 {/* 版本切换器 */}
@@ -479,6 +509,12 @@ export function BookReader({ article, onBack, initialProgress, onProgressChange,
                         </Button>
                     </div>
                 </div>
+
+                {derivativeError && (
+                    <p className="border-b border-destructive/20 bg-destructive/10 px-4 py-2 text-xs text-destructive" role="alert">
+                        无法创建可编辑副本：{derivativeError}
+                    </p>
+                )}
 
                 <div className="flex-1 overflow-hidden">
                     {isEpub && (

@@ -1,7 +1,7 @@
 {
   "name": "openkoto-desktop",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.12.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -35,6 +35,11 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.5.0",
     "@tauri-apps/plugin-opener": "^2",
+    "@tiptap/extension-drag-handle-react": "^3.27.4",
+    "@tiptap/extension-placeholder": "^3.27.4",
+    "@tiptap/extension-unique-id": "^3.27.4",
+    "@tiptap/react": "^3.27.4",
+    "@tiptap/starter-kit": "^3.27.4",
     "ai": "^6.0.26",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

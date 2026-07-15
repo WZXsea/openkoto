@@ -174,4 +174,34 @@ describe("ArticleList material workbench", () => {
     expect(onSelectArticle).not.toHaveBeenCalled();
     expect(cardLayout.getByText("an-extremely-long-tag-that-must-wrap-on-narrow-screens")).toHaveClass("break-all");
   });
+
+  it("groups an editable derivative after its immutable original and links back to the original", async () => {
+    const original: Article = {
+      ...articles[1],
+      id: "source-pdf",
+      title: "Source PDF",
+      book_type: "pdf",
+      book_path: "/tmp/source.pdf",
+    };
+    const derivative: Article = {
+      ...articles[0],
+      id: "editable-copy",
+      title: "Source PDF - editable copy",
+      source_type: "article",
+      editable_source_material_id: original.id,
+      reading_progress: { progress_ratio: 0.2, status: "reading", last_opened_at: "2026-07-10T08:00:00Z" },
+    };
+    const { onSelectArticle } = renderList({
+      articles: [derivative, original],
+      viewMode: "card",
+      showContinueReading: false,
+    });
+
+    const cards = within(screen.getByTestId("material-card-layout")).getAllByRole("article");
+    expect(cards[0]).toHaveTextContent("Source PDF");
+    expect(cards[0]).toHaveTextContent("原件 · 已有可编辑稿");
+    expect(cards[1]).toHaveTextContent("Source PDF - editable copy");
+    await userEvent.click(screen.getByRole("button", { name: "打开原件 Source PDF" }));
+    expect(onSelectArticle).toHaveBeenCalledWith(original);
+  });
 });

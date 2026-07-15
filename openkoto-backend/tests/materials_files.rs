@@ -97,16 +97,7 @@ async fn materials_and_files_are_user_isolated_when_database_is_configured() {
         &format!("/materials/{material_id}"),
         json!({
             "title": "Updated Reading",
-            "translated": true,
-            "segments": [
-                {
-                    "id": "local-segment-1",
-                    "order": 0,
-                    "text": "Updated sentence.",
-                    "translation": "更新后的句子。",
-                    "is_new_paragraph": true
-                }
-            ]
+            "translated": true
         }),
         Some(&token_a),
     )
@@ -114,7 +105,7 @@ async fn materials_and_files_are_user_isolated_when_database_is_configured() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(patched["title"], "Updated Reading");
     assert_eq!(patched["translated"], true);
-    assert_eq!(patched["segments"][0]["translation"], "更新后的句子。");
+    assert_eq!(patched["segments"][0]["text"], "Dr. Smith reviewed it.");
 
     let (status, _) = json_request(
         app.clone(),

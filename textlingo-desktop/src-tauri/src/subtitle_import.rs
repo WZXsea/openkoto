@@ -63,6 +63,7 @@ pub fn parse_srt_content(content: &str, article_id: &str) -> Result<Vec<ArticleS
             article_id: article_id.to_string(),
             order: segments.len() as i32,
             text,
+            text_sha256: None,
             reading_text: None,
             translation: None,
             explanation: None,

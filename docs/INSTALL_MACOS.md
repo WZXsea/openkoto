@@ -1,8 +1,8 @@
-# OpenKoto 0.11.0 macOS 安装与数据说明
+# OpenKoto 0.12.0 macOS 安装与数据说明
 ## 适用版本
-本页适用于 WZX PR-13 工程候选版 `OpenKoto-Desktop_0.11.0_aarch64.dmg`，仅支持 Apple Silicon Mac。Intel 用户应等待对应架构的发行资产。
+本页适用于 WZX PR-14 预发布版 `OpenKoto Desktop_0.12.0_aarch64.dmg`，仅支持 Apple Silicon Mac。Intel 用户应等待对应架构的发行资产。
 ## 安装
-1. 从 [WZX PR-13 GitHub Release](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.11.0-pr13-phase1-engineering-candidate) 下载 `.dmg` 和 `SHA256SUMS`。
+1. 从 [WZX PR-14 GitHub Release](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.12.0-pr14-structured-editor) 下载 `.dmg` 和 `SHA256SUMS`。
 2. 打开 `.dmg`，将 `OpenKoto Desktop.app` 拖入 `Applications`。
 3. 从“应用程序”打开 `OpenKoto Desktop`。
 4. 应用会自动启动内置 PostgreSQL 和 Backend，用户无需安装 Docker、PostgreSQL、Node.js，也无需配置端口。
@@ -12,7 +12,7 @@
 发布资产的 SHA-256 记录在同一 Release 的 `SHA256SUMS` 中。
 终端校验命令：
 ```bash
-shasum -a 256 "OpenKoto-Desktop_0.11.0_aarch64.dmg"
+shasum -a 256 "OpenKoto Desktop_0.12.0_aarch64.dmg"
 ```
 ## 运行方式
 - 用户可见 Backend 固定为 `http://127.0.0.1:19421`。
@@ -31,5 +31,5 @@ shasum -a 256 "OpenKoto-Desktop_0.11.0_aarch64.dmg"
 3. 首次启动新版本时，应用先生成带清单和 SHA-256 的升级备份，执行 dry restore 校验，随后由 Backend 执行数据库 migration。
 4. 仅删除应用不会删除学习数据。
 5. 确认不再需要数据后，才手工删除 `~/Library/Application Support/com.openkoto.desktop/`。
-## 0.11.0 工程候选版验收
-该构建保留 PR-11 阅读型首页和 PR-12 Assistant 可观察工作流，增加 Desktop command 契约拆分、Reader/Settings 分层、离线诊断、局部重试、升级备份 v2、迁移失败保护和 legacy import 来源报告。发布前执行 0.10.0→0.11.0 带备份覆盖安装、数据库 migration、登录恢复、原数据保持和全栈重启 smoke。
+## 0.12.0 PR-14 预发布版验收
+该构建保留 PR-13 工程候选基线，增加受约束块编辑、稳定块与句子 ID、保存影响预览、版本历史、恢复草稿和 PDF/EPUB 关联编辑稿。升级时会为现有素材建立 revision 1，保留原 segment UUID，并为 content/segments 不一致项生成迁移报告。

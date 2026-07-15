@@ -6,6 +6,7 @@ pub mod assistant;
 pub mod backend_client;
 pub mod commands;
 pub mod data_backup;
+pub mod document_editor;
 pub mod feature_gate;
 pub mod ffmpeg;
 pub mod ktv_export;
@@ -88,6 +89,17 @@ pub fn run() {
             commands::preview_material_import_cmd,
             commands::update_article,
             commands::update_article_segment,
+            document_editor::get_material_document_cmd,
+            document_editor::preview_material_edit_cmd,
+            document_editor::commit_material_edit_cmd,
+            document_editor::get_material_draft_cmd,
+            document_editor::save_material_draft_cmd,
+            document_editor::delete_material_draft_cmd,
+            document_editor::list_material_revisions_cmd,
+            document_editor::get_material_revision_cmd,
+            document_editor::restore_material_revision_cmd,
+            document_editor::update_segment_derived_cmd,
+            document_editor::create_editable_derivative_cmd,
             commands::delete_article_cmd,
             commands::list_learning_items_cmd,
             commands::get_learning_item_cmd,

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use sqlx::{postgres::PgPoolOptions, PgPool};
 
-use crate::{config::AppConfig, error::AppError};
+use crate::{config::AppConfig, document_editing::initialize_pending_documents, error::AppError};
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -16,6 +16,7 @@ pub async fn connect_and_migrate(config: &AppConfig) -> Result<PgPool, AppError>
         .await?;
 
     MIGRATOR.run(&pool).await?;
+    initialize_pending_documents(&pool).await?;
 
     Ok(pool)
 }

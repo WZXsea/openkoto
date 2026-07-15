@@ -95,6 +95,9 @@ export function ArticleReaderHeader({
   onToggleAssistant,
 }: ArticleReaderHeaderProps) {
   const { t } = useTranslation();
+  const editDocumentLabel = isEditing
+    ? t("articleReader.cancel")
+    : t("articleReader.edit");
 
   return (
     <header className="flex flex-col gap-3 p-4 border-b border-border bg-card/50 backdrop-blur-sm supports-[backdrop-filter]:bg-card/50">
@@ -294,10 +297,17 @@ export function ArticleReaderHeader({
 
         <div className="w-px h-4 bg-border mx-1" />
 
-        {!article.media_path && (
-          <Button variant="secondary" size="sm" onClick={onToggleEditing} className="h-8 md:h-9" title={t("articleReader.edit")}>
+        {!article.media_path && !article.book_path && !article.book_type && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onToggleEditing}
+            className="h-8 gap-1.5 px-2.5 md:h-9"
+            title={editDocumentLabel}
+            aria-label={editDocumentLabel}
+          >
             <FileText size={16} />
-            <span className="ml-2 hidden xl:inline">{isEditing ? t("articleReader.cancel") : t("articleReader.edit")}</span>
+            <span>{editDocumentLabel}</span>
           </Button>
         )}
 

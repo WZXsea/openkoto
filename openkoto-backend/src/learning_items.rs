@@ -59,6 +59,7 @@ pub struct LearningItemDto {
     pub source_type: Option<String>,
     #[serde(default)]
     pub source_segment_order: Option<i32>,
+    pub source_status: String,
     #[serde(default)]
     pub accepted_at: Option<String>,
     #[serde(default)]
@@ -352,6 +353,7 @@ struct LearningItemRecord {
     source_material_title: Option<String>,
     source_type: Option<String>,
     source_segment_order: Option<i32>,
+    source_status: String,
     accepted_at: Option<DateTime<Utc>>,
     rejected_at: Option<DateTime<Utc>>,
     status_before_archive: Option<String>,
@@ -445,6 +447,14 @@ pub async fn list_learning_items(
                COALESCE(m.title, li.source_material_title_snapshot) AS source_material_title,
                COALESCE(m.source_type, li.source_type_snapshot) AS source_type,
                ms.segment_order AS source_segment_order,
+               CASE
+                   WHEN m.id IS NULL THEN 'material_missing'
+                   WHEN li.segment_id IS NULL THEN 'current'
+                   WHEN ms.id IS NULL OR ms.deleted_at IS NOT NULL THEN 'deleted'
+                   WHEN li.source_segment_sha256 IS NULL THEN 'changed'
+                   WHEN li.source_segment_sha256 = ms.text_sha256 THEN 'current'
+                   ELSE 'changed'
+               END AS source_status,
                li.accepted_at, li.rejected_at,
                li.status_before_archive, li.merged_into_id,
                li.created_at, li.updated_at
@@ -2394,6 +2404,14 @@ async fn fetch_learning_item_by_dedupe_key_in_transaction(
                COALESCE(m.title, li.source_material_title_snapshot) AS source_material_title,
                COALESCE(m.source_type, li.source_type_snapshot) AS source_type,
                ms.segment_order AS source_segment_order,
+               CASE
+                   WHEN m.id IS NULL THEN 'material_missing'
+                   WHEN li.segment_id IS NULL THEN 'current'
+                   WHEN ms.id IS NULL OR ms.deleted_at IS NOT NULL THEN 'deleted'
+                   WHEN li.source_segment_sha256 IS NULL THEN 'changed'
+                   WHEN li.source_segment_sha256 = ms.text_sha256 THEN 'current'
+                   ELSE 'changed'
+               END AS source_status,
                li.accepted_at, li.rejected_at,
                li.status_before_archive, li.merged_into_id,
                li.created_at, li.updated_at
@@ -2420,6 +2438,14 @@ fn learning_item_select(prefix: &str) -> String {
          COALESCE(m.title, li.source_material_title_snapshot) AS source_material_title,
          COALESCE(m.source_type, li.source_type_snapshot) AS source_type,
          ms.segment_order AS source_segment_order,
+         CASE
+             WHEN m.id IS NULL THEN 'material_missing'
+             WHEN li.segment_id IS NULL THEN 'current'
+             WHEN ms.id IS NULL OR ms.deleted_at IS NOT NULL THEN 'deleted'
+             WHEN li.source_segment_sha256 IS NULL THEN 'changed'
+             WHEN li.source_segment_sha256 = ms.text_sha256 THEN 'current'
+             ELSE 'changed'
+         END AS source_status,
          li.accepted_at, li.rejected_at,
          li.status_before_archive, li.merged_into_id,
          li.created_at, li.updated_at
@@ -2442,7 +2468,7 @@ async fn resolve_source(
             SELECT ms.material_id, ms.text
             FROM material_segments ms
             JOIN materials m ON m.id = ms.material_id AND m.user_id = ms.user_id
-            WHERE ms.id = $1 AND ms.user_id = $2
+            WHERE ms.id = $1 AND ms.user_id = $2 AND ms.deleted_at IS NULL
             "#,
         )
         .bind(segment_id)
@@ -2768,6 +2794,7 @@ fn record_to_dto(record: LearningItemRecord) -> LearningItemDto {
         source_material_title: record.source_material_title,
         source_type: record.source_type,
         source_segment_order: record.source_segment_order,
+        source_status: record.source_status,
         accepted_at: record.accepted_at.map(|value| value.to_rfc3339()),
         rejected_at: record.rejected_at.map(|value| value.to_rfc3339()),
         status_before_archive: record.status_before_archive,

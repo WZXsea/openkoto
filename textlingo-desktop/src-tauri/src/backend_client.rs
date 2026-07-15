@@ -1292,6 +1292,151 @@ impl BackendClient {
         self.parse_response(response).await
     }
 
+    pub async fn get_material_document(&self, id: &str) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/materials/{id}/document")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn preview_material_edit(
+        &self,
+        id: &str,
+        payload: &Value,
+    ) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/materials/{id}/document/preview")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn commit_material_edit(
+        &self,
+        id: &str,
+        payload: &Value,
+    ) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .put(self.url(&format!("/materials/{id}/document")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_material_draft(&self, id: &str) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/materials/{id}/document/draft")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn save_material_draft(
+        &self,
+        id: &str,
+        payload: &Value,
+    ) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .put(self.url(&format!("/materials/{id}/document/draft")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn delete_material_draft(&self, id: &str) -> Result<(), BackendClientError> {
+        let response = self
+            .client
+            .delete(self.url(&format!("/materials/{id}/document/draft")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_empty_response(response).await
+    }
+
+    pub async fn list_material_revisions(&self, id: &str) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/materials/{id}/revisions")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn get_material_revision(
+        &self,
+        id: &str,
+        revision: i64,
+    ) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/materials/{id}/revisions/{revision}")))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn restore_material_revision(
+        &self,
+        id: &str,
+        revision: i64,
+        payload: &Value,
+    ) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/materials/{id}/revisions/{revision}/restore")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn update_segment_derived(
+        &self,
+        id: &str,
+        payload: &Value,
+    ) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/materials/{id}/segments/derived")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
+    pub async fn create_editable_derivative(
+        &self,
+        id: &str,
+        payload: &Value,
+    ) -> Result<Value, BackendClientError> {
+        let response = self
+            .client
+            .post(self.url(&format!("/materials/{id}/editable-derivative")))
+            .bearer_auth(&self.auth_token)
+            .json(payload)
+            .send()
+            .await?;
+        self.parse_response(response).await
+    }
+
     pub async fn delete_material(&self, id: &str) -> Result<(), BackendClientError> {
         let response = self
             .client
