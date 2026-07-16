@@ -1,6 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { NodeSelection, TextSelection } from "@tiptap/pm/state";
+import { TextSelection } from "@tiptap/pm/state";
 
 import {
   blocksToTiptapDocument,
@@ -19,6 +19,23 @@ function materialBlockPosition(document: ProseMirrorNode, blockId: string): { no
     return false;
   });
   return result;
+}
+
+function textSelectionInsideBlock(
+  document: ProseMirrorNode,
+  block: { node: ProseMirrorNode; pos: number },
+): TextSelection | null {
+  if (block.node.isTextblock) {
+    return TextSelection.create(document, block.pos + 1);
+  }
+
+  let selectionPosition: number | null = null;
+  block.node.descendants((node, relativePos) => {
+    if (!node.isTextblock) return selectionPosition === null;
+    selectionPosition = block.pos + relativePos + 2;
+    return false;
+  });
+  return selectionPosition === null ? null : TextSelection.create(document, selectionPosition);
 }
 
 export function reorderMaterialBlocks(
@@ -68,10 +85,8 @@ export function reorderEditorBlock(
 
   const movedBlock = materialBlockPosition(transaction.doc, sourceId);
   if (movedBlock) {
-    const selection = NodeSelection.isSelectable(movedBlock.node)
-      ? NodeSelection.create(transaction.doc, movedBlock.pos)
-      : TextSelection.near(transaction.doc.resolve(Math.min(movedBlock.pos + 1, transaction.doc.content.size)));
-    transaction.setSelection(selection);
+    const selection = textSelectionInsideBlock(transaction.doc, movedBlock);
+    if (selection) transaction.setSelection(selection);
   }
 
   editor.view.dispatch(transaction);

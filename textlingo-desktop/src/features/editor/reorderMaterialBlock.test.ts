@@ -1,5 +1,6 @@
 import { Editor, Extension } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
+import { NodeSelection } from "@tiptap/pm/state";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { blocksToTiptapDocument, tiptapDocumentToBlocks } from "./documentModel";
@@ -138,6 +139,16 @@ describe("reorderEditorBlock", () => {
     expect(editor.commands.redo()).toBe(true);
     expect(ids(tiptapDocumentToBlocks(editor.getJSON())))
       .toEqual(["block-b", "block-c", "block-a", "block-d"]);
+  });
+
+  it("places a text selection after the moved block and never leaves a selected-node decoration", () => {
+    const editor = createEditor();
+    editors.push(editor);
+
+    expect(reorderEditorBlock(editor, "block-a", "block-c", "after")).toBe(true);
+
+    expect(editor.state.selection).not.toBeInstanceOf(NodeSelection);
+    expect(editor.view.dom.querySelector(".ProseMirror-selectednode")).toBeNull();
   });
 
   it("does not dispatch a transaction for a no-op or unknown block", () => {

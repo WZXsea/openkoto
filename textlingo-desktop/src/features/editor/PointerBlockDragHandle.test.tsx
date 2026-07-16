@@ -232,8 +232,57 @@ describe("PointerBlockDragHandle", () => {
 
     expect(handle).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByTestId("material-block-drop-indicator")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("material-block-drag-preview")).not.toBeInTheDocument();
     fireEvent.pointerUp(handle, { pointerId: 1, clientX: 103, clientY: 20 });
     expect(reorderEditorBlockMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a source-block preview after the threshold and follows both client coordinates", () => {
+    const { root, quote, quoteParagraph } = mountEditorDom();
+    render(<PointerBlockDragHandle editor={editorFor(root)} validBlockIds={["quote-block", "list-block"]} />);
+    const handle = hoverNestedTarget(quoteParagraph);
+    preparePointerCapture(handle);
+
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 80, clientY: 30 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 80, clientY: 70 });
+
+    const preview = screen.getByTestId("material-block-drag-preview");
+    expect(preview).toHaveAttribute("aria-hidden", "true");
+    expect(quote).toHaveClass("openkoto-editor-drag-source");
+    expect(preview).toHaveStyle({
+      left: "98px",
+      top: "60px",
+      width: "480px",
+      minHeight: "40px",
+    });
+    expect(preview.querySelector(".openkoto-editor-drag-preview-content blockquote[data-block-id='quote-block']"))
+      .toHaveTextContent("Quote");
+
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 65, clientY: 105 });
+    expect(screen.getByTestId("material-block-drag-preview")).toHaveStyle({
+      left: "83px",
+      top: "95px",
+    });
+  });
+
+  it.each([
+    ["pointer up", (handle: HTMLElement) => fireEvent.pointerUp(handle, { pointerId: 1, clientX: 80, clientY: 70 })],
+    ["Escape", () => fireEvent.keyDown(document, { key: "Escape" })],
+    ["pointer cancel", (handle: HTMLElement) => fireEvent.pointerCancel(handle, { pointerId: 1 })],
+    ["window blur", () => fireEvent.blur(window)],
+  ])("removes the drag preview after %s", (_label, finish) => {
+    const { root, quote, quoteParagraph } = mountEditorDom();
+    render(<PointerBlockDragHandle editor={editorFor(root)} validBlockIds={["quote-block", "list-block"]} />);
+    const handle = hoverNestedTarget(quoteParagraph);
+    preparePointerCapture(handle);
+
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 80, clientY: 30 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 80, clientY: 70 });
+    expect(screen.getByTestId("material-block-drag-preview")).toBeInTheDocument();
+
+    finish(handle);
+    expect(screen.queryByTestId("material-block-drag-preview")).not.toBeInTheDocument();
+    expect(quote).not.toHaveClass("openkoto-editor-drag-source");
   });
 
   it("shows an insertion line and reorders after a captured pointer drag", () => {
@@ -258,6 +307,31 @@ describe("PointerBlockDragHandle", () => {
       "after",
     );
     expect(screen.queryByTestId("material-block-drop-indicator")).not.toBeInTheDocument();
+  });
+
+  it("resolves the vertical drop slot while the captured pointer stays left of every block", () => {
+    const { root, quoteParagraph } = mountEditorDom();
+    render(<PointerBlockDragHandle editor={editorFor(root)} validBlockIds={["quote-block", "list-block"]} />);
+    const handle = hoverNestedTarget(quoteParagraph);
+    preparePointerCapture(handle);
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => null),
+    });
+
+    // Keep X inside the handle gutter for the complete gesture. Vertical motion alone
+    // must be sufficient; the user must not have to steer back into the sentence.
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 80, clientY: 30 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 80, clientY: 105 });
+
+    expect(screen.getByTestId("material-block-drop-indicator")).toHaveStyle({ top: "120px" });
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 80, clientY: 105 });
+    expect(reorderEditorBlockMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "quote-block",
+      "list-block",
+      "after",
+    );
   });
 
   it("continues scrolling at the editor edge and stops when the pointer leaves the edge", () => {

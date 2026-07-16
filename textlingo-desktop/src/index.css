@@ -42,10 +42,13 @@ body {
   background: color-mix(in srgb, var(--muted) 45%, transparent);
 }
 
-.openkoto-material-editor .tiptap > *.ProseMirror-selectednode,
 .openkoto-material-editor .tiptap > *:focus-within {
   background: color-mix(in srgb, var(--primary) 7%, transparent);
   box-shadow: inset 2px 0 0 color-mix(in srgb, var(--primary) 72%, transparent);
+}
+
+.openkoto-material-editor .tiptap > *.ProseMirror-selectednode {
+  outline: none;
 }
 
 .openkoto-material-editor .tiptap h2 {
@@ -125,6 +128,42 @@ body {
   cursor: grabbing;
 }
 
+.openkoto-material-editor .tiptap > *.openkoto-editor-drag-source {
+  outline: none;
+  background: color-mix(in srgb, var(--muted) 32%, transparent);
+  box-shadow: none;
+  opacity: 0.32;
+}
+
+.openkoto-editor-drag-preview {
+  position: fixed;
+  z-index: 50;
+  box-sizing: border-box;
+  max-width: min(720px, calc(100vw - 32px));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: var(--radius);
+  padding: 0.42rem 0.72rem;
+  background: color-mix(in srgb, var(--popover) 92%, transparent);
+  color: var(--popover-foreground);
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--foreground) 16%, transparent), var(--shadow-sm);
+  line-height: 1.65;
+  opacity: 0.86;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre-wrap;
+}
+
+.openkoto-editor-drag-preview-content {
+  max-height: 5.2em;
+  overflow: hidden;
+}
+
+.openkoto-editor-drag-preview-content > * {
+  margin: 0;
+}
+
 .openkoto-editor-drop-indicator {
   position: fixed;
   z-index: 39;
@@ -147,7 +186,8 @@ body {
 
 @media (max-width: 700px) {
   .openkoto-editor-drag-corridor,
-  .openkoto-editor-drag-handle {
+  .openkoto-editor-drag-handle,
+  .openkoto-editor-drag-preview {
     display: none;
   }
 

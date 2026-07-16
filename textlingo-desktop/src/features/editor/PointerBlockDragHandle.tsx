@@ -1,4 +1,7 @@
 import type { Editor } from "@tiptap/core";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { GripVertical } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -7,6 +10,7 @@ import { reorderEditorBlock, type MaterialBlockPlacement } from "./reorderMateri
 const DRAG_THRESHOLD_PX = 4;
 const AUTO_SCROLL_EDGE_PX = 56;
 const AUTO_SCROLL_STEP_PX = 14;
+const DRAG_SOURCE_PLUGIN_KEY = new PluginKey("openkotoPointerDragSource");
 
 interface PointerBlockDragHandleProps {
   editor: Editor;
@@ -27,6 +31,21 @@ interface PointerDragState {
   dragging: boolean;
   targetId: string | null;
   placement: MaterialBlockPlacement | null;
+  clientX: number;
+  clientY: number;
+  sourceElement: HTMLElement | null;
+  preview: DragPreviewSnapshot | null;
+}
+
+interface DragPreviewSnapshot {
+  html: string;
+  text: string;
+  width: number;
+  height: number;
+  pointerOffsetY: number;
+}
+
+interface DragPreviewState extends DragPreviewSnapshot {
   clientX: number;
   clientY: number;
 }
@@ -50,6 +69,70 @@ function materialBlockElement(
 function positionedBlock(element: HTMLElement): PositionedBlock | null {
   const id = element.dataset.blockId;
   return id ? { id, rect: element.getBoundingClientRect() } : null;
+}
+
+function positionedValidBlocks(
+  editorRoot: HTMLElement,
+  validIds: ReadonlySet<string>,
+): PositionedBlock[] {
+  const seen = new Set<string>();
+  return Array.from(editorRoot.querySelectorAll<HTMLElement>("[data-block-id]"))
+    .map((element) => positionedBlock(element))
+    .filter((block): block is PositionedBlock => {
+      if (!block || !validIds.has(block.id) || seen.has(block.id)) return false;
+      seen.add(block.id);
+      return true;
+    })
+    .sort((left, right) => left.rect.top - right.rect.top || left.rect.left - right.rect.left);
+}
+
+function verticalDropTarget(
+  blocks: PositionedBlock[],
+  sourceId: string,
+  clientY: number,
+): (PositionedBlock & { placement: MaterialBlockPlacement }) | null {
+  const candidates = blocks.filter((block) => block.id !== sourceId);
+  if (candidates.length === 0) return null;
+
+  const target = candidates.find((block) => clientY <= block.rect.top + block.rect.height / 2);
+  if (target) return { ...target, placement: "before" };
+
+  const last = candidates[candidates.length - 1];
+  return last ? { ...last, placement: "after" } : null;
+}
+
+function sourceElementForBlock(editorRoot: HTMLElement, blockId: string): HTMLElement | null {
+  return Array.from(editorRoot.querySelectorAll<HTMLElement>("[data-block-id]"))
+    .find((element) => element.dataset.blockId === blockId) ?? null;
+}
+
+function sourceBlockRange(
+  document: ProseMirrorNode,
+  sourceId: string,
+): { from: number; to: number } | null {
+  let result: { from: number; to: number } | null = null;
+  document.descendants((node, pos) => {
+    if (node.attrs.blockId !== sourceId) return result === null;
+    result = { from: pos, to: pos + node.nodeSize };
+    return false;
+  });
+  return result;
+}
+
+function dragSourcePlugin(sourceId: string): Plugin {
+  return new Plugin({
+    key: DRAG_SOURCE_PLUGIN_KEY,
+    props: {
+      decorations(state) {
+        const range = sourceBlockRange(state.doc, sourceId);
+        return range
+          ? DecorationSet.create(state.doc, [
+            Decoration.node(range.from, range.to, { class: "openkoto-editor-drag-source" }),
+          ])
+          : DecorationSet.empty;
+      },
+    },
+  });
 }
 
 function autoScrollAtEditorEdge(editor: Editor, clientY: number): boolean {
@@ -79,6 +162,7 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
   const [activeBlock, setActiveBlock] = useState<PositionedBlock | null>(null);
   const [dropTarget, setDropTarget] = useState<(PositionedBlock & { placement: MaterialBlockPlacement }) | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [dragPreview, setDragPreview] = useState<DragPreviewState | null>(null);
 
   validIdsRef.current = new Set(validBlockIds);
 
@@ -94,36 +178,41 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
     if (releaseCapture && drag && handle?.hasPointerCapture(drag.pointerId)) {
       handle.releasePointerCapture(drag.pointerId);
     }
+    if (typeof editor.unregisterPlugin === "function") editor.unregisterPlugin(DRAG_SOURCE_PLUGIN_KEY);
+    drag?.sourceElement?.classList.remove("openkoto-editor-drag-source");
     dragRef.current = null;
     stopAutoScroll();
     setDropTarget(null);
     setIsDragging(false);
-  }, [stopAutoScroll]);
+    setDragPreview(null);
+    setActiveBlock(null);
+  }, [editor, stopAutoScroll]);
 
-  const updateDropTarget = useCallback((clientX: number, clientY: number) => {
+  const updateDropTarget = useCallback((clientY: number) => {
     const drag = dragRef.current;
     if (!drag?.dragging) return;
-    const pointed = document.elementFromPoint(clientX, clientY);
-    const element = materialBlockElement(pointed, editor.view.dom, validIdsRef.current);
-    const target = element ? positionedBlock(element) : null;
-    if (!target || target.id === drag.sourceId) {
+    const target = verticalDropTarget(
+      positionedValidBlocks(editor.view.dom, validIdsRef.current),
+      drag.sourceId,
+      clientY,
+    );
+    if (!target) {
       drag.targetId = null;
       drag.placement = null;
       setDropTarget(null);
       return;
     }
 
-    const placement: MaterialBlockPlacement = clientY < target.rect.top + target.rect.height / 2 ? "before" : "after";
     drag.targetId = target.id;
-    drag.placement = placement;
-    setDropTarget({ ...target, placement });
+    drag.placement = target.placement;
+    setDropTarget(target);
   }, [editor]);
 
   autoScrollTickRef.current = () => {
     autoScrollFrameRef.current = null;
     const drag = dragRef.current;
     if (!drag?.dragging || !autoScrollAtEditorEdge(editor, drag.clientY)) return;
-    updateDropTarget(drag.clientX, drag.clientY);
+    updateDropTarget(drag.clientY);
     autoScrollFrameRef.current = requestAnimationFrame(() => autoScrollTickRef.current());
   };
 
@@ -192,6 +281,15 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    const sourceElement = sourceElementForBlock(editor.view.dom, activeBlock.id);
+    const sourceRect = sourceElement?.getBoundingClientRect() ?? activeBlock.rect;
+    const preview = sourceElement ? {
+      html: sourceElement.outerHTML,
+      text: sourceElement.textContent?.trim() ?? "",
+      width: sourceRect.width,
+      height: sourceRect.height,
+      pointerOffsetY: Math.min(Math.max(event.clientY - sourceRect.top, 0), sourceRect.height),
+    } : null;
     dragRef.current = {
       pointerId: event.pointerId,
       sourceId: activeBlock.id,
@@ -202,6 +300,8 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
       placement: null,
       clientX: event.clientX,
       clientY: event.clientY,
+      sourceElement,
+      preview,
     };
   };
 
@@ -213,13 +313,22 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
     if (!drag.dragging && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_THRESHOLD_PX) return;
     if (!drag.dragging) {
       drag.dragging = true;
+      if (typeof editor.registerPlugin === "function") {
+        editor.unregisterPlugin(DRAG_SOURCE_PLUGIN_KEY);
+        editor.registerPlugin(dragSourcePlugin(drag.sourceId));
+      } else {
+        drag.sourceElement?.classList.add("openkoto-editor-drag-source");
+      }
       setIsDragging(true);
     }
 
     drag.clientX = event.clientX;
     drag.clientY = event.clientY;
+    if (drag.preview) {
+      setDragPreview({ ...drag.preview, clientX: event.clientX, clientY: event.clientY });
+    }
     const scrolled = autoScrollAtEditorEdge(editor, event.clientY);
-    updateDropTarget(event.clientX, event.clientY);
+    updateDropTarget(event.clientY);
     if (scrolled) continueAutoScroll();
     else stopAutoScroll();
   };
@@ -267,6 +376,7 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
           style={{ left: activeBlock.rect.left - 34, top: activeBlock.rect.top }}
           aria-label="拖动当前块"
           aria-pressed={isDragging}
+          aria-grabbed={isDragging}
           title="拖动当前块"
           onDragStart={(event) => event.preventDefault()}
           onPointerDown={handlePointerDown}
@@ -277,6 +387,25 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
           <GripVertical size={17} />
         </button>
       </div>
+      {dragPreview && (
+        <div
+          className="openkoto-editor-drag-preview"
+          data-testid="material-block-drag-preview"
+          style={{
+            left: dragPreview.clientX + 18,
+            top: dragPreview.clientY - dragPreview.pointerOffsetY,
+            width: dragPreview.width,
+            minHeight: dragPreview.height,
+          }}
+          aria-hidden="true"
+          title={dragPreview.text}
+        >
+          <div
+            className="openkoto-editor-drag-preview-content"
+            dangerouslySetInnerHTML={{ __html: dragPreview.html }}
+          />
+        </div>
+      )}
       {dropTarget && (
         <div
           className="openkoto-editor-drop-indicator"

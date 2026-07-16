@@ -1,8 +1,8 @@
-# OpenKoto 0.12.3 macOS 安装与数据说明
+# OpenKoto 0.12.4 macOS 安装与数据说明
 ## 适用版本
-本页适用于 PR-14.3 块手柄可达性修复预发布版 `OpenKoto Desktop_0.12.3_aarch64.dmg`，仅支持 Apple Silicon Mac。Intel 用户应等待对应架构的发行资产。
+本页适用于 PR-14 块拖动动效与纵向排序优化预发布版 `OpenKoto Desktop_0.12.4_aarch64.dmg`，仅支持 Apple Silicon Mac。Intel 用户应等待对应架构的发行资产。
 ## 安装
-1. 使用本地验证产物，或从后续发布的 0.12.3 Release 下载 `.dmg` 和 `SHA256SUMS`。
+1. 使用本地验证产物，或从后续发布的 0.12.4 Release 下载 `.dmg` 和 `SHA256SUMS`。
 2. 打开 `.dmg`，将 `OpenKoto Desktop.app` 拖入 `Applications`。
 3. 从“应用程序”打开 `OpenKoto Desktop`。
 4. 应用会自动启动内置 PostgreSQL 和 Backend，用户无需安装 Docker、PostgreSQL、Node.js，也无需配置端口。
@@ -12,7 +12,7 @@
 发布资产的 SHA-256 记录在同一 Release 的 `SHA256SUMS` 中。
 终端校验命令：
 ```bash
-shasum -a 256 "OpenKoto Desktop_0.12.3_aarch64.dmg"
+shasum -a 256 "OpenKoto Desktop_0.12.4_aarch64.dmg"
 ```
 ## 运行方式
 - 用户可见 Backend 固定为 `http://127.0.0.1:19421`。
@@ -31,5 +31,5 @@ shasum -a 256 "OpenKoto Desktop_0.12.3_aarch64.dmg"
 3. 首次启动新版本时，应用先生成带清单和 SHA-256 的升级备份，执行 dry restore 校验，随后由 Backend 执行数据库 migration。
 4. 仅删除应用不会删除学习数据。
 5. 确认不再需要数据后，才手工删除 `~/Library/Application Support/com.openkoto.desktop/`。
-## 0.12.3 PR-14.3 块手柄可达性修复预发布版验收
-该构建保留 PR-14 结构化正文和 Pointer Events 块移动，并在正文左缘与手柄之间加入连续命中走廊。验收必须从块文字区域逐步横移，经过真实空隙后进入手柄，再执行移动、撤销和重做；禁止通过直接跳转到手柄坐标替代该路径。
+## 0.12.4 PR-14 块拖动动效与纵向排序优化验收
+该构建保留连续命中走廊，并要求按住手柄后将指针始终保持在正文左侧，仅通过纵向移动完成排序。拖动中必须显示源块虚影、源位置弱化和落点线；释放后虚影、落点线、拖动态及 `ProseMirror-selectednode` 均须清除，并继续通过撤销与重做验证。

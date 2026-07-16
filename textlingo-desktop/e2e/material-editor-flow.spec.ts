@@ -187,16 +187,30 @@ test("structured material editor previews impact, commits, restores, and protect
     { steps: 4 },
   );
   await expect(dragHandle).toBeVisible();
+  const handleCenterX = handleBox!.x + handleBox!.width / 2;
+  const handleCenterY = handleBox!.y + handleBox!.height / 2;
+  expect(handleCenterX).toBeLessThan(firstBlockBox!.x);
   await page.mouse.down();
+  await page.mouse.move(handleCenterX, handleCenterY + 8, { steps: 3 });
+  const dragPreview = page.getByTestId("material-block-drag-preview");
+  await expect(dragPreview).toBeVisible();
+  await expect(dragPreview).toContainText("HIF review");
+  await expect(editorBlocks.nth(0)).toHaveClass(/openkoto-editor-drag-source/);
   await page.mouse.move(
-    secondBlockBox!.x + secondBlockBox!.width / 2,
+    handleCenterX,
     secondBlockBox!.y + secondBlockBox!.height - 2,
     { steps: 12 },
   );
   await expect(page.getByTestId("material-block-drop-indicator")).toBeVisible();
+  await expect(dragPreview).toBeVisible();
+  await expect(dragPreview).toContainText("HIF review");
   await page.mouse.up();
 
   await expect(page.getByText("松开以导入", { exact: true })).toHaveCount(0);
+  await expect(dragPreview).toHaveCount(0);
+  await expect(page.getByTestId("material-block-drop-indicator")).toHaveCount(0);
+  await expect(page.getByTestId("material-block-editor").locator(".ProseMirror-selectednode")).toHaveCount(0);
+  await expect(page.getByTestId("material-block-editor").locator(".openkoto-editor-drag-source")).toHaveCount(0);
   await expect.poll(() => editorBlocks.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.blockId)))
     .toEqual(["block-body", "block-heading"]);
   await expect(editorBlocks.nth(0)).toContainText("HIF signalling changes transcription.");
