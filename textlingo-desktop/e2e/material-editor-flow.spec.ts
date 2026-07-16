@@ -30,6 +30,19 @@ test("structured material editor previews impact, commits, restores, and protect
       affected_annotations: 1,
       affected_learning_items: 0,
     };
+    const moveImpact = {
+      inserted_blocks: 0,
+      updated_blocks: 0,
+      deleted_blocks: 0,
+      moved_blocks: 1,
+      changed_segments: 0,
+      deleted_segments: 0,
+      stale_readings: 0,
+      stale_translations: 0,
+      stale_explanations: 0,
+      affected_annotations: 0,
+      affected_learning_items: 0,
+    };
     let document = {
       material_id: "material-editor",
       title: "HIF review",
@@ -58,6 +71,7 @@ test("structured material editor previews impact, commits, restores, and protect
     const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
     const callbacks: Record<number, (...args: unknown[]) => unknown> = {};
     let nextCallbackId = 1;
+    let pendingImpact = impact;
 
     Object.assign(window, {
       __openkotoEditorCalls: calls,
@@ -89,12 +103,26 @@ test("structured material editor previews impact, commits, restores, and protect
           if (command === "get_material_draft_cmd") return null;
           if (command === "save_material_draft_cmd") return { material_id: document.material_id, ...(args.payload as object), updated_at: now, is_stale: false };
           if (command === "delete_material_draft_cmd") return null;
-          if (command === "preview_material_edit_cmd") return { base_revision: document.current_revision, next_revision: 3, content_sha256: "b".repeat(64), preview_token: "preview-e2e", impact };
+          if (command === "preview_material_edit_cmd") {
+            const request = args.payload as { blocks: typeof document.blocks };
+            const requestIds = request.blocks.map((block) => block.id);
+            const documentIds = document.blocks.map((block) => block.id);
+            const isMoveOnly = requestIds.length === documentIds.length
+              && requestIds.some((id, index) => id !== documentIds[index]);
+            pendingImpact = isMoveOnly ? moveImpact : impact;
+            return {
+              base_revision: document.current_revision,
+              next_revision: document.current_revision + 1,
+              content_sha256: "b".repeat(64),
+              preview_token: "preview-e2e",
+              impact: pendingImpact,
+            };
+          }
           if (command === "commit_material_edit_cmd") {
             const request = args.payload as { blocks: typeof document.blocks };
-            document = { ...document, current_revision: 3, content_sha256: "b".repeat(64), blocks: request.blocks };
+            document = { ...document, current_revision: document.current_revision + 1, content_sha256: "b".repeat(64), blocks: request.blocks };
             article = { ...article, content: request.blocks.map((block) => block.text).join("\n\n"), material_revision: document.current_revision, content_sha256: document.content_sha256 };
-            return { document, impact };
+            return { document, impact: pendingImpact };
           }
           if (command === "list_material_revisions_cmd") return [
             { revision: 3, parent_revision: 2, action: "edit", content_sha256: "b".repeat(64), change_summary: { inserted_blocks: 1 }, created_at: now },
@@ -127,6 +155,69 @@ test("structured material editor previews impact, commits, restores, and protect
 
   await expect(page.getByRole("region", { name: "正文编辑器" })).toBeVisible();
   await expect(page.getByRole("complementary", { name: "主导航" })).toHaveCount(0);
+
+  const editorBlocks = page.getByTestId("material-block-editor").locator(".tiptap > *");
+  await expect(editorBlocks).toHaveCount(2);
+  await expect(editorBlocks.nth(0)).toContainText("HIF review");
+  await expect(editorBlocks.nth(1)).toContainText("HIF signalling changes transcription.");
+
+  await editorBlocks.nth(0).hover();
+  const dragHandle = page.getByTestId("material-block-drag-handle");
+  await expect(dragHandle).toBeVisible();
+  const handleBox = await dragHandle.boundingBox();
+  const secondBlockBox = await editorBlocks.nth(1).boundingBox();
+  expect(handleBox).not.toBeNull();
+  expect(secondBlockBox).not.toBeNull();
+  await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    secondBlockBox!.x + secondBlockBox!.width / 2,
+    secondBlockBox!.y + secondBlockBox!.height - 2,
+    { steps: 12 },
+  );
+  await expect(page.getByTestId("material-block-drop-indicator")).toBeVisible();
+  await page.mouse.up();
+
+  await expect(page.getByText("松开以导入", { exact: true })).toHaveCount(0);
+  await expect.poll(() => editorBlocks.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.blockId)))
+    .toEqual(["block-body", "block-heading"]);
+  await expect(editorBlocks.nth(0)).toContainText("HIF signalling changes transcription.");
+  await expect(editorBlocks.nth(1)).toContainText("HIF review");
+
+  await page.getByRole("button", { name: "撤销" }).click();
+  await expect.poll(() => editorBlocks.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.blockId)))
+    .toEqual(["block-heading", "block-body"]);
+  await expect(editorBlocks.nth(0)).toContainText("HIF review");
+  await expect(editorBlocks.nth(1)).toContainText("HIF signalling changes transcription.");
+  await page.getByRole("button", { name: "重做" }).click();
+  await expect.poll(() => editorBlocks.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.blockId)))
+    .toEqual(["block-body", "block-heading"]);
+  await expect(editorBlocks.nth(0)).toContainText("HIF signalling changes transcription.");
+  await expect(editorBlocks.nth(1)).toContainText("HIF review");
+
+  await page.getByRole("button", { name: /检查影响/ }).click();
+  const moveImpactDialog = page.getByRole("dialog", { name: "编辑影响" });
+  await expect(moveImpactDialog).toContainText("新增块0");
+  await expect(moveImpactDialog).toContainText("修改块0");
+  await expect(moveImpactDialog).toContainText("删除块0");
+  await expect(moveImpactDialog).toContainText("移动块1");
+  await page.getByRole("button", { name: "完成" }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText("没有未保存修改")).toBeVisible();
+
+  const moveCalls = await page.evaluate(() => window.__openkotoEditorCalls
+    .filter((call) => call.command === "preview_material_edit_cmd" || call.command === "commit_material_edit_cmd"));
+  expect(moveCalls.map((call) => call.command)).toEqual([
+    "preview_material_edit_cmd",
+    "preview_material_edit_cmd",
+    "commit_material_edit_cmd",
+  ]);
+  for (const call of moveCalls) {
+    const payload = call.args.payload as { blocks: Array<{ id: string; block_order: number }> };
+    expect(payload.blocks.map((block) => block.id)).toEqual(["block-body", "block-heading"]);
+    expect(payload.blocks.map((block) => block.block_order)).toEqual([0, 1]);
+  }
+
   await page.getByRole("button", { name: /添加段落/ }).click();
   await page.getByRole("button", { name: /检查影响/ }).click();
   await expect(page.getByRole("dialog", { name: "编辑影响" })).toContainText("翻译待更新");

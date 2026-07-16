@@ -1,7 +1,7 @@
 {
   "name": "openkoto-desktop",
   "private": true,
-  "version": "0.12.1",
+  "version": "0.12.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -35,7 +35,6 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.5.0",
     "@tauri-apps/plugin-opener": "^2",
-    "@tiptap/extension-drag-handle-react": "^3.27.4",
     "@tiptap/extension-placeholder": "^3.27.4",
     "@tiptap/extension-unique-id": "^3.27.4",
     "@tiptap/react": "^3.27.4",

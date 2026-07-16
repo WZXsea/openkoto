@@ -109,6 +109,28 @@ body {
   cursor: grab;
 }
 
+.openkoto-editor-pointer-handle {
+  position: fixed;
+  z-index: 40;
+  touch-action: none;
+  user-select: none;
+}
+
+.openkoto-editor-pointer-handle[aria-pressed="true"] {
+  cursor: grabbing;
+}
+
+.openkoto-editor-drop-indicator {
+  position: fixed;
+  z-index: 39;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 25%, transparent);
+  pointer-events: none;
+  transform: translateY(-1.5px);
+}
+
 .openkoto-editor-drag-handle:active {
   cursor: grabbing;
 }

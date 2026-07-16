@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -11,10 +11,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-vi.mock("@tiptap/extension-drag-handle-react", () => ({
-  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
 const baseDocument: MaterialDocument = {
   material_id: "material-1",
   title: "HIF review",
@@ -22,6 +18,15 @@ const baseDocument: MaterialDocument = {
   content_sha256: "a".repeat(64),
   blocks: [{ id: "block-1", block_type: "paragraph", block_order: 0, text: "HIF signalling.", attrs: {} }],
   derived_summary: {},
+};
+
+const reorderDocument: MaterialDocument = {
+  ...baseDocument,
+  blocks: [
+    { id: "block-a", block_type: "paragraph", block_order: 0, text: "Alpha", attrs: {} },
+    { id: "block-b", block_type: "paragraph", block_order: 1, text: "Beta", attrs: {} },
+    { id: "block-c", block_type: "paragraph", block_order: 2, text: "Gamma", attrs: {} },
+  ],
 };
 
 const noImpact: MaterialEditImpact = {
@@ -62,6 +67,39 @@ function mockCommands(impact: MaterialEditImpact = noImpact) {
   });
 }
 
+function mockReorderCommands() {
+  const moveImpact: MaterialEditImpact = {
+    ...noImpact,
+    inserted_blocks: 0,
+    changed_segments: 0,
+    moved_blocks: 1,
+  };
+  invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+    if (command === "get_material_document_cmd") return Promise.resolve(reorderDocument);
+    if (command === "get_material_draft_cmd") return Promise.resolve(null);
+    if (command === "save_material_draft_cmd") {
+      const request = args?.payload as { base_revision: number; blocks: MaterialDocument["blocks"] };
+      return Promise.resolve({ material_id: "material-1", ...request, updated_at: "2026-07-15T12:00:00Z", is_stale: false });
+    }
+    if (command === "delete_material_draft_cmd") return Promise.resolve(null);
+    if (command === "preview_material_edit_cmd") {
+      return Promise.resolve({ base_revision: 1, next_revision: 2, content_sha256: "b".repeat(64), preview_token: "preview-move", impact: moveImpact });
+    }
+    if (command === "commit_material_edit_cmd") {
+      const request = args?.payload as { blocks: MaterialDocument["blocks"] };
+      return Promise.resolve({ document: { ...reorderDocument, current_revision: 2, blocks: request.blocks }, impact: moveImpact });
+    }
+    if (command === "list_material_revisions_cmd") return Promise.resolve([]);
+    return Promise.reject(new Error(`Unexpected command: ${command}`));
+  });
+}
+
+function renderedBlockIds(): Array<string | undefined> {
+  const editor = screen.getByTestId("material-block-editor");
+  return Array.from(editor.querySelectorAll<HTMLElement>(".tiptap > [data-block-id]"))
+    .map((element) => element.dataset.blockId);
+}
+
 beforeEach(() => {
   invokeMock.mockReset();
   mockCommands();
@@ -85,6 +123,50 @@ describe("MaterialDocumentEditor", () => {
       materialId: "material-1",
         payload: expect.objectContaining({ base_revision: 1, client_request_id: expect.any(String), preview_token: "preview-1" }),
     }));
+  });
+
+  it("moves the selected block with toolbar controls in one undoable editor action", async () => {
+    invokeMock.mockReset();
+    mockReorderCommands();
+    render(<MaterialDocumentEditor materialId="material-1" title="HIF review" onCancel={vi.fn()} />);
+    const user = userEvent.setup();
+
+    await screen.findByTestId("material-block-editor");
+    expect(renderedBlockIds()).toEqual(["block-a", "block-b", "block-c"]);
+
+    await user.click(screen.getByRole("button", { name: "下移当前块" }));
+    expect(renderedBlockIds()).toEqual(["block-b", "block-a", "block-c"]);
+    await user.click(screen.getByRole("button", { name: "撤销" }));
+    expect(renderedBlockIds()).toEqual(["block-a", "block-b", "block-c"]);
+    await user.click(screen.getByRole("button", { name: "重做" }));
+    expect(renderedBlockIds()).toEqual(["block-b", "block-a", "block-c"]);
+  });
+
+  it("moves the selected block with Alt+ArrowDown and submits only the reordered ids", async () => {
+    invokeMock.mockReset();
+    mockReorderCommands();
+    render(<MaterialDocumentEditor materialId="material-1" title="HIF review" onCancel={vi.fn()} />);
+    const user = userEvent.setup();
+
+    const editor = await screen.findByTestId("material-block-editor");
+    const tiptap = editor.querySelector<HTMLElement>(".tiptap");
+    expect(tiptap).not.toBeNull();
+    fireEvent.keyDown(tiptap!, { key: "ArrowDown", altKey: true });
+    expect(renderedBlockIds()).toEqual(["block-b", "block-a", "block-c"]);
+
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "preview_material_edit_cmd",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          blocks: [
+            expect.objectContaining({ id: "block-b", block_order: 0 }),
+            expect.objectContaining({ id: "block-a", block_order: 1 }),
+            expect.objectContaining({ id: "block-c", block_order: 2 }),
+          ],
+        }),
+      }),
+    ));
   });
 
   it("requires explicit confirmation when translations or annotations are affected", async () => {

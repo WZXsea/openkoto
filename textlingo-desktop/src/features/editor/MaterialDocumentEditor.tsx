@@ -1,5 +1,4 @@
-import { Extension, type Editor, type JSONContent } from "@tiptap/core";
-import DragHandle from "@tiptap/extension-drag-handle-react";
+import { Extension, type Editor } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
 import UniqueID from "@tiptap/extension-unique-id";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -17,7 +16,6 @@ import {
   Code2,
   FileClock,
   FileCode2,
-  GripVertical,
   Heading2,
   Heading3,
   History,
@@ -65,6 +63,8 @@ import {
   type MaterialRevisionDetail,
   type MaterialRevisionSummary,
 } from "./types";
+import { PointerBlockDragHandle } from "./PointerBlockDragHandle";
+import { reorderEditorBlock } from "./reorderMaterialBlock";
 
 const AUTOSAVE_DELAY_MS = 2000;
 
@@ -78,6 +78,13 @@ const MaterialBlockMetadata = Extension.create({
           default: {},
           rendered: false,
         },
+        materialDomId: {
+          default: null,
+          parseHTML: (element: HTMLElement) => element.getAttribute("data-block-id"),
+          renderHTML: (attributes: Record<string, unknown>) => typeof attributes.blockId === "string"
+            ? { "data-block-id": attributes.blockId }
+            : {},
+        },
       },
     }];
   },
@@ -87,6 +94,7 @@ const editorExtensions = [
   StarterKit.configure({
     heading: { levels: [2, 3] },
     codeBlock: false,
+    trailingNode: false,
     link: { openOnClick: false, autolink: true, linkOnPaste: true },
   }),
   MaterialBlockMetadata,
@@ -118,20 +126,35 @@ interface EditorCanvasProps {
   onSave: () => void;
 }
 
-function editorDocument(editor: Editor): JSONContent {
-  return editor.getJSON();
-}
-
 function moveCurrentBlock(editor: Editor, direction: -1 | 1): boolean {
-  const index = editor.state.selection.$from.index(0);
-  const document = editorDocument(editor);
-  const content = [...(document.content ?? [])];
-  const target = index + direction;
-  if (index < 0 || index >= content.length || target < 0 || target >= content.length) return false;
-  [content[index], content[target]] = [content[target], content[index]];
-  editor.commands.setContent({ ...document, content }, { emitUpdate: true });
-  editor.commands.focus("start");
-  return true;
+  const blocks = tiptapDocumentToBlocks(editor.getJSON());
+  const validIds = new Set(blocks.flatMap((block) => block.id ? [block.id] : []));
+  const { $from } = editor.state.selection;
+  let sourceId: string | null = null;
+
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const blockId = $from.node(depth).attrs.blockId;
+    if (typeof blockId === "string" && validIds.has(blockId)) {
+      sourceId = blockId;
+      break;
+    }
+  }
+
+  if (!sourceId) {
+    for (const node of [$from.nodeAfter, $from.nodeBefore]) {
+      const blockId = node?.attrs.blockId;
+      if (typeof blockId === "string" && validIds.has(blockId)) {
+        sourceId = blockId;
+        break;
+      }
+    }
+  }
+
+  if (!sourceId) return false;
+  const index = blocks.findIndex((block) => block.id === sourceId);
+  const target = blocks[index + direction];
+  if (index < 0 || !target?.id) return false;
+  return reorderEditorBlock(editor, sourceId, target.id, direction < 0 ? "before" : "after");
 }
 
 function editLink(editor: Editor): void {
@@ -260,9 +283,11 @@ function MaterialEditorCanvas({ blocks, disabled, onBlocksChange, onSave }: Edit
       </div>
 
       <div className="relative flex-1 overflow-y-auto px-4 py-8 sm:px-8" data-testid="material-block-editor-scroll">
-        <DragHandle editor={editor}>
-          <button type="button" className="openkoto-editor-drag-handle" aria-label="拖动当前块" title="拖动当前块"><GripVertical size={17} /></button>
-        </DragHandle>
+        <PointerBlockDragHandle
+          editor={editor}
+          validBlockIds={tiptapDocumentToBlocks(editor.getJSON()).flatMap((block) => block.id ? [block.id] : [])}
+          disabled={disabled}
+        />
         {slashOpen && (
           <div className="absolute left-1/2 top-5 z-30 grid w-[min(320px,calc(100%-2rem))] -translate-x-1/2 gap-1 rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-xl" role="menu" aria-label="插入块">
             <p className="px-2 py-1 text-xs text-muted-foreground">选择块类型</p>
