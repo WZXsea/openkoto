@@ -1058,6 +1058,72 @@ describe("App onboarding", () => {
     );
   });
 
+  it("keeps the file-import overlay hidden for internal block drags while external file drags still show it", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve([]);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
+    });
+
+    // Tauri surfaces an HTML5 editor block drag as native drag events without
+    // filesystem paths. Those events must never activate file-import UI.
+    for (const type of ["enter", "over", "drop"] as const) {
+      await act(async () => {
+        await appShellMocks.capturedDragDropHandler?.({
+          payload: { type, paths: [] },
+        });
+      });
+      expect(screen.queryByText("松开以导入")).not.toBeInTheDocument();
+    }
+    expect(invokeMock).not.toHaveBeenCalledWith("preview_material_import_cmd", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("import_book_cmd", expect.anything());
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "enter", paths: ["/tmp/external.pdf"] },
+      });
+    });
+    expect(screen.getByText("松开以导入")).toBeVisible();
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "over", paths: [] },
+      });
+    });
+    expect(screen.getByText("松开以导入")).toBeVisible();
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "leave", paths: [] },
+      });
+    });
+    expect(screen.queryByText("松开以导入")).not.toBeInTheDocument();
+  });
+
   it("does not continue an in-flight dropped-file import after unmount", async () => {
     const importedArticle = {
       id: "book-1",

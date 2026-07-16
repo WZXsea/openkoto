@@ -110,6 +110,7 @@ export function AppShell() {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const dropStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isImportingRef = useRef(false);
+  const externalFileDragActiveRef = useRef(false);
   const isMountedRef = useRef(true);
   const backendAuthenticatedRef = useRef(false);
 
@@ -288,6 +289,7 @@ export function AppShell() {
     return () => {
       isMountedRef.current = false;
       isImportingRef.current = false;
+      externalFileDragActiveRef.current = false;
       clearDropStatusTimer();
     };
   }, [clearDropStatusTimer]);
@@ -314,28 +316,45 @@ export function AppShell() {
           const payload = event.payload;
           if (!backendAuthenticatedRef.current) {
             if (payload.type === "drop" || payload.type === "leave") {
+              externalFileDragActiveRef.current = false;
               setIsDragging(false);
             }
             return;
           }
 
-          if (payload.type === "enter" || payload.type === "over") {
-            if (!isImportingRef.current) setIsDragging(true);
+          if (payload.type === "enter") {
+            // Tauri also reports HTML5 editor block drags at the webview level,
+            // but those events have no filesystem paths. Only a native file drag
+            // may activate the full-screen import overlay.
+            externalFileDragActiveRef.current = (payload.paths ?? []).length > 0;
+            if (!isImportingRef.current) setIsDragging(externalFileDragActiveRef.current);
+            return;
+          }
+
+          if (payload.type === "over") {
+            if (!isImportingRef.current && externalFileDragActiveRef.current) setIsDragging(true);
             return;
           }
 
           if (payload.type === "leave") {
+            externalFileDragActiveRef.current = false;
             setIsDragging(false);
             return;
           }
 
           if (payload.type !== "drop") return;
 
+          externalFileDragActiveRef.current = false;
           setIsDragging(false);
           if (isImportingRef.current) return;
 
-          const paths = (payload.paths || []).filter(isSupportedDropPath);
-          const unsupported = (payload.paths || []).filter((p) => !isSupportedDropPath(p));
+          const droppedPaths = payload.paths || [];
+          // An internal editor drag can surface as an empty native drop. It is
+          // navigation inside the document, not an unsupported file import.
+          if (droppedPaths.length === 0) return;
+
+          const paths = droppedPaths.filter(isSupportedDropPath);
+          const unsupported = droppedPaths.filter((p) => !isSupportedDropPath(p));
           if (paths.length === 0) {
             setDropStatus({
               ok: 0,

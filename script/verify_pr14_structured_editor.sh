@@ -60,9 +60,11 @@ finalize_local_macos_package() {
   local mount_dir
   local mounted_app
   local bundle_version
+  local expected_bundle_version
 
+  expected_bundle_version="$(node -p 'require("./textlingo-desktop/package.json").version')"
   app_path="$(find textlingo-desktop/src-tauri/target -path '*bundle/macos/*.app' -type d | head -1)"
-  dmg_path="$(find textlingo-desktop/src-tauri/target -path '*bundle/dmg/*.dmg' -type f | head -1)"
+  dmg_path="$(find textlingo-desktop/src-tauri/target -path '*bundle/dmg/*.dmg' -type f -name "*_${expected_bundle_version}_*.dmg" | head -1)"
   [ -n "$app_path" ] || fail "packaged app bundle was not found"
   [ -n "$dmg_path" ] || fail "packaged DMG was not found"
 
@@ -99,7 +101,7 @@ finalize_local_macos_package() {
   bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$mounted_app/Contents/Info.plist")"
   hdiutil detach "$mount_dir" >/dev/null
   rm -rf "$mount_dir"
-  [ "$bundle_version" = "0.12.0" ] || fail "unexpected packaged app version: $bundle_version"
+  [ "$bundle_version" = "$expected_bundle_version" ] || fail "unexpected packaged app version: $bundle_version"
 
   info "signed DMG verified: $(shasum -a 256 "$dmg_path" | awk '{print $1}')"
 }
