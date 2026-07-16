@@ -109,9 +109,14 @@ body {
   cursor: grab;
 }
 
-.openkoto-editor-pointer-handle {
+.openkoto-editor-drag-corridor {
   position: fixed;
   z-index: 40;
+  width: 38px;
+}
+
+.openkoto-editor-pointer-handle {
+  position: fixed;
   touch-action: none;
   user-select: none;
 }
@@ -141,6 +146,7 @@ body {
 }
 
 @media (max-width: 700px) {
+  .openkoto-editor-drag-corridor,
   .openkoto-editor-drag-handle {
     display: none;
   }

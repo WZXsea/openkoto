@@ -71,6 +71,7 @@ function autoScrollAtEditorEdge(editor: Editor, clientY: number): boolean {
 
 export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false }: PointerBlockDragHandleProps) {
   const validIdsRef = useRef<ReadonlySet<string>>(new Set(validBlockIds));
+  const corridorRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<HTMLButtonElement | null>(null);
   const dragRef = useRef<PointerDragState | null>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
@@ -149,7 +150,11 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
       if (element) setActiveBlock(positionedBlock(element));
     };
     const handlePointerLeave = (event: PointerEvent) => {
-      if (dragRef.current || handleRef.current?.contains(event.relatedTarget as Node | null)) return;
+      const relatedTarget = event.relatedTarget;
+      if (
+        dragRef.current
+        || (relatedTarget instanceof Node && corridorRef.current?.contains(relatedTarget))
+      ) return;
       setActiveBlock(null);
     };
     const handleScroll = () => refreshActiveBlock();
@@ -232,28 +237,46 @@ export function PointerBlockDragHandle({ editor, validBlockIds, disabled = false
     if (dragRef.current?.pointerId === event.pointerId) clearDrag(false);
   };
 
+  const handleCorridorPointerLeave = (event: React.PointerEvent<HTMLDivElement>) => {
+    const relatedTarget = event.nativeEvent.relatedTarget;
+    if (dragRef.current || (relatedTarget instanceof Node && editor.view.dom.contains(relatedTarget))) return;
+    setActiveBlock(null);
+  };
+
   if (disabled || !activeBlock) return null;
 
   return (
     <>
-      <button
-        ref={handleRef}
-        type="button"
-        draggable={false}
-        className="openkoto-editor-drag-handle openkoto-editor-pointer-handle"
-        data-testid="material-block-drag-handle"
-        style={{ left: activeBlock.rect.left - 34, top: activeBlock.rect.top }}
-        aria-label="拖动当前块"
-        aria-pressed={isDragging}
-        title="拖动当前块"
-        onDragStart={(event) => event.preventDefault()}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
+      <div
+        ref={corridorRef}
+        className="openkoto-editor-drag-corridor"
+        data-testid="material-block-drag-corridor"
+        style={{
+          left: activeBlock.rect.left - 38,
+          top: activeBlock.rect.top,
+          height: Math.max(30, activeBlock.rect.height),
+        }}
+        onPointerLeave={handleCorridorPointerLeave}
       >
-        <GripVertical size={17} />
-      </button>
+        <button
+          ref={handleRef}
+          type="button"
+          draggable={false}
+          className="openkoto-editor-drag-handle openkoto-editor-pointer-handle"
+          data-testid="material-block-drag-handle"
+          style={{ left: activeBlock.rect.left - 34, top: activeBlock.rect.top }}
+          aria-label="拖动当前块"
+          aria-pressed={isDragging}
+          title="拖动当前块"
+          onDragStart={(event) => event.preventDefault()}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+        >
+          <GripVertical size={17} />
+        </button>
+      </div>
       {dropTarget && (
         <div
           className="openkoto-editor-drop-indicator"

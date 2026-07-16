@@ -83,6 +83,10 @@ function installPointerEventPolyfill() {
     constructor(type: string, init: MouseEventInit & { pointerId?: number } = {}) {
       super(type, init);
       this.pointerId = init.pointerId ?? 0;
+      Object.defineProperty(this, "relatedTarget", {
+        configurable: true,
+        value: init.relatedTarget ?? null,
+      });
     }
   }
 
@@ -127,6 +131,17 @@ function hoverNestedTarget(target: Element) {
   return screen.getByTestId("material-block-drag-handle");
 }
 
+function crossBlockGapIntoHandle(root: HTMLElement, source: Element) {
+  hoverNestedTarget(source);
+  const corridor = screen.getByTestId("material-block-drag-corridor");
+  fireEvent.pointerLeave(root, { pointerId: 1, clientX: 100, clientY: 30, relatedTarget: corridor });
+  fireEvent.pointerMove(corridor, { pointerId: 1, clientX: 98, clientY: 30 });
+  return {
+    corridor,
+    handle: screen.getByTestId("material-block-drag-handle"),
+  };
+}
+
 describe("PointerBlockDragHandle", () => {
   beforeEach(() => {
     reorderEditorBlockMock.mockReset();
@@ -151,6 +166,58 @@ describe("PointerBlockDragHandle", () => {
 
     fireEvent.pointerMove(listParagraph, { pointerId: 1, clientX: 120, clientY: 90 });
     expect(screen.getByTestId("material-block-drag-handle")).toHaveStyle({ top: "80px" });
+  });
+
+  it("keeps the handle reachable while moving horizontally from block text through the gap corridor", () => {
+    const { root, quoteParagraph } = mountEditorDom();
+    render(<PointerBlockDragHandle editor={editorFor(root)} validBlockIds={["quote-block", "list-block"]} />);
+
+    const { corridor, handle } = crossBlockGapIntoHandle(root, quoteParagraph);
+    expect(corridor).toHaveStyle({ left: "62px", top: "20px", height: "40px" });
+    expect(handle).toBeVisible();
+
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 80, clientY: 30 });
+    expect(screen.getByTestId("material-block-drag-handle")).toBe(handle);
+  });
+
+  it("survives rapid editor-corridor crossings but hides after leaving the complete interaction corridor", () => {
+    const { scrollContainer, root, quoteParagraph } = mountEditorDom();
+    render(<PointerBlockDragHandle editor={editorFor(root)} validBlockIds={["quote-block", "list-block"]} />);
+    const outside = document.createElement("div");
+    scrollContainer.append(outside);
+
+    const { corridor } = crossBlockGapIntoHandle(root, quoteParagraph);
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.pointerOut(corridor, { pointerId: 1, clientX: 100, clientY: 30, relatedTarget: quoteParagraph });
+      expect(screen.getByTestId("material-block-drag-handle")).toBeInTheDocument();
+      fireEvent.pointerLeave(root, { pointerId: 1, clientX: 98, clientY: 30, relatedTarget: corridor });
+      expect(screen.getByTestId("material-block-drag-handle")).toBeInTheDocument();
+    }
+
+    fireEvent.pointerOut(corridor, { pointerId: 1, clientX: 40, clientY: 30, relatedTarget: outside });
+    expect(screen.queryByTestId("material-block-drag-corridor")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("material-block-drag-handle")).not.toBeInTheDocument();
+  });
+
+  it("can start and complete a block drag after crossing the gap corridor", () => {
+    const { root, quoteParagraph, listParagraph } = mountEditorDom();
+    render(<PointerBlockDragHandle editor={editorFor(root)} validBlockIds={["quote-block", "list-block"]} />);
+    const { handle } = crossBlockGapIntoHandle(root, quoteParagraph);
+    preparePointerCapture(handle);
+    pointAt(listParagraph);
+
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 80, clientY: 30 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 110, clientY: 105 });
+    expect(handle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("material-block-drop-indicator")).toBeInTheDocument();
+
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 110, clientY: 105 });
+    expect(reorderEditorBlockMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "quote-block",
+      "list-block",
+      "after",
+    );
   });
 
   it("does not start a reorder before the four pixel threshold", () => {

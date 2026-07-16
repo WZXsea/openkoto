@@ -1,6 +1,6 @@
 [package]
 name = "openkoto-backend"
-version = "0.12.2"
+version = "0.12.3"
 description = "OpenKoto Backend - PostgreSQL-backed API service"
 edition = "2021"
 

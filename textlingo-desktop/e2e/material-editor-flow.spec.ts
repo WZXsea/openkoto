@@ -161,14 +161,32 @@ test("structured material editor previews impact, commits, restores, and protect
   await expect(editorBlocks.nth(0)).toContainText("HIF review");
   await expect(editorBlocks.nth(1)).toContainText("HIF signalling changes transcription.");
 
-  await editorBlocks.nth(0).hover();
+  const firstBlockBox = await editorBlocks.nth(0).boundingBox();
+  expect(firstBlockBox).not.toBeNull();
+  await page.mouse.move(
+    firstBlockBox!.x + Math.min(80, firstBlockBox!.width / 2),
+    firstBlockBox!.y + firstBlockBox!.height / 2,
+  );
   const dragHandle = page.getByTestId("material-block-drag-handle");
   await expect(dragHandle).toBeVisible();
   const handleBox = await dragHandle.boundingBox();
   const secondBlockBox = await editorBlocks.nth(1).boundingBox();
   expect(handleBox).not.toBeNull();
   expect(secondBlockBox).not.toBeNull();
-  await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2);
+  const handleGapX = (firstBlockBox!.x + handleBox!.x + handleBox!.width) / 2;
+  await page.mouse.move(
+    handleGapX,
+    handleBox!.y + handleBox!.height / 2,
+    { steps: 10 },
+  );
+  await page.waitForTimeout(50);
+  await expect(dragHandle).toBeVisible();
+  await page.mouse.move(
+    handleBox!.x + handleBox!.width / 2,
+    handleBox!.y + handleBox!.height / 2,
+    { steps: 4 },
+  );
+  await expect(dragHandle).toBeVisible();
   await page.mouse.down();
   await page.mouse.move(
     secondBlockBox!.x + secondBlockBox!.width / 2,
