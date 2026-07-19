@@ -113,6 +113,8 @@ for path in \
   textlingo-desktop/agent-worker/src/index.ts \
   textlingo-desktop/agent-worker/src/mindMapTask.ts \
   textlingo-desktop/agent-worker/src/mindMapTask.test.ts \
+  textlingo-desktop/agent-worker/src/piRuntime.ts \
+  textlingo-desktop/agent-worker/src/piRuntime.test.ts \
   textlingo-desktop/src/features/assistant/api.ts \
   textlingo-desktop/src/features/assistant/state.ts \
   textlingo-desktop/src/features/assistant/types.ts \
@@ -153,7 +155,8 @@ done
 info "checking worker cancellation and Desktop Assistant bridge"
 require_pattern 'method: z.literal\("agent.cancel"\)' textlingo-desktop/agent-worker/src/protocol.ts
 require_pattern 'AbortController' textlingo-desktop/agent-worker/src/index.ts
-require_pattern 'session.abort' textlingo-desktop/agent-worker/src/mindMapTask.ts
+require_pattern 'agent\.abort\(' textlingo-desktop/agent-worker/src/piRuntime.ts
+require_pattern 'task_cancelled' textlingo-desktop/agent-worker/src/index.test.ts
 for command in \
   assistant_task_list_cmd \
   assistant_task_detail_cmd \
@@ -173,13 +176,51 @@ require_pattern 'execute_registered_assistant_action' textlingo-desktop/src-taur
 require_pattern 'worker_task_event_idempotency_key' openkoto-backend/src/assistant.rs
 require_pattern 'recover_orphaned_worker_tasks_from_backend' textlingo-desktop/src-tauri/src/agent_worker.rs
 require_pattern 'get_agent_task_cmd' textlingo-desktop/src/components/features/ArticleMindMapPanel.tsx
-require_pattern 'runAgentPrompt' textlingo-desktop/agent-worker/src/index.ts
-require_pattern 'direct-provider' textlingo-desktop/agent-worker/src/index.ts
-require_pattern 'OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS' textlingo-desktop/agent-worker/src/mindMapTask.ts
-require_pattern 'chat/completions' textlingo-desktop/agent-worker/src/mindMapTask.ts
-if rg -q 'runOpenCodePrompt' textlingo-desktop/agent-worker/src/index.ts; then
-  fail "production worker entrypoint must not call the external OpenCode CLI runtime"
+require_pattern 'runPiAgentPrompt' textlingo-desktop/agent-worker/src/index.ts
+require_pattern 'pi-agent-core' textlingo-desktop/agent-worker/src/index.ts
+require_pattern 'tools:[[:space:]]*\[\]' textlingo-desktop/agent-worker/src/piRuntime.ts
+require_pattern 'piRuntime\.js' textlingo-desktop/src-tauri/src/agent_worker.rs
+if ! node - <<'NODE'
+const pkg = require("./textlingo-desktop/agent-worker/package.json");
+const lock = require("./textlingo-desktop/agent-worker/package-lock.json");
+const required = {
+  "@earendil-works/pi-agent-core": "0.80.10",
+  "@earendil-works/pi-ai": "0.80.10",
+};
+for (const [name, version] of Object.entries(required)) {
+  if (pkg.dependencies?.[name] !== version) process.exit(1);
+  if (lock.packages?.[`node_modules/${name}`]?.version !== version) process.exit(1);
+}
+const match = String(pkg.engines?.node ?? "").match(/(\d+)\.(\d+)\.(\d+)/);
+if (!match || Number(match[1]) < 22 || (Number(match[1]) === 22 && Number(match[2]) < 19)) {
+  process.exit(1);
+}
+NODE
+then
+  fail "agent-worker must pin Pi 0.80.10 and require Node >=22.19.0"
 fi
+production_worker_sources=()
+while IFS= read -r source; do
+  production_worker_sources+=("$source")
+done < <(find textlingo-desktop/agent-worker/src -type f -name '*.ts' ! -name '*.test.ts' -print)
+if rg -q '@opencode-ai/sdk|createOpencode|runOpenCodePrompt' \
+  textlingo-desktop/agent-worker/package.json \
+  textlingo-desktop/agent-worker/package-lock.json \
+  "${production_worker_sources[@]}"; then
+  fail "production worker must not retain the external OpenCode runtime"
+fi
+if rg -q '(^|[^[:alnum:]_])fetch[[:space:]]*\(' "${production_worker_sources[@]}"; then
+  fail "production worker must use Pi providers instead of raw fetch"
+fi
+for workflow in \
+  .github/workflows/ci.yml \
+  .github/workflows/release.yml \
+  .github/workflows/release-dev.yml; do
+  if rg -q 'node-version:[[:space:]]*(20|21)([^0-9]|$)' "$workflow"; then
+    fail "$workflow still configures a Node runtime below Pi's minimum"
+  fi
+  require_pattern 'node-version:[[:space:]]*22\.19\.0' "$workflow"
+done
 ensure_started_body="$(
   sed -n '/pub fn ensure_started/,/pub fn submit_mind_map_task/p' \
     textlingo-desktop/src-tauri/src/agent_worker.rs

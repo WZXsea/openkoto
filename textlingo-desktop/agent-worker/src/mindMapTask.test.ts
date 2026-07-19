@@ -1,40 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
-import { mkdtempSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS,
   buildMindMapWorkspaceFiles,
-  findAvailablePort,
   normalizeMindMapResult,
-  resolveProviderModel,
-  runAgentPrompt,
   runMindMapTask,
-  runOpenAICompatiblePrompt,
 } from "./mindMapTask.js";
 
 describe("mindMapTask", () => {
-  it("registers native google models explicitly for OpenCode", () => {
-    const resolved = resolveProviderModel({
-      kind: "native_google",
-      provider: "google-ai-studio",
-      model: "models/gemini-3-flash-preview",
-      api_key: "secret",
-    });
-
-    expect(resolved.model).toBe("google/models/gemini-3-flash-preview");
-    expect(resolved.config.enabled_providers).toEqual(["google"]);
-    expect(resolved.config.plugin).toEqual([]);
-    expect(resolved.config.autoupdate).toBe(false);
-    expect(resolved.config.provider?.google?.models?.["models/gemini-3-flash-preview"]).toMatchObject({
-      id: "models/gemini-3-flash-preview",
-      name: "models/gemini-3-flash-preview",
-    });
-  });
-
   it("builds workspace files from the article snapshot", () => {
     const files = buildMindMapWorkspaceFiles({
       taskId: "task-1",
@@ -53,158 +29,6 @@ describe("mindMapTask", () => {
     expect(files["article-source.json"]).toContain("\"content\": \"Alpha beta gamma.\"");
     expect(files["TASK.md"]).toContain("article-source.json");
     expect(files["TASK.md"]).toContain("zh-CN");
-  });
-
-  it("allocates an ephemeral port for OpenCode server startup", async () => {
-    const port = await findAvailablePort();
-    expect(port).toBeGreaterThan(0);
-  });
-
-  it("calls OpenAI-compatible chat completions without starting OpenCode", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: "```json\n{\"status\":\"not_applicable\",\"map\":null,\"diagnostics\":{\"content_type\":\"unknown\",\"coverage\":\"none\",\"notes\":[],\"window_count\":1,\"evidence_density\":0,\"low_confidence_node_ids\":[]}}\n```",
-              },
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
-
-    const providerConfig = {
-      kind: "openai_compatible" as const,
-      provider: "openai-compatible",
-      model: "custom-model",
-      api_key: "test-secret",
-      baseUrl: "https://models.example.test/v1/",
-    };
-    const result = await runAgentPrompt({
-      cwd: "/tmp/unused",
-      model: "textlingo_openai_compatible/custom-model",
-      prompt: "Return JSON",
-      system: "System",
-      config: {},
-      providerConfig,
-    });
-
-    expect(result).toMatchObject({ status: "not_applicable" });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://models.example.test/v1/chat/completions",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          authorization: "Bearer test-secret",
-        }),
-      }),
-    );
-    const request = fetchMock.mock.calls[0][1];
-    expect(JSON.parse(String(request?.body))).toMatchObject({
-      model: "custom-model",
-      messages: [
-        { role: "system", content: "System" },
-        { role: "user", content: "Return JSON" },
-      ],
-    });
-    fetchMock.mockRestore();
-  });
-
-  it("redacts the API key from OpenAI-compatible provider errors", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          error: {
-            message: "Rejected credential test-secret",
-          },
-        }),
-        {
-          status: 401,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
-
-    await expect(
-      runOpenAICompatiblePrompt({
-        cwd: "/tmp/unused",
-        model: "textlingo_openai_compatible/custom-model",
-        prompt: "Return JSON",
-        system: "System",
-        config: {},
-        providerConfig: {
-          kind: "openai_compatible",
-          provider: "openai-compatible",
-          model: "custom-model",
-          api_key: "test-secret",
-          baseUrl: "https://models.example.test/v1",
-        },
-      }),
-    ).rejects.toThrow("Rejected credential [redacted]");
-    fetchMock.mockRestore();
-  });
-
-  it("aborts an OpenAI-compatible request after the runtime timeout", async () => {
-    vi.useFakeTimers();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
-      (_input, init) =>
-        new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener(
-            "abort",
-            () => reject(new DOMException("Aborted", "AbortError")),
-            { once: true },
-          );
-        }),
-    );
-
-    const pending = runOpenAICompatiblePrompt({
-      cwd: "/tmp/unused",
-      model: "textlingo_openai_compatible/custom-model",
-      prompt: "Return JSON",
-      system: "System",
-      config: {},
-      providerConfig: {
-        kind: "openai_compatible",
-        provider: "openai-compatible",
-        model: "custom-model",
-        api_key: "test-secret",
-        baseUrl: "https://models.example.test/v1",
-      },
-    });
-    const assertion = expect(pending).rejects.toThrow(
-      "OpenAI-compatible request timed out after 120 seconds",
-    );
-
-    await vi.advanceTimersByTimeAsync(OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS);
-    await assertion;
-    fetchMock.mockRestore();
-    vi.useRealTimers();
-  });
-
-  it("fails fast for providers without a built-in direct runtime", async () => {
-    await expect(
-      runAgentPrompt({
-        cwd: "/tmp/unused",
-        model: "google/gemini-2.0-flash-exp",
-        prompt: "Return JSON",
-        system: "System",
-        config: {},
-        providerConfig: {
-          kind: "native_google",
-          provider: "google",
-          model: "gemini-2.0-flash-exp",
-          api_key: "test-secret",
-        },
-      }),
-    ).rejects.toThrow(
-      "Built-in direct runtime does not support provider kind native_google; configure an OpenAI-compatible provider",
-    );
   });
 
   it("normalizes partial model output into a schema-valid result", () => {
@@ -258,16 +82,22 @@ describe("mindMapTask", () => {
     });
   });
 
-  it("runs the OpenCode prompt runner in a temporary workspace and saves the result", async () => {
+  it("runs the Pi prompt runner in a temporary workspace and saves the result", async () => {
     const saveArtifact = vi.fn(async () => ({ artifact_id: "artifact-1" }));
     const reportProgress = vi.fn(async () => undefined);
     const log = vi.fn();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "mind-map-task-test-"));
-    const promptRunner = vi.fn(async ({ cwd, model }: { cwd: string; model: string }) => {
-      expect(model).toBe("google/gemini-2.0-flash-exp");
-      expect(existsSync(cwd)).toBe(true);
-      expect(readFileSync(join(cwd, "article-source.json"), "utf8")).toContain("Alpha beta gamma.");
-      expect(readFileSync(join(cwd, "TASK.md"), "utf8")).toContain("article-source.json");
+    const promptRunner = vi.fn(async ({ cwd, providerConfig }: {
+      cwd?: string;
+      providerConfig: { kind: string };
+    }) => {
+      expect(providerConfig.kind).toBe("native_google");
+      expect(cwd).toBeTruthy();
+      expect(existsSync(cwd!)).toBe(true);
+      expect(readFileSync(join(cwd!, "article-source.json"), "utf8")).toContain(
+        "Alpha beta gamma.",
+      );
+      expect(readFileSync(join(cwd!, "TASK.md"), "utf8")).toContain("article-source.json");
       return {
         status: "applicable",
         reason: null,
@@ -351,5 +181,58 @@ describe("mindMapTask", () => {
     ]);
     expect(readdirSync(workspaceRoot)).toEqual([]);
     expect(result.artifact_id).toBe("artifact-1");
+  });
+
+  it("does not save a partial artifact after user cancellation", async () => {
+    const controller = new AbortController();
+    const saveArtifact = vi.fn(async () => ({ artifact_id: "should-not-save" }));
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "mind-map-cancel-test-"));
+
+    await expect(
+      runMindMapTask(
+        {
+          taskId: "task-cancel",
+          articleId: "article-1",
+          displayLanguage: "zh-CN",
+          maxDepth: 3,
+          mode: "balanced",
+          articleSnapshot: {
+            title: "Sample",
+            content: "Alpha beta gamma.",
+            sourceType: "article",
+          },
+        },
+        {
+          promptRunner: vi.fn(async () => {
+            controller.abort();
+            return JSON.stringify({
+              status: "not_applicable",
+              map: null,
+              diagnostics: {
+                content_type: "unknown",
+                coverage: "none",
+                notes: [],
+                window_count: 1,
+                evidence_density: 0,
+                low_confidence_node_ids: [],
+              },
+            });
+          }),
+          saveArtifact,
+          reportProgress: vi.fn(async () => undefined),
+          workspaceRoot,
+          providerConfig: {
+            kind: "native_google",
+            provider: "google",
+            model: "gemini-2.0-flash-exp",
+            api_key: "secret",
+          },
+          signal: controller.signal,
+        },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(saveArtifact).not.toHaveBeenCalled();
+    expect(readdirSync(workspaceRoot)).toEqual([]);
   });
 });

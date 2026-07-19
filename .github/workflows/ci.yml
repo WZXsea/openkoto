@@ -70,7 +70,7 @@ jobs:
       - name: Setup Node for bundled agent worker
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.19.0
           cache: npm
           cache-dependency-path: textlingo-desktop/agent-worker/package-lock.json
 
@@ -79,6 +79,12 @@ jobs:
         run: |
           npm --prefix textlingo-desktop/agent-worker ci
           npm --prefix textlingo-desktop run build:agent-worker
+
+      - name: Verify Pi agent runtime guardrails
+        working-directory: .
+        run: |
+          EXPECTED_VERSION="$(node -p "require('./textlingo-desktop/package.json').version")" \
+            bash script/verify_pr12_assistant_observability.sh
 
       - name: setup python
         uses: actions/setup-python@v6
@@ -132,7 +138,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.19.0
           cache: npm
           cache-dependency-path: textlingo-desktop/package-lock.json
 
