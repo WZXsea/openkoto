@@ -10,7 +10,8 @@
 | 官方依赖 | `earendil-works/pi` |
 | 目标内核 | `@earendil-works/pi-agent-core@0.80.10` |
 | Provider 层 | `@earendil-works/pi-ai@0.80.10` |
-| 执行状态 | 实现与本地验收完成，待提交 PR |
+| GitHub PR | [`WZXsea/openkoto#1`](https://github.com/WZXsea/openkoto/pull/1) |
+| 执行状态 | 已提交，待合并 |
 
 详细边界见 [`docs/architecture/pr15-pi-agent-runtime.md`](../architecture/pr15-pi-agent-runtime.md)。
 
@@ -178,4 +179,4 @@ npm --prefix textlingo-desktop/agent-worker run typecheck
 - [x] Worker、Rust、静态门禁和发布工作流通过。
 - [x] 无真实文章或 API key 出现在测试和日志。
 - [x] 无关工作区改动未进入提交。
-- [ ] 分支已推送并创建 PR。
+- [x] 分支已推送并创建 PR。
