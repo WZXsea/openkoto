@@ -1,26 +1,42 @@
 {
   "app": {
     "title": "OpenKoto",
-    "subtitle": "クロスランゲージ読解・再生・学習ツール",
+    "subtitle": "ローカル読解ワークスペース。AI 翻訳と解説は拡張機能です。",
     "loading": "OpenKotoを読み込み中...",
     "notConfigured": "未設定"
   },
   "common": {
     "refresh": "更新",
     "close": "閉じる",
-    "cancel": "キャンセル"
+    "cancel": "キャンセル",
+    "aiUnavailable": "基本的な読解機能は利用できます。AI モデルを設定すると翻訳、解説、分析を利用できます。",
+    "phase1Disabled": "第1段階ではローカル読解の中核機能を優先します。この拡張機能はまだ有効化していません。"
   },
   "header": {
-    "configureApiKey": "使用を開始するにはAPIキーを設定してください",
+    "configureApiKey": "基本的な読解機能は利用できます。AI 設定後に翻訳、解説、分析を利用できます",
+    "localReadingReady": "ローカル読解は利用可能。AI は任意の拡張機能です",
     "newArticle": "新規記事",
     "settings": "設定",
     "favorites": "お気に入り",
+    "annotations": "注釈",
+    "learningWorkbench": "学習ワークベンチ",
     "newMaterial": "新規素材"
+  },
+  "navigation": {
+    "home": "ホーム",
+    "materials": "素材ライブラリ"
   },
   "footer": {
     "provider": "プロバイダー",
     "model": "モデル",
     "quickSwitch": "クイック切替"
+  },
+  "account": {
+    "menuLabel": "アカウント",
+    "signedIn": "ログイン済み",
+    "switch": "アカウントを切り替え",
+    "logout": "ログアウト",
+    "loggingOut": "ログアウト中"
   },
   "assistant": {
     "mode": {
@@ -73,7 +89,7 @@
     "back": "戻る",
     "prev": "前へ",
     "next": "次へ",
-    "edit": "編集",
+    "edit": "本文を編集",
     "cancel": "キャンセル",
     "translate": "クイック翻訳",
     "translating": "翻訳中...",
@@ -92,6 +108,7 @@
     "resegment": "再セグメント化",
     "translated": "翻訳済み",
     "parsed": "精読済み",
+    "viewModeLabel": "表示モード",
     "viewMode": {
       "original": "原文のみ",
       "bilingual": "対訳",
@@ -331,6 +348,25 @@
       "themeName": "テーマスタイル",
       "themeMode": "表示モード"
     },
+    "fonts": {
+      "uiFont": "UIフォント",
+      "readerFont": "読書フォント",
+      "uiFontInput": "UIフォントファミリー",
+      "readerFontInput": "読書フォントファミリー",
+      "custom": "カスタム",
+      "customInput": "カスタム font-family",
+      "inputPlaceholder": "例: \"PingFang SC\", sans-serif",
+      "uiHelp": "ナビゲーション、ボタン、ダイアログなど大半のUI文字に適用します。",
+      "readerHelp": "記事本文、プレーンテキスト、EPUB読書エリアに適用します。",
+      "preview": "The quick brown fox jumps over OpenKoto. 中文字体预览。",
+      "themeDefault": "テーマ既定",
+      "systemSans": "システムサンセリフ",
+      "inter": "Inter",
+      "helvetica": "Helvetica / Arial",
+      "chineseSans": "中国語サンセリフ",
+      "serif": "セリフ",
+      "chineseSerif": "中国語セリフ"
+    },
     "models": {
       "siliconflow": {
         "deepseek-v3": "DeepSeek V3",
@@ -566,7 +602,7 @@
   },
   "dropImport": {
     "hint": "離してインポート",
-    "types": "PDF / EPUB / 動画 / 音声 / 字幕",
+    "types": "PDF / EPUB / MD / TXT / DOCX / 動画 / 音声 / 字幕",
     "importing": "{{count}} 個のファイルをインポート中…",
     "done": "{{count}} 件をインポートしました",
     "unsupported": "未対応のファイル形式: {{name}}",
@@ -614,10 +650,10 @@
   "bookImport": {
     "title": "ブックをインポート",
     "fileLabel": "ブックファイル",
-    "filePlaceholder": "EPUB、TXTまたはPDFファイルを選択...",
+    "filePlaceholder": "EPUBまたはPDFファイルを選択...",
     "titleLabel": "ブックタイトル",
     "titlePlaceholder": "空欄の場合はファイル名を使用",
-    "description": "EPUB、TXT、PDF形式をサポート。EPUBは複雑なレイアウト、TXTはプレーンテキスト、PDFは元のフォーマットを保持します。",
+    "description": "EPUB、PDF形式をサポート。Markdown、TXT、DOCX はテキストファイルからインポートしてください。",
     "import": "インポート",
     "importing": "インポート中...",
     "fileFilterName": "電子書籍",
@@ -625,6 +661,24 @@
       "fileRequired": "ファイルを選択してください",
       "selectFailed": "ファイル選択に失敗しました",
       "unsupportedFormat": "サポートされていないファイル形式"
+    }
+  },
+  "textFileImport": {
+    "title": "テキストファイル",
+    "hint": "ローカルのテキスト内容を、文ごとの精読、選択、学習候補に使える教材として取り込みます。",
+    "fileLabel": "テキストファイル",
+    "filePlaceholder": "Markdown、TXTまたはDOCXファイルを選択...",
+    "selectFileTitle": "テキストファイルを選択",
+    "description": ".md、.markdown、.txt、.docx に対応。PDF/EPUB はブックインポートを使用してください。",
+    "titleLabel": "タイトル",
+    "titlePlaceholder": "空欄ならファイル名を使用",
+    "import": "テキストをインポート",
+    "importing": "インポート中...",
+    "fileFilterName": "テキストファイル",
+    "errors": {
+      "fileRequired": "テキストファイルを選択してください",
+      "selectFailed": "ファイル選択に失敗しました",
+      "unsupportedFormat": "サポートされていないテキスト形式"
     }
   },
   "epubReader": {

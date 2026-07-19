@@ -1,6 +1,6 @@
 use openkoto_desktop_lib::types::{
     AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Artifact, ArtifactType,
-    DiagnosticsCoverage, DiagnosticsContentType, MindMap, MindMapDiagnostics, MindMapNode,
+    DiagnosticsContentType, DiagnosticsCoverage, MindMap, MindMapDiagnostics, MindMapNode,
     MindMapNodeType, MindMapResult, MindMapStatus, SourceOffset, TimeRange,
 };
 
@@ -17,6 +17,10 @@ fn agent_task_round_trips_through_json() {
             max_depth: 3,
             evidence_mode: "strict".to_string(),
             prefer_structure: "topic_tree".to_string(),
+            user_message: None,
+            conversation: Vec::new(),
+            source_locator: None,
+            learning_item_id: None,
         },
         progress: 0.0,
         stage: Some("queued".to_string()),
@@ -28,6 +32,12 @@ fn agent_task_round_trips_through_json() {
         updated_at: "2026-03-07T00:00:00Z".to_string(),
         started_at: None,
         finished_at: None,
+        root_task_id: Some("task-1".to_string()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: serde_json::json!({}),
+        output_version: 1,
+        legacy_status: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -69,6 +79,83 @@ fn artifact_round_trips_through_json() {
         round_trip.metadata.unwrap()["source_hash"],
         serde_json::json!("sha256:abc")
     );
+}
+
+#[test]
+fn agent_task_accepts_integer_and_legacy_string_output_versions() {
+    let mut value = serde_json::to_value(AgentTask {
+        id: "task-version".to_string(),
+        task_type: AgentTaskType::ArticleAsk,
+        status: AgentTaskStatus::Succeeded,
+        article_id: "article-1".to_string(),
+        input: AgentTaskInput {
+            article_id: "article-1".to_string(),
+            display_language: "zh-CN".to_string(),
+            max_depth: 0,
+            evidence_mode: "none".to_string(),
+            prefer_structure: "none".to_string(),
+            user_message: None,
+            conversation: Vec::new(),
+            source_locator: None,
+            learning_item_id: None,
+        },
+        progress: 1.0,
+        stage: Some("done".to_string()),
+        message: None,
+        error: None,
+        worker_session_id: None,
+        artifact_ids: Vec::new(),
+        created_at: "2026-07-15T00:00:00Z".to_string(),
+        updated_at: "2026-07-15T00:00:00Z".to_string(),
+        started_at: None,
+        finished_at: None,
+        root_task_id: Some("task-version".to_string()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: serde_json::json!({}),
+        output_version: 2,
+        legacy_status: None,
+    })
+    .unwrap();
+    assert_eq!(
+        serde_json::from_value::<AgentTask>(value.clone())
+            .unwrap()
+            .output_version,
+        2
+    );
+
+    value["output_version"] = serde_json::json!("2");
+    assert_eq!(
+        serde_json::from_value::<AgentTask>(value)
+            .unwrap()
+            .output_version,
+        2
+    );
+}
+
+#[test]
+fn artifact_type_preserves_known_report_and_degrades_unknown_values() {
+    for (raw, expected) in [
+        ("structured_report", "structured_report"),
+        ("file", "file"),
+        ("future_artifact", "unknown"),
+    ] {
+        let artifact: Artifact = serde_json::from_value(serde_json::json!({
+            "id": "artifact-1",
+            "task_id": "task-1",
+            "article_id": "article-1",
+            "artifact_type": raw,
+            "version": "1",
+            "content": {},
+            "created_at": "2026-07-15T00:00:00Z",
+            "updated_at": "2026-07-15T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(artifact.artifact_type).unwrap(),
+            serde_json::json!(expected)
+        );
+    }
 }
 
 #[test]
@@ -159,12 +246,7 @@ fn mind_map_result_supports_applicable_partial_and_not_applicable() {
     ));
     assert!(not_applicable_round_trip.map.is_none());
     assert!(matches!(
-        applicable_round_trip
-            .map
-            .as_ref()
-            .unwrap()
-            .root
-            .node_type,
+        applicable_round_trip.map.as_ref().unwrap().root.node_type,
         MindMapNodeType::Root
     ));
 }

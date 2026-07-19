@@ -1,654 +1,464 @@
-import React, { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  FileText,
-  Clock,
-  Trash2,
+  Archive,
+  BookOpen,
+  CalendarDays,
+  ChevronRight,
+  CircleAlert,
+  Clock3,
   ExternalLink,
-  Book,
-  Video,
-  FileType,
+  FileText,
+  FilterX,
+  Globe2,
+  Loader2,
+  MoreHorizontal,
+  Music2,
   Pencil,
-  Eye,
-  Plus,
-  MoreVertical,
-  Music,
-  Globe
+  Search,
+  Trash2,
+  Video,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+
+import { Button } from "../ui/button";
+import { Dialog, DialogFooter } from "../ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
-import { useTranslation } from "react-i18next";
-import { Button } from "../ui/button";
-import { buildMediaResourceUrl } from "../../lib/media";
-import { formatDate, truncateText } from "../../lib/utils";
-import { Article } from "../../types";
-import { Document, Page } from "react-pdf";
-import ePub from "epubjs";
-// 使用统一的 PDF.js worker 配置
-import "../../lib/pdfConfig";
-
-
-
-// EPUB 封面组件
-function EpubCover({ url, title, className, typeIcon }: { url: string; title: string, className: string, typeIcon: React.ReactNode }) {
-  const [coverUrl, setCoverUrl] = useState<string | null>(null);
-  // const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let mounted = true;
-    const loadCover = async () => {
-      try {
-        const book = ePub(url);
-        const cover = await book.coverUrl();
-        if (mounted && cover) {
-          setCoverUrl(cover);
-        }
-      } catch (err) {
-        console.warn("Failed to load epub cover:", err);
-      }
-    };
-    loadCover();
-    return () => { mounted = false; };
-  }, [url]);
-
-  if (coverUrl) {
-    return (
-      <div className={`w-full h-full relative ${className}`}>
-        <img src={coverUrl} alt={title} className="w-full h-full object-cover" />
-      </div>
-    );
-  }
-
-  // Fallback to styled cover
-  return (
-    <div className={`flex flex-col items-center justify-center w-full h-full relative ${className}`}>
-      {/* 装饰性背景 */}
-      <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-black to-transparent dark:from-white" />
-
-      <div className="relative z-10 p-4 flex flex-col items-center text-center max-w-[80%]">
-        <div className="p-3 bg-white/50 dark:bg-black/20 backdrop-blur-md rounded-xl shadow-sm mb-2 group-hover:scale-110 transition-transform duration-300">
-          {typeIcon}
-        </div>
-        <div className="text-[10px] text-foreground/50 leading-tight line-clamp-3 font-serif opacity-0 group-hover:opacity-100 transition-opacity absolute bottom-2 w-full px-4">
-          {title}
-        </div>
-        <span className="text-xs font-medium text-foreground/60 tracking-wider font-mono opacity-80 group-hover:opacity-0 transition-opacity">
-          EPUB
-        </span>
-      </div>
-    </div>
-  );
-}
+import { Input } from "../ui/input";
+import { Select } from "../ui/select";
+import { formatDate } from "../../lib/utils";
+import type { Article } from "../../types";
+import {
+  filterAndSortMaterials,
+  getContinueReadingMaterials,
+  getMaterialOpenedAt,
+  getMaterialProgress,
+  getMaterialTagLabels,
+  getMaterialTags,
+  getMaterialType,
+} from "../../features/materials/selectors";
+import {
+  DEFAULT_MATERIAL_FILTERS,
+  MATERIAL_TYPES,
+  type MaterialArticle,
+  type MaterialFilters,
+  type ReadingStatus,
+} from "../../features/materials/types";
 
 interface ArticleListProps {
   articles: Article[];
   isLoading: boolean;
+  error?: string | null;
+  onRetry?: () => void;
   onSelectArticle: (article: Article) => void;
   onDelete: (id: string) => Promise<void>;
+  onBulkDelete?: (ids: string[]) => Promise<void>;
+  onBulkArchive?: (ids: string[]) => Promise<void>;
+  onSelectionChange?: (ids: string[]) => void;
   onEdit: (article: Article) => void;
   onNewMaterial?: () => void;
   selectedId?: string;
   viewMode: "list" | "card";
+  filters?: MaterialFilters;
+  onFiltersChange?: (filters: MaterialFilters) => void;
+  showContinueReading?: boolean;
+  /** Kept for the legacy route while per-material maintenance remains available. */
   onUpdate?: () => void;
+}
+
+const readingStatusLabels: Record<ReadingStatus, string> = {
+  unread: "未开始",
+  in_progress: "阅读中",
+  completed: "已完成",
+  archived: "已归档",
+};
+
+const typeLabels: Record<string, string> = {
+  article: "文章",
+  web: "网页",
+  text: "文本",
+  book: "书籍",
+  video: "视频",
+  audio: "音频",
+};
+
+function MaterialTypeIcon({ type, size = 16 }: { type: string; size?: number }) {
+  const className = "shrink-0 text-muted-foreground";
+  if (type === "web") return <Globe2 className={className} size={size} />;
+  if (type === "book") return <BookOpen className={className} size={size} />;
+  if (type === "video") return <Video className={className} size={size} />;
+  if (type === "audio") return <Music2 className={className} size={size} />;
+  return <FileText className={className} size={size} />;
+}
+
+function Progress({ article }: { article: MaterialArticle }) {
+  const progress = getMaterialProgress(article);
+  if (progress === null) return null;
+  return (
+    <div className="flex min-w-0 items-center gap-2" aria-label={`阅读进度 ${progress}%`}>
+      <div className="h-1.5 w-20 overflow-hidden rounded bg-muted">
+        <div className="h-full bg-primary" style={{ width: `${progress}%` }} />
+      </div>
+      <span className="text-xs tabular-nums text-muted-foreground">{progress}%</span>
+    </div>
+  );
+}
+
+function groupEditableDerivatives(articles: MaterialArticle[]): MaterialArticle[] {
+  const bySource = new Map<string, MaterialArticle[]>();
+  const derivatives = new Set<string>();
+  for (const article of articles) {
+    if (!article.editable_source_material_id) continue;
+    derivatives.add(article.id);
+    const group = bySource.get(article.editable_source_material_id) ?? [];
+    group.push(article);
+    bySource.set(article.editable_source_material_id, group);
+  }
+  const grouped: MaterialArticle[] = [];
+  for (const article of articles) {
+    if (derivatives.has(article.id)) continue;
+    grouped.push(article, ...(bySource.get(article.id) ?? []));
+  }
+  for (const article of articles) {
+    if (derivatives.has(article.id) && !grouped.some((item) => item.id === article.id)) grouped.push(article);
+  }
+  return grouped;
+}
+
+function EditableRelation({
+  source,
+  hasDerivative,
+  onSelectArticle,
+}: {
+  source?: Article;
+  hasDerivative: boolean;
+  onSelectArticle: (article: Article) => void;
+}) {
+  if (source) {
+    return (
+      <button
+        type="button"
+        className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] text-primary hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => onSelectArticle(source)}
+        aria-label={`打开原件 ${source.title}`}
+      >
+        <Pencil size={11} /><span>可编辑稿</span><span className="truncate text-muted-foreground">· 原件：{source.title}</span>
+      </button>
+    );
+  }
+  if (!hasDerivative) return null;
+  return <span className="mt-1 inline-flex rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">原件 · 已有可编辑稿</span>;
 }
 
 export function ArticleList({
   articles,
   isLoading,
+  error,
+  onRetry,
   onSelectArticle,
   onDelete,
+  onBulkDelete,
+  onBulkArchive,
+  onSelectionChange,
   onEdit,
   onNewMaterial,
   selectedId,
   viewMode,
+  filters: controlledFilters,
+  onFiltersChange,
+  showContinueReading = true,
   onUpdate,
 }: ArticleListProps) {
   const { t } = useTranslation();
-  const [isDeleting, setIsDeleting] = useState<string | null>(null);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [localFilters, setLocalFilters] = useState<MaterialFilters>(DEFAULT_MATERIAL_FILTERS);
+  const filters = controlledFilters ?? localFilters;
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [pendingAction, setPendingAction] = useState<"archive" | "delete" | null>(null);
+  const [isApplyingAction, setIsApplyingAction] = useState(false);
+  const [maintainingId, setMaintainingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const handleDeleteClick = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    e.preventDefault();
-    setPendingDeleteId(id);
-    setShowDeleteConfirm(true);
+  const visibleArticles = useMemo(
+    () => groupEditableDerivatives(filterAndSortMaterials(articles, filters)),
+    [articles, filters],
+  );
+  const articlesById = useMemo(() => new Map(articles.map((article) => [article.id, article])), [articles]);
+  const sourceIdsWithDerivative = useMemo(
+    () => new Set(articles.flatMap((article) => article.editable_source_material_id ? [article.editable_source_material_id] : [])),
+    [articles],
+  );
+  const continueReading = useMemo(() => getContinueReadingMaterials(articles), [articles]);
+  const tags = useMemo(() => getMaterialTags(articles), [articles]);
+  const hasFilters = filters.query !== "" || filters.type !== "all" || filters.readingStatus !== "all" || filters.tag !== "all" || filters.createdFrom !== "" || filters.createdTo !== "" || filters.sort !== "recent";
+  const allVisibleSelected = visibleArticles.length > 0 && visibleArticles.every((article) => selectedIds.includes(article.id));
+
+  useEffect(() => {
+    const validIds = new Set(articles.map((article) => article.id));
+    setSelectedIds((current) => current.filter((id) => validIds.has(id)));
+  }, [articles]);
+
+  useEffect(() => {
+    onSelectionChange?.(selectedIds);
+  }, [onSelectionChange, selectedIds]);
+
+  const setFilters = (next: MaterialFilters) => {
+    if (controlledFilters === undefined) setLocalFilters(next);
+    onFiltersChange?.(next);
   };
+  const updateFilters = (next: Partial<MaterialFilters>) => setFilters({ ...filters, ...next });
+  const clearFilters = () => setFilters(DEFAULT_MATERIAL_FILTERS);
+  const toggleSelected = (id: string) => setSelectedIds((current) => current.includes(id)
+    ? current.filter((selectedId) => selectedId !== id)
+    : [...current, id]);
+  const toggleAllVisible = () => setSelectedIds((current) => allVisibleSelected
+    ? current.filter((id) => !visibleArticles.some((article) => article.id === id))
+    : [...new Set([...current, ...visibleArticles.map((article) => article.id)])]);
 
-  const executeDelete = async () => {
-    if (!pendingDeleteId) return;
-    setShowDeleteConfirm(false);
-    setIsDeleting(pendingDeleteId);
+  const applyBulkAction = async () => {
+    if (!pendingAction || selectedIds.length === 0) return;
+    setIsApplyingAction(true);
+    setActionError(null);
     try {
-      await onDelete(pendingDeleteId);
-    } catch (err) {
-      console.error("Failed to delete article:", err);
+      if (pendingAction === "archive") {
+        if (!onBulkArchive) throw new Error(t("materials.archiveUnavailable", "当前后端尚不支持归档"));
+        await onBulkArchive(selectedIds);
+      } else if (onBulkDelete) {
+        await onBulkDelete(selectedIds);
+      } else {
+        await Promise.all(selectedIds.map(onDelete));
+      }
+      setSelectedIds([]);
+      setPendingAction(null);
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "操作未完成");
     } finally {
-      setIsDeleting(null);
-      setPendingDeleteId(null);
+      setIsApplyingAction(false);
     }
   };
 
-  const cancelDelete = () => {
-    setShowDeleteConfirm(false);
-    setPendingDeleteId(null);
-  };
-
-  const executeAction = async (action: string, articleId: string) => {
+  const runMaintenance = async (command: "delete_article_subtitles_cmd" | "delete_article_analysis_cmd", articleId: string) => {
+    setMaintainingId(articleId);
+    setActionError(null);
     try {
-      if (action === "delete_subtitles") {
-        await invoke("delete_article_subtitles_cmd", { id: articleId });
-      } else if (action === "delete_analysis") {
-        await invoke("delete_article_analysis_cmd", { id: articleId });
-      }
-      if (onUpdate) onUpdate();
-    } catch (err) {
-      console.error(`Failed to execute ${action}:`, err);
-    }
-  };
-
-  const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'wma'];
-
-  const getArticleType = (article: Article) => {
-    if (article.source_type) {
-      switch (article.source_type) {
-        case "web":
-          return "WEB";
-        case "youtube":
-        case "local_video":
-          return "VIDEO";
-        case "audio":
-          return "AUDIO";
-        case "book":
-          return article.book_type?.toUpperCase() || "BOOK";
-        case "article":
-        default:
-          return "ARTICLE";
-      }
-    }
-
-    if (article.book_path) {
-      return article.book_type?.toUpperCase() || "BOOK";
-    }
-    if (article.media_path) {
-      const ext = article.media_path.split('.').pop()?.toLowerCase() || '';
-      if (AUDIO_EXTENSIONS.includes(ext)) {
-        return "AUDIO";
-      }
-      return "VIDEO";
-    }
-    return "ARTICLE";
-  };
-
-  const getTypeIcon = (type: string, size: number = 20) => {
-    switch (type) {
-      case "EPUB":
-      case "BOOK":
-        return <Book className="text-primary" size={size} />;
-      case "PDF":
-        return <FileType className="text-primary" size={size} />;
-      case "TXT":
-        return <FileText className="text-primary" size={size} />;
-      case "VIDEO":
-        return <Video className="text-primary" size={size} />;
-      case "AUDIO":
-        return <Music className="text-primary" size={size} />;
-      case "WEB":
-        return <Globe className="text-primary" size={size} />;
-      default:
-        return <FileText className="text-primary" size={size} />;
-    }
-  };
-
-  const getTypeLabelColor = () => {
-    return "bg-primary/10 text-primary border-primary/20";
-  };
-
-  const getVideoUrl = (mediaPath: string) => {
-    return buildMediaResourceUrl(mediaPath, "video");
-  };
-
-  const getBookUrl = (bookPath: string) => {
-    return buildMediaResourceUrl(bookPath, "book");
-  };
-
-  const getCoverStyle = (type: string) => {
-    switch (type) {
-      case 'VIDEO': return 'bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-blue-900/20 dark:to-indigo-900/20';
-      case 'AUDIO': return 'bg-gradient-to-br from-green-50 to-emerald-100 dark:from-green-900/20 dark:to-emerald-900/20';
-      case 'WEB': return 'bg-gradient-to-br from-cyan-50 to-sky-100 dark:from-cyan-900/20 dark:to-sky-900/20';
-      case 'PDF': return 'bg-gradient-to-br from-red-50 to-rose-100 dark:from-red-900/20 dark:to-rose-900/20';
-      case 'EPUB':
-      case 'BOOK': return 'bg-gradient-to-br from-orange-50 to-amber-100 dark:from-orange-900/20 dark:to-amber-900/20';
-      default: return 'bg-gradient-to-br from-gray-50 to-slate-100 dark:from-gray-900/20 dark:to-slate-900/20';
+      await invoke(command, { id: articleId });
+      onUpdate?.();
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "素材维护操作未完成");
+    } finally {
+      setMaintainingId(null);
     }
   };
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      <div className="flex min-h-64 items-center justify-center text-sm text-muted-foreground" role="status">
+        <Loader2 className="mr-2 animate-spin" size={18} /> {t("articleList.loading", "正在加载素材")}
       </div>
     );
   }
 
-  // If empty and no onNewMaterial passed, show empty state.
-  // But since we want to show the "New Card" if viewMode is card, we might want to bypass this check 
-  // ONLY if viewMode is card AND onNewMaterial is present.
-  // However, the "No Articles" separate screen is nicer for empty states.
-  // So I'll keep the empty check, but if viewMode is card, I'll allow rendering the "New Card" even if 0 articles?
-  // Let's stick to existing behavior: if 0 articles, show the dedicated Empty State component (which is nicer).
+  if (error) {
+    return (
+      <div className="flex min-h-64 flex-col items-center justify-center gap-3 text-center" role="alert">
+        <CircleAlert className="text-destructive" size={24} />
+        <p className="text-sm text-muted-foreground">{error}</p>
+        {onRetry && <Button variant="outline" size="sm" onClick={onRetry}>{t("common.refresh", "重试")}</Button>}
+      </div>
+    );
+  }
+
   if (articles.length === 0) {
     return (
-      <div className="text-center py-12 text-muted-foreground flex flex-col items-center">
-        <div className="w-16 h-16 bg-muted/50 rounded-full flex items-center justify-center mb-4">
-          <Book className="h-8 w-8 opacity-50" />
-        </div>
-        <p className="text-lg font-medium mb-2">{t("articleList.noArticles")}</p>
-        <p className="text-sm">{t("articleList.createFirst")}</p>
+      <div className="flex min-h-64 flex-col items-center justify-center gap-3 text-center">
+        <BookOpen className="text-muted-foreground" size={28} />
+        <p className="font-medium">{t("articleList.noArticles", "暂无素材")}</p>
+        <p className="text-sm text-muted-foreground">{t("articleList.createFirst", "导入或新建第一份阅读素材")}</p>
+        {onNewMaterial && <Button size="sm" onClick={onNewMaterial}>{t("header.newMaterial", "新建素材")}</Button>}
       </div>
     );
   }
 
   return (
-    <>
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full shadow-2xl animate-in zoom-in-95 duration-200">
-            <h3 className="text-lg font-semibold text-foreground mb-2">
-              {t("articleList.delete") || "Delete Item"}
-            </h3>
-            <p className="text-sm text-muted-foreground mb-6">
-              {t("articleList.deleteConfirm") || "Are you sure you want to delete this item? This action cannot be undone."}
-            </p>
-            <div className="flex gap-3 justify-end">
-              <Button variant="ghost" size="sm" onClick={cancelDelete}>
-                {t("articleReader.cancel") || "Cancel"}
-              </Button>
-              <Button
-                size="sm"
-                onClick={executeDelete}
-                className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
-              >
-                {t("articleList.delete") || "Delete"}
-              </Button>
-            </div>
+    <section className="min-w-0 space-y-5 pb-8" aria-label={t("materials.workbench", "素材工作台")} data-view-mode={viewMode}>
+      {showContinueReading && continueReading.length > 0 && (
+        <section aria-labelledby="continue-reading-title">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h2 id="continue-reading-title" className="text-sm font-semibold">{t("materials.continueReading", "继续阅读")}</h2>
+            <span className="text-xs text-muted-foreground">{continueReading.length} {t("materials.items", "项")}</span>
           </div>
-        </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {continueReading.map((article) => (
+              <button
+                key={article.id}
+                type="button"
+                onClick={() => onSelectArticle(article)}
+                className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <MaterialTypeIcon type={getMaterialType(article)} />
+                <span className="min-w-0 flex-1">
+                  <span className="block break-words text-sm font-medium">{article.title || t("articleList.untitled", "未命名素材")}</span>
+                  <span className="mt-1 block"><Progress article={article} /></span>
+                </span>
+                <ChevronRight size={16} className="shrink-0 text-muted-foreground" />
+              </button>
+            ))}
+          </div>
+        </section>
       )}
 
-      <div className={viewMode === "card"
-        ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-10"
-        : "space-y-3 pb-10"
-      }>
-        {/* New Material Card (Only in Card View) */}
-        {viewMode === "card" && onNewMaterial && (
-          <div
-            onClick={onNewMaterial}
-            className="group relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border hover:border-primary/50 hover:bg-accent/50 cursor-pointer h-[280px] transition-all"
-          >
-            <div className="w-12 h-12 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-              <Plus size={24} />
+      <section aria-labelledby="all-materials-title" className="min-w-0">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 id="all-materials-title" className="text-sm font-semibold">{t("materials.allMaterials", "全部素材")}</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">{visibleArticles.length} {t("materials.items", "项")}</p>
+          </div>
+          {hasFilters && <Button variant="ghost" size="sm" onClick={clearFilters}><FilterX size={15} className="mr-1.5" />{t("materials.clearFilters", "清除筛选")}</Button>}
+        </div>
+
+        <div className="grid gap-2 border-y border-border py-3 md:grid-cols-[minmax(220px,1fr)_130px_130px_130px_130px]">
+          <div className="relative min-w-0">
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+            <Input aria-label={t("materials.search", "搜索素材")} value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })} placeholder={t("materials.searchPlaceholder", "搜索标题、来源或标签")} className="pl-9" />
+          </div>
+          <Select aria-label={t("materials.type", "素材类型")} value={filters.type} onChange={(event) => updateFilters({ type: event.target.value as MaterialFilters["type"] })}>
+            <option value="all">{t("materials.allTypes", "全部类型")}</option>
+            {MATERIAL_TYPES.map((type) => <option key={type} value={type}>{typeLabels[type]}</option>)}
+          </Select>
+          <Select aria-label={t("materials.readingStatus", "阅读状态")} value={filters.readingStatus} onChange={(event) => updateFilters({ readingStatus: event.target.value as MaterialFilters["readingStatus"] })}>
+            <option value="all">{t("materials.allStatuses", "全部状态")}</option>
+            {(Object.keys(readingStatusLabels) as ReadingStatus[]).map((status) => <option key={status} value={status}>{readingStatusLabels[status]}</option>)}
+          </Select>
+          <Select aria-label={t("materials.tags", "标签")} value={filters.tag} onChange={(event) => updateFilters({ tag: event.target.value })}>
+            <option value="all">{t("materials.allTags", "全部标签")}</option>
+            {tags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+          </Select>
+          <Select aria-label={t("materials.sort", "排序")} value={filters.sort} onChange={(event) => updateFilters({ sort: event.target.value as MaterialFilters["sort"] })}>
+            <option value="recent">{t("materials.sortRecent", "最近打开")}</option>
+            <option value="created">{t("materials.sortCreated", "最近导入")}</option>
+            <option value="progress">{t("materials.sortProgress", "阅读进度")}</option>
+            <option value="title">{t("materials.sortTitle", "标题")}</option>
+          </Select>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border py-3">
+          <CalendarDays size={16} className="shrink-0 text-muted-foreground" />
+          <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <span>导入日期从</span>
+            <Input type="date" aria-label="导入日期从" value={filters.createdFrom} onChange={(event) => updateFilters({ createdFrom: event.target.value })} className="h-8 w-[150px]" />
+          </label>
+          <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <span>至</span>
+            <Input type="date" aria-label="导入日期至" value={filters.createdTo} min={filters.createdFrom || undefined} onChange={(event) => updateFilters({ createdTo: event.target.value })} className="h-8 w-[150px]" />
+          </label>
+        </div>
+
+        {selectedIds.length > 0 && (
+          <div className="my-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+            <span className="text-sm">{t("materials.selectedCount", { count: selectedIds.length, defaultValue: `已选择 ${selectedIds.length} 项` })}</span>
+            <div className="ml-auto flex gap-1">
+              <Button variant="ghost" size="sm" onClick={() => setPendingAction("archive")} disabled={!onBulkArchive} title={!onBulkArchive ? t("materials.archiveUnavailable", "当前后端尚不支持归档") : undefined}><Archive size={15} className="mr-1.5" />{t("materials.archive", "归档")}</Button>
+              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setPendingAction("delete")}><Trash2 size={15} className="mr-1.5" />{t("articleList.delete", "删除")}</Button>
             </div>
-            <span className="font-medium text-muted-foreground group-hover:text-primary transition-colors">
-              {t("header.newMaterial")}
-            </span>
           </div>
         )}
 
-        {articles.map((article) => {
-          const type = getArticleType(article);
-          const isSelected = selectedId === article.id;
+        {actionError && <p className="my-3 text-sm text-destructive" role="alert">{actionError}</p>}
 
-          return viewMode === "card" ? (
-            <div
-              key={article.id}
-              onClick={() => onSelectArticle(article)}
-              className={`
-                group relative flex flex-col rounded-xl border overflow-hidden transition-all cursor-pointer h-[280px]
-                ${isSelected
-                  ? "bg-primary/5 border-primary shadow-md ring-1 ring-primary"
-                  : "bg-card border-border hover:border-primary/50 hover:bg-accent/50 hover:shadow-lg hover:-translate-y-1"
-                }
-              `}
-            >
-              {/* Cover Area */}
-              <div className={`h-40 w-full shrink-0 relative overflow-hidden flex items-center justify-center ${getCoverStyle(type)}`}>
-
-                {/* 1. Video Preview */}
-                {type === 'VIDEO' && article.media_path ? (
-                  <div className="w-full h-full relative">
-                    <video
-                      src={getVideoUrl(article.media_path)}
-                      className="w-full h-full object-cover"
-                      muted
-                      loop
-                      playsInline
-                      onMouseEnter={e => e.currentTarget.play()}
-                      onMouseLeave={e => {
-                        e.currentTarget.pause();
-                        e.currentTarget.currentTime = 0;
-                      }}
-                    />
-                    <div className="absolute top-2 right-2 bg-black/50 backdrop-blur-sm text-white p-1 rounded-md">
-                      <Video size={14} />
-                    </div>
-                  </div>
-                ) : type === 'PDF' && article.book_path ? (
-                  // 2. PDF Preview (Thumbnail)
-                  <div className="w-full h-full relative overflow-hidden flex justify-center items-start pt-4 bg-gray-100 dark:bg-gray-800">
-                    <div className="w-[120px] shadow-lg origin-top transition-transform group-hover:scale-105">
-                      <Document
-                        file={getBookUrl(article.book_path)}
-                        loading={<div className="h-[160px] bg-white animate-pulse" />}
-                        error={<div className="h-[160px] bg-white flex items-center justify-center text-xs text-red-500">Error</div>}
-                      >
-                        <Page
-                          pageNumber={1}
-                          width={120}
-                          renderTextLayer={false}
-                          renderAnnotationLayer={false}
-                        />
-                      </Document>
-                    </div>
-                    <div className="absolute top-2 right-2 bg-red-500/80 backdrop-blur-sm text-white px-1.5 py-0.5 rounded text-[10px] font-bold">
-                      PDF
-                    </div>
-                  </div>
-                ) : type === 'EPUB' && article.book_path ? (
-                  // 3. EPUB Cover
-                  <EpubCover
-                    url={getBookUrl(article.book_path)}
-                    title={article.title}
-                    className={getCoverStyle(type)}
-                    typeIcon={getTypeIcon(type, 28)}
-                  />
-                ) : type === 'AUDIO' && article.media_path ? (
-                  // Audio Cover
-                  <div className="flex flex-col items-center justify-center w-full h-full relative">
-                    <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-green-500 to-transparent" />
-                    <div className="relative z-10 flex flex-col items-center">
-                      <div className="p-4 bg-green-500/20 backdrop-blur-md rounded-full shadow-sm mb-3 group-hover:scale-110 transition-transform duration-300">
-                        <Music size={32} className="text-green-500" />
-                      </div>
-                      <span className="text-xs font-medium text-foreground/60 tracking-wider font-mono">AUDIO</span>
-                    </div>
-                  </div>
-                ) : (
-                  // Default / TXT Styled Cover
-                  <div className="flex flex-col items-center justify-center w-full h-full relative">
-                    {/* 装饰性背景 */}
-                    <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-black to-transparent dark:from-white" />
-
-                    <div className="relative z-10 p-4 flex flex-col items-center text-center max-w-[80%]">
-                      <div className="p-3 bg-white/50 dark:bg-black/20 backdrop-blur-md rounded-xl shadow-sm mb-2 group-hover:scale-110 transition-transform duration-300">
-                        {getTypeIcon(type, 28)}
-                      </div>
-                      {/* 如果是 TXT 或 EPUB，显示部分标题或内容作为装饰 */}
-                      {(type === 'TXT' || type === 'EPUB' || type === "ARTICLE") && (
-                        <div className="text-[10px] text-foreground/50 leading-tight line-clamp-3 font-serif opacity-0 group-hover:opacity-100 transition-opacity absolute bottom-2 w-full px-4">
-                          {truncateText(article.content || article.title, 60)}
-                        </div>
-                      )}
-                      <span className="text-xs font-medium text-foreground/60 tracking-wider font-mono opacity-80 group-hover:opacity-0 transition-opacity">
-                        {type}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Overlay Component */}
-                <div className="absolute top-2 right-2 flex gap-1 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {/* Open Source URL */}
-                  {!article.media_path && article.source_url && (
-                    <Button
-                      variant="secondary"
-                      size="icon"
-                      className="h-8 w-8 rounded-full shadow-sm bg-background/80 hover:bg-background"
-                      title={t("articleList.openSource")}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (article.source_url) openUrl(article.source_url);
-                      }}
-                    >
-                      <ExternalLink size={14} />
-                    </Button>
-                  )}
-
-                  {/* View Button */}
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    className="h-8 w-8 rounded-full shadow-sm bg-background/80 hover:bg-background"
-                    title={t("common.view", "查看")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectArticle(article);
-                    }}
-                  >
-                    <Eye size={14} />
-                  </Button>
-
-                  {/* Edit Button */}
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    className="h-8 w-8 rounded-full shadow-sm bg-background/80 hover:bg-background"
-                    title={t("common.edit", "编辑")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onEdit(article);
-                    }}
-                  >
-                    <Pencil size={14} />
-                  </Button>
-
-                  {/* More Menu (for VIDEO and AUDIO) */}
-                  {(type === 'VIDEO' || type === 'AUDIO') && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="secondary"
-                          size="icon"
-                          className="h-8 w-8 rounded-full shadow-sm bg-background/80 hover:bg-background"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <MoreVertical size={14} />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenuItem onClick={() => onEdit(article)}>
-                          <Pencil className="mr-2 h-4 w-4" />
-                          <span>{t("common.edit", "编辑信息")}</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => executeAction("delete_subtitles", article.id)}>
-                          <span>{t("articleList.deleteSubtitles", "删除字幕")}</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => executeAction("delete_analysis", article.id)}>
-                          <span>{t("articleList.deleteAnalysis", "删除翻译解析")}</span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-
-                  {/* Delete Button */}
-                  <Button
-                    variant="danger"
-                    size="icon"
-                    className="h-8 w-8 rounded-full shadow-sm opacity-90 hover:opacity-100"
-                    title={t("articleList.delete")}
-                    onClick={(e) => handleDeleteClick(e, article.id)}
-                  >
-                    <Trash2 size={14} />
-                  </Button>
-                </div>
+        {visibleArticles.length === 0 ? (
+          <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-center">
+            <Search className="text-muted-foreground" size={22} />
+            <p className="text-sm font-medium">{t("materials.noResults", "没有匹配的素材")}</p>
+            <Button variant="ghost" size="sm" onClick={clearFilters}>{t("materials.clearFilters", "清除筛选")}</Button>
+          </div>
+        ) : (
+          viewMode === "list" ? (
+            <div className="overflow-hidden rounded-lg border border-border" data-testid="material-list-layout">
+              <div className="hidden grid-cols-[36px_minmax(220px,1fr)_minmax(120px,0.55fr)_minmax(150px,0.7fr)_132px_40px] items-center gap-3 border-b border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground lg:grid">
+                <input aria-label={t("materials.selectAll", "选择当前结果")} type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />
+                <span>{t("materials.material", "素材")}</span><span>{t("materials.source", "来源")}</span><span>{t("materials.tags", "标签")}</span><span>{t("materials.lastOpened", "最近打开")}</span><span />
               </div>
-
-              {/* Info Area */}
-              <div className="flex-1 p-4 flex flex-col min-h-0 bg-card">
-                <h3 className="font-semibold text-foreground text-base leading-snug line-clamp-2 mb-2 group-hover:text-primary transition-colors">
-                  {article.title || t("articleList.untitled")}
-                </h3>
-
-                <div className="mt-auto flex items-center justify-between text-xs text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <span className={`px-1.5 py-0.5 rounded border ${getTypeLabelColor()}`}>
-                      {type}
-                    </span>
-                    {article.translated && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded border bg-green-500/10 text-green-600 border-green-200/50">
-                        {t("articleList.translated")}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Clock size={12} />
-                    <span>{formatDate(article.created_at).split(',')[0]}</span>
-                  </div>
-                </div>
+              <div className="divide-y divide-border">
+                {visibleArticles.map((article) => {
+                  const type = getMaterialType(article);
+                  const isSelected = selectedIds.includes(article.id);
+                  const lastOpened = getMaterialOpenedAt(article);
+                  const tags = getMaterialTagLabels(article);
+                  const isMedia = type === "video" || type === "audio";
+                  const editableSource = article.editable_source_material_id ? articlesById.get(article.editable_source_material_id) : undefined;
+                  return (
+                    <article key={article.id} className={`grid min-w-0 grid-cols-[32px_minmax(0,1fr)_36px] items-start gap-2 px-3 py-3 lg:grid-cols-[36px_minmax(220px,1fr)_minmax(120px,0.55fr)_minmax(150px,0.7fr)_132px_40px] lg:items-center lg:gap-3 ${selectedId === article.id ? "bg-primary/5" : "hover:bg-muted/30"}`}>
+                      <input aria-label={`${t("materials.select", "选择")} ${article.title}`} type="checkbox" checked={isSelected} onClick={(event) => event.stopPropagation()} onChange={() => toggleSelected(article.id)} />
+                      <div className="min-w-0">
+                        <button type="button" onClick={() => onSelectArticle(article)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                          <span className="flex min-w-0 items-start gap-2"><MaterialTypeIcon type={type} /><span className="min-w-0"><span className="block break-words text-sm font-medium">{article.title || t("articleList.untitled", "未命名素材")}</span><span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"><span>{typeLabels[type]}</span>{article.import_status === "failed" && <span className="break-words text-destructive">{article.import_error || t("materials.importFailed", "导入失败")}</span>}{article.import_status === "importing" && <span>{t("materials.importing", "导入中")}</span>}<Progress article={article} /></span><span className="mt-1 block break-all text-xs text-muted-foreground lg:hidden">{article.source_name || article.source_url || "本地素材"}</span></span></span>
+                        </button>
+                        <EditableRelation source={editableSource} hasDerivative={sourceIdsWithDerivative.has(article.id)} onSelectArticle={onSelectArticle} />
+                      </div>
+                      <span className="hidden break-all text-xs text-muted-foreground lg:block">{article.source_name || article.source_url || "本地素材"}</span>
+                      <span className="hidden min-w-0 flex-wrap gap-1 lg:flex">{tags.slice(0, 2).map((tag) => <span key={tag} className="max-w-full break-all rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>)}</span>
+                      <span className="hidden text-xs text-muted-foreground lg:block"><Clock3 className="mr-1 inline" size={12} />{formatDate(lastOpened)}</span>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`${t("materials.actions", "操作")} ${article.title}`} onClick={(event) => event.stopPropagation()}><MoreHorizontal size={17} /></Button></DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => onSelectArticle(article)}><BookOpen className="mr-2" size={15} />{t("materials.open", "打开")}</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onEdit(article)}><Pencil className="mr-2" size={15} />{t("common.edit", "编辑")}</DropdownMenuItem>
+                          {article.source_url && <DropdownMenuItem onClick={() => void openUrl(article.source_url!)}><ExternalLink className="mr-2" size={15} />{t("articleList.openSource", "打开来源")}</DropdownMenuItem>}
+                          {isMedia && <><DropdownMenuItem disabled={maintainingId === article.id} onClick={() => void runMaintenance("delete_article_subtitles_cmd", article.id)}>{t("articleList.deleteSubtitles", "删除字幕")}</DropdownMenuItem><DropdownMenuItem disabled={maintainingId === article.id} onClick={() => void runMaintenance("delete_article_analysis_cmd", article.id)}>{t("articleList.deleteAnalysis", "删除翻译解析")}</DropdownMenuItem></>}
+                          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { setSelectedIds([article.id]); setPendingAction("delete"); }}><Trash2 className="mr-2" size={15} />{t("articleList.delete", "删除")}</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </article>
+                  );
+                })}
               </div>
             </div>
           ) : (
-            // List View
-            <div
-              key={article.id}
-              onClick={() => onSelectArticle(article)}
-              className={`
-                group flex items-center gap-4 p-3 rounded-xl border transition-all cursor-pointer bg-card
-                ${isSelected
-                  ? "bg-primary/5 border-primary shadow-sm"
-                  : "border-border hover:border-primary/50 hover:bg-accent/50 hover:shadow-sm"
-                }
-              `}
-            >
-              <div className={`
-                  flex-shrink-0 w-12 h-12 rounded-lg flex items-center justify-center
-                  ${getCoverStyle(type)}
-              `}>
-                {getTypeIcon(type, 20)}
-              </div>
-
-              <div className="flex-1 min-w-0 grid grid-cols-12 gap-4 items-center">
-                <div className="col-span-8 md:col-span-7">
-                  <h3 className="font-medium text-sm text-foreground truncate group-hover:text-primary transition-colors">
-                    {article.title || t("articleList.untitled")}
-                  </h3>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${getTypeLabelColor()}`}>
-                      {type}
-                    </span>
-                    {article.translated && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded border bg-green-500/10 text-green-600 border-green-200/50">
-                        {t("articleList.translated")}
-                      </span>
-                    )}
-                    <p className="text-xs text-muted-foreground truncate hidden md:block max-w-[200px]">
-                      {truncateText(article.content, 40)}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="col-span-4 md:col-span-3 text-xs text-muted-foreground flex items-end flex-col md:flex-row md:items-center gap-1">
-                  <Clock size={12} />
-                  {formatDate(article.created_at)}
-                </div>
-
-                <div className="col-span-0 md:col-span-2 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {article.source_url && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      title={t("articleList.openSource")}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (article.source_url) openUrl(article.source_url);
-                      }}
-                    >
-                      <ExternalLink size={14} />
-                    </Button>
-                  )}
-
-                  {/* View Button */}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    title={t("common.view", "查看")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectArticle(article);
-                    }}
-                  >
-                    <Eye size={14} />
-                  </Button>
-
-                  {/* Edit Button */}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    title={t("common.edit", "编辑")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onEdit(article);
-                    }}
-                  >
-                    <Pencil size={14} />
-                  </Button>
-
-                  {/* More Menu (for VIDEO and AUDIO) */}
-                  {(type === 'VIDEO' || type === 'AUDIO') && (
+            <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3" data-testid="material-card-layout">
+              {visibleArticles.map((article) => {
+                const type = getMaterialType(article);
+                const isSelected = selectedIds.includes(article.id);
+                const tags = getMaterialTagLabels(article);
+                const isMedia = type === "video" || type === "audio";
+                const editableSource = article.editable_source_material_id ? articlesById.get(article.editable_source_material_id) : undefined;
+                return (
+                  <article key={article.id} className={`grid min-w-0 grid-cols-[28px_minmax(0,1fr)_36px] items-start gap-2 rounded-lg border border-border p-3 ${selectedId === article.id ? "bg-primary/5" : "hover:bg-muted/30"}`}>
+                    <input aria-label={`${t("materials.select", "选择")} ${article.title}`} type="checkbox" checked={isSelected} onClick={(event) => event.stopPropagation()} onChange={() => toggleSelected(article.id)} />
+                    <div className="min-w-0">
+                      <button type="button" onClick={() => onSelectArticle(article)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <span className="flex min-w-0 items-start gap-2"><MaterialTypeIcon type={type} /><span className="min-w-0"><span className="block break-words text-sm font-medium">{article.title || t("articleList.untitled", "未命名素材")}</span><span className="mt-1 block break-all text-xs text-muted-foreground">{article.source_name || article.source_url || "本地素材"}</span><span className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"><span>{typeLabels[type]}</span><Progress article={article} /></span>{tags.length > 0 && <span className="mt-2 flex min-w-0 flex-wrap gap-1">{tags.slice(0, 3).map((tag) => <span key={tag} className="max-w-full break-all rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>)}</span>}</span></span>
+                      </button>
+                      <EditableRelation source={editableSource} hasDerivative={sourceIdsWithDerivative.has(article.id)} onSelectArticle={onSelectArticle} />
+                    </div>
                     <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <MoreVertical size={14} />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenuItem onClick={() => onEdit(article)}>
-                          <Pencil className="mr-2 h-4 w-4" />
-                          <span>{t("common.edit", "编辑信息")}</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => executeAction("delete_subtitles", article.id)}>
-                          <span>{t("articleList.deleteSubtitles", "删除字幕")}</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => executeAction("delete_analysis", article.id)}>
-                          <span>{t("articleList.deleteAnalysis", "删除翻译解析")}</span>
-                        </DropdownMenuItem>
+                      <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`${t("materials.actions", "操作")} ${article.title}`} onClick={(event) => event.stopPropagation()}><MoreHorizontal size={17} /></Button></DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => onSelectArticle(article)}><BookOpen className="mr-2" size={15} />{t("materials.open", "打开")}</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onEdit(article)}><Pencil className="mr-2" size={15} />{t("common.edit", "编辑")}</DropdownMenuItem>
+                        {article.source_url && <DropdownMenuItem onClick={() => void openUrl(article.source_url!)}><ExternalLink className="mr-2" size={15} />{t("articleList.openSource", "打开来源")}</DropdownMenuItem>}
+                        {isMedia && <><DropdownMenuItem disabled={maintainingId === article.id} onClick={() => void runMaintenance("delete_article_subtitles_cmd", article.id)}>{t("articleList.deleteSubtitles", "删除字幕")}</DropdownMenuItem><DropdownMenuItem disabled={maintainingId === article.id} onClick={() => void runMaintenance("delete_article_analysis_cmd", article.id)}>{t("articleList.deleteAnalysis", "删除翻译解析")}</DropdownMenuItem></>}
+                        <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { setSelectedIds([article.id]); setPendingAction("delete"); }}><Trash2 className="mr-2" size={15} />{t("articleList.delete", "删除")}</DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
-                  )}
-
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                    title={t("articleList.delete")}
-                    onClick={(e) => handleDeleteClick(e, article.id)}
-                    disabled={isDeleting === article.id}
-                  >
-                    <Trash2 size={14} />
-                  </Button>
-                </div>
-              </div>
+                  </article>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
-    </>
+          )
+        )}
+      </section>
+
+      <Dialog open={pendingAction !== null} onOpenChange={(open) => !open && !isApplyingAction && setPendingAction(null)} title={pendingAction === "delete" ? t("articleList.delete", "删除素材") : t("materials.archive", "归档素材")}>
+        <p className="text-sm text-muted-foreground">{pendingAction === "delete" ? t("materials.deleteSelectedConfirm", { count: selectedIds.length, defaultValue: `将删除 ${selectedIds.length} 项素材，此操作不可恢复。` }) : t("materials.archiveSelectedConfirm", { count: selectedIds.length, defaultValue: `将归档 ${selectedIds.length} 项素材。` })}</p>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" disabled={isApplyingAction} onClick={() => setPendingAction(null)}>{t("common.cancel", "取消")}</Button>
+          <Button variant={pendingAction === "delete" ? "danger" : "default"} size="sm" disabled={isApplyingAction} onClick={() => void applyBulkAction()}>{isApplyingAction && <Loader2 className="mr-1.5 animate-spin" size={15} />}{pendingAction === "delete" ? t("articleList.delete", "删除") : t("materials.archive", "归档")}</Button>
+        </DialogFooter>
+      </Dialog>
+    </section>
   );
 }

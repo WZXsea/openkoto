@@ -6,9 +6,43 @@ on:
       - main
       - "feature/**"
       - "codex/**"
+      - "wzx/**"
   pull_request:
 
 jobs:
+  backend-service:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: openkoto_dev
+          POSTGRES_USER: openkoto
+          POSTGRES_PASSWORD: openkoto_dev_password
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U openkoto -d openkoto_dev"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Backend service check
+        run: cargo check --manifest-path openkoto-backend/Cargo.toml
+        env:
+          DATABASE_URL: postgres://openkoto:openkoto_dev_password@127.0.0.1:5433/openkoto_dev
+
+      - name: Backend service tests
+        run: cargo test --manifest-path openkoto-backend/Cargo.toml
+        env:
+          DATABASE_URL: postgres://openkoto:openkoto_dev_password@127.0.0.1:5433/openkoto_dev
+          OPENKOTO_TEST_DATABASE_URL: postgres://openkoto:openkoto_dev_password@127.0.0.1:5433/openkoto_dev
+
   backend:
     runs-on: ubuntu-latest
     defaults:
@@ -28,10 +62,30 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            ripgrep
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node for bundled agent worker
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: textlingo-desktop/agent-worker/package-lock.json
+
+      - name: Prepare bundled agent worker resources
+        working-directory: .
+        run: |
+          npm --prefix textlingo-desktop/agent-worker ci
+          npm --prefix textlingo-desktop run build:agent-worker
+
+      - name: Verify Pi agent runtime guardrails
+        working-directory: .
+        run: |
+          EXPECTED_VERSION="$(node -p "require('./textlingo-desktop/package.json').version")" \
+            bash script/verify_pr12_assistant_observability.sh
 
       - name: setup python
         uses: actions/setup-python@v6
@@ -85,7 +139,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.19.0
           cache: npm
           cache-dependency-path: textlingo-desktop/package-lock.json
 

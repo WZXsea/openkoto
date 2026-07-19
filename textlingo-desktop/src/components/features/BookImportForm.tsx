@@ -1,6 +1,6 @@
 /**
  * 书籍导入表单组件
- * 支持导入 EPUB 和 TXT 格式的电子书
+ * 支持导入 EPUB 和 PDF 格式的阅读素材
  */
 
 import { useState } from "react";
@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
 import { Loader2, BookOpen, FileText, FileType, Info } from "lucide-react";
 import { Article } from "../../types";
+import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
 
 interface BookImportFormProps {
     onSave?: (article: Article) => void;
@@ -26,10 +27,19 @@ export function BookImportForm({ onSave, onCancel }: BookImportFormProps) {
     const [customTitle, setCustomTitle] = useState("");
 
     // 加载状态
-    const [isImporting, setIsImporting] = useState(false);
-
     // 错误信息
     const [error, setError] = useState<string | null>(null);
+    const importPreview = useMaterialImportPreview<Article>({
+        commit: (importJobId, duplicatePolicy) => invoke<Article>("import_book_cmd", {
+            filePath,
+            title: customTitle || null,
+            importJobId,
+            duplicatePolicy,
+        }),
+        onSuccess: onSave,
+        onError: (err) => setError(String(err)),
+    });
+    const isImporting = importPreview.isBusy;
 
     // 选择文件
     const handleSelectFile = async () => {
@@ -39,7 +49,7 @@ export function BookImportForm({ onSave, onCancel }: BookImportFormProps) {
                 filters: [
                     {
                         name: t("bookImport.fileFilterName", "电子书"),
-                        extensions: ["epub", "txt", "pdf"],
+                        extensions: ["epub", "pdf"],
                     },
                 ],
             });
@@ -49,7 +59,7 @@ export function BookImportForm({ onSave, onCancel }: BookImportFormProps) {
                 setError(null);
 
                 // 从文件路径提取文件名作为默认标题
-                const fileName = selected.split(/[/\\]/).pop()?.replace(/\.(epub|txt|pdf)$/i, "") || "";
+                const fileName = selected.split(/[/\\]/).pop()?.replace(/\.(epub|pdf)$/i, "") || "";
                 if (!customTitle) {
                     setCustomTitle(fileName);
                 }
@@ -67,22 +77,13 @@ export function BookImportForm({ onSave, onCancel }: BookImportFormProps) {
             return;
         }
 
-        setIsImporting(true);
         setError(null);
-
-        try {
-            const article = await invoke<Article>("import_book_cmd", {
-                filePath,
-                title: customTitle || null,
-            });
-
-            onSave?.(article);
-        } catch (e) {
-            console.error("导入书籍失败:", e);
-            setError(String(e));
-        } finally {
-            setIsImporting(false);
-        }
+        await importPreview.startPreview({
+            sourceKind: "book",
+            sourceUri: `file://${filePath}`,
+            filePath,
+            title: customTitle.trim() || undefined,
+        });
     };
 
     // 获取文件类型图标
@@ -99,12 +100,20 @@ export function BookImportForm({ onSave, onCancel }: BookImportFormProps) {
 
     // 获取文件名显示
     const getFileName = () => {
-        if (!filePath) return t("bookImport.filePlaceholder", "选择 EPUB 或 TXT 文件...");
+        if (!filePath) return t("bookImport.filePlaceholder", "选择 EPUB 或 PDF 文件...");
         return filePath.split(/[/\\]/).pop() || filePath;
     };
 
     return (
         <div className="flex flex-col h-full">
+            <MaterialImportPreviewDialogs
+                preview={importPreview.preview}
+                duplicate={importPreview.duplicate}
+                isBusy={importPreview.isBusy}
+                onConfirm={() => void importPreview.confirmPreview()}
+                onCancel={() => void importPreview.cancelPreview()}
+                onResolve={(action) => void importPreview.resolveDuplicate(action)}
+            />
             {/* 描述 */}
             <div className="mb-6 flex gap-3 rounded-lg border border-primary/20 bg-primary/10 p-3 text-sm text-foreground">
                 <Info className="mt-0.5 h-5 w-5 shrink-0 text-primary" />

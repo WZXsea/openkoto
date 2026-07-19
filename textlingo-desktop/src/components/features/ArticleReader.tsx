@@ -1,9 +1,8 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/button";
-import { Textarea } from "../ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import {
   BookOpen,
@@ -11,17 +10,6 @@ import {
   Sparkles,
   Loader2,
   FileText,
-  FileDown,
-  ChevronLeft,
-  ChevronRight,
-  Split,
-  PanelRightOpen,
-  PanelRightClose,
-  Eye,
-  Minus,
-  Plus,
-  Check,
-  ChevronDown
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { isKimiProvider } from "../../lib/kimiProvider";
@@ -29,23 +17,37 @@ import ReactMarkdown from "react-markdown";
 import { AnalysisType, AppConfig, ModelConfig } from "../../lib/tauri";
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from "docx";
 import { Article, SegmentExplanation } from "../../types";
-import { AgentPanel } from "./AgentPanel";
-import { ArticleChatAssistant } from "./ArticleChatAssistant";
-import { ArticleExplanationPanel } from "./ArticleExplanationPanel";
-import { ArticleMindMapPanel } from "./ArticleMindMapPanel";
-import { AssistantSidebarShell, type AssistantPanelMode } from "./AssistantSidebarShell";
+import { LearningCandidateBox, type ReaderSelectionContext } from "./LearningCandidateBox";
+import { ArticleReaderHeader } from "./reader/ArticleReaderHeader";
+import {
+  ArticleReaderAssistantShell,
+  type ArticleReaderAssistantTab,
+} from "./reader/ArticleReaderAssistantShell";
+import type { AssistantSourceReference } from "../../features/assistant";
 import { MarkdownContent } from "../ui/MarkdownContent";
 import { VideoSubtitlePlayer, ViewMode } from "./VideoSubtitlePlayer";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-} from "../ui/dropdown-menu";
 import { useConfig } from "../../lib/hooks";
 import { buildMediaResourceUrl } from "../../lib/media";
+import { hasActiveModelConfig, isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
+import {
+  createReadingProgressUpdate,
+  createSegmentLocator,
+  getInitialProgressForReader,
+  getSegmentPositionFromLocator,
+  useReadingProgressReporter,
+  type ReadingProgressChangeHandler,
+  type ReadingProgressUpdate,
+} from "../../features/reader";
+import {
+  createAnnotationDraft,
+  resolveAnnotation,
+  type AnnotationResolution,
+  type ReaderAnnotationDraft,
+  type ReaderAnnotationReference,
+} from "../../features/reader";
+import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
+import { MaterialDocumentEditor, StructuredDocumentReader, materialEditorApi } from "../../features/editor";
+import type { MaterialDocument } from "../../features/editor";
 
 const DEFAULT_BATCH_TRANSLATION_CONCURRENCY = 3;
 const MIN_BATCH_TRANSLATION_CONCURRENCY = 1;
@@ -63,7 +65,7 @@ function normalizeBatchTranslationConcurrency(value: unknown): number {
   );
 }
 
-interface ArticleReaderProps {
+export interface ArticleReaderProps {
   article: Article;
   onBack?: () => void;
   onNext?: () => void;
@@ -72,6 +74,15 @@ interface ArticleReaderProps {
   hasPrev?: boolean;
   onUpdate?: () => void;
   onOpenKtvExport?: () => void;
+  initialProgress?: ReadingProgressUpdate;
+  onProgressChange?: ReadingProgressChangeHandler;
+  /** 工作台请求回跳的 article/media annotation。 */
+  annotation?: ReaderAnnotationReference | null;
+  onAnnotationResolved?: (resolution: AnnotationResolution) => void;
+  onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
+  materialRevision?: string;
+  contentSha256?: string;
+  onNavigateAssistantSource?: (reference: AssistantSourceReference) => void;
 }
 
 export function ArticleReader({
@@ -83,9 +94,16 @@ export function ArticleReader({
   hasPrev,
   onUpdate,
   onOpenKtvExport,
+  initialProgress,
+  onProgressChange,
+  annotation,
+  onAnnotationResolved,
+  onAnnotationDraftCreated,
+  materialRevision,
+  contentSha256,
+  onNavigateAssistantSource,
 }: ArticleReaderProps) {
   const { t } = useTranslation();
-  const assistantModeStorageKey = "article-reader-assistant-mode";
   const [content, setContent] = useState(article.content);
   const [isEditing, setIsEditing] = useState(false);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -96,19 +114,28 @@ export function ArticleReader({
   const [error, setError] = useState<string | null>(null);
   const [showAssistant, setShowAssistant] = useState(true);
   const [selectedText, setSelectedText] = useState<string>("");
+  const [readerSelection, setReaderSelection] = useState<ReaderSelectionContext | null>(null);
+  const [showCandidateBox, setShowCandidateBox] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("original");
   const [fontSize, setFontSize] = useState(18);
+  const [mediaUrl, setMediaUrl] = useState("");
+  const { reportProgress } = useReadingProgressReporter(onProgressChange);
+  const restoredArticleIdRef = useRef<string | undefined>(undefined);
+  const scrollProgressFrameRef = useRef<number | null>(null);
 
   // Segment Explorer State
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [isGeneratingExplanation, setIsGeneratingExplanation] = useState(false);
-  const [activeTab, setActiveTab] = useState<"explanation" | "mind_map" | "chat" | "agent">("explanation");
+  const [activeTab, setActiveTab] = useState<ArticleReaderAssistantTab>("explanation");
 
   // Video Sync State
   const activeSegmentRef = useRef<HTMLElement>(null);
+  const readerContentRef = useRef<HTMLDivElement>(null);
 
   // 本地段落状态 - 用于批量处理时的局部刷新
   const [localSegments, setLocalSegments] = useState(article.segments || []);
+  const [structuredDocument, setStructuredDocument] = useState<MaterialDocument | null>(null);
+  const [annotationResolution, setAnnotationResolution] = useState<AnnotationResolution | undefined>();
 
   // 字幕提取状态
   const [isExtractingSubtitles, setIsExtractingSubtitles] = useState(false);
@@ -150,7 +177,49 @@ export function ArticleReader({
     loadAsrOptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [article.id]);
+
+  useEffect(() => {
+    if (article.media_path || article.book_path || article.book_type) {
+      setStructuredDocument(null);
+      return;
+    }
+    let cancelled = false;
+    void materialEditorApi.getDocument(article.id)
+      .then((document) => {
+        if (!cancelled && document && Array.isArray(document.blocks)) setStructuredDocument(document);
+      })
+      .catch(() => {
+        if (!cancelled) setStructuredDocument(null);
+      });
+    return () => { cancelled = true; };
+  }, [article.book_path, article.book_type, article.id, article.media_path]);
   const [isImportingSubtitles, setIsImportingSubtitles] = useState(false);
+  const [pendingSubtitlePath, setPendingSubtitlePath] = useState("");
+  const subtitleImportPreview = useMaterialImportPreview<Article>({
+    commit: (importJobId, duplicatePolicy) => invoke<Article>("import_article_subtitles_cmd", {
+      articleId: article.id,
+      subtitlePath: pendingSubtitlePath,
+      importJobId,
+      duplicatePolicy,
+    }),
+    onSuccess: (updatedArticle) => {
+      const importedCount = updatedArticle.segments?.length || 0;
+      const successTemplate = t(
+        "subtitleImport.successMessage",
+        "Imported {{count}} subtitle segments"
+      );
+      setLocalSegments(updatedArticle.segments || []);
+      setContent(updatedArticle.content);
+      setSuccessMessage(successTemplate.replace("{{count}}", String(importedCount)));
+      onUpdate?.();
+      void refreshArticle();
+      setTimeout(() => setSuccessMessage(null), 3000);
+    },
+    onError: (err) => {
+      console.error("[ArticleReader] Subtitle import failed:", err);
+      setError(t("subtitleImport.error", "Subtitle import failed") + ": " + String(err));
+    },
+  });
   const [extractionProgress, setExtractionProgress] = useState<string | null>(null);
 
   // 成功提示消息状态
@@ -162,6 +231,30 @@ export function ArticleReader({
   // Config hook
   const { config } = useConfig();
   const targetLanguage = config?.target_language || "zh-CN";
+  const canUseAi = hasActiveModelConfig(config);
+  const aiUnavailableMessage = t("common.aiUnavailable", "基础阅读可用。配置 AI 模型后可启用翻译、讲解和分析。");
+  const canAutoExtractSubtitles = isPhase1CapabilityEnabled("autoSubtitleExtraction");
+  const canOpenKtvExport = isPhase1CapabilityEnabled("ktvExport");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMediaUrl = async () => {
+      try {
+        const url = await buildMediaResourceUrl(article.media_path, "video");
+        if (!cancelled) setMediaUrl(url);
+      } catch (error) {
+        console.warn("[ArticleReader] Failed to build media URL:", error);
+        if (!cancelled) setMediaUrl("");
+      }
+    };
+
+    void loadMediaUrl();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [article.media_path]);
 
   // 刷新文章数据 - 仅更新本地状态，不触发父组件更新
   const refreshArticle = async () => {
@@ -257,19 +350,61 @@ export function ArticleReader({
   }, [article]);
 
   useEffect(() => {
-    const handleSelection = () => {
-      const selection = window.getSelection();
-      if (selection && selection.toString().trim().length > 0) {
-        setSelectedText(selection.toString().trim());
-      }
-    };
-    document.addEventListener("mouseup", handleSelection);
-    return () => document.removeEventListener("mouseup", handleSelection);
-  }, []);
+    if (article.media_path || restoredArticleIdRef.current === article.id || localSegments.length === 0) {
+      return;
+    }
+
+    restoredArticleIdRef.current = article.id;
+    const initialArticleProgress = getInitialProgressForReader(initialProgress, "article");
+    const segmentOrder = getSegmentPositionFromLocator(initialArticleProgress?.locator);
+    if (segmentOrder === undefined) return;
+
+    const sortedSegments = [...localSegments].sort((left, right) => left.order - right.order);
+    const initialSegmentLocator = initialArticleProgress?.locator.kind === "segment"
+      ? initialArticleProgress.locator
+      : undefined;
+    const restoredById = initialSegmentLocator?.segment_id
+      ? sortedSegments.find((segment) => segment.id === initialSegmentLocator.segment_id)
+      : undefined;
+    const restoredSegment = restoredById ?? sortedSegments.find((segment) => segment.order === segmentOrder);
+    if (restoredSegment) {
+      setSelectedSegmentId(restoredSegment.id);
+    }
+  }, [article.id, article.media_path, initialProgress, localSegments]);
+
+  useEffect(() => {
+    if (!annotation) {
+      setAnnotationResolution(undefined);
+      return;
+    }
+    const readerKind = article.media_path ? "media" : "article";
+    const resolution = resolveAnnotation(annotation, {
+      reader_kind: readerKind,
+      material_revision: materialRevision,
+      content_sha256: contentSha256,
+      segments: localSegments.map((segment) => ({
+        id: segment.id,
+        order: segment.order,
+        text: segment.text,
+        start_time: segment.start_time,
+        end_time: segment.end_time,
+      })),
+    });
+    setAnnotationResolution(resolution);
+    onAnnotationResolved?.(resolution);
+    const target = resolution.locator;
+    if (target?.reader_kind === "article" || target?.reader_kind === "media") {
+      const targetId = target.segment_id
+        ?? (target.kind === "text_range" && target.segment_order !== undefined
+          ? localSegments.find((segment) => segment.order === target.segment_order)?.id
+          : undefined);
+      if (targetId) setSelectedSegmentId(targetId);
+    }
+  }, [annotation, article.media_path, contentSha256, localSegments, materialRevision, onAnnotationResolved]);
 
   // 自动滚动到激活的段落（非视频模式）
   useEffect(() => {
-    if (selectedSegmentId && activeSegmentRef.current && !article.media_path) {
+    if (selectedSegmentId && activeSegmentRef.current?.scrollIntoView && !article.media_path) {
       activeSegmentRef.current.scrollIntoView({
         behavior: "smooth",
         block: "center",
@@ -279,20 +414,12 @@ export function ArticleReader({
 
 
   
-  const handleSaveContent = async () => {
-    try {
-      await invoke("update_article", {
-        id: article.id,
-        content,
-      });
-      setIsEditing(false);
-      onUpdate?.();
-    } catch (err) {
-      setError(err as string);
-    }
-  };
-
   const handleTranslate = async () => {
+    if (!canUseAi) {
+      setError(aiUnavailableMessage);
+      return;
+    }
+
     setIsTranslating(true);
     setTranslationProgress(null);
     setError(null);
@@ -321,6 +448,11 @@ export function ArticleReader({
   };
 
   const handleAnalyze = async () => {
+    if (!canUseAi) {
+      setError(aiUnavailableMessage);
+      return;
+    }
+
     setIsAnalyzing(true);
     setError(null);
     setAnalysisResult("");
@@ -343,6 +475,10 @@ export function ArticleReader({
   //   undefined → 默认（激活 ASR，否则回退听写）。
   const handleExtractSubtitles = async (transcriptionConfigId?: string) => {
     if (!article.media_path) return;
+    if (!canAutoExtractSubtitles) {
+      setError(t("common.phase1Disabled", "第一阶段保留本地阅读核心能力，此增强功能暂不启用。"));
+      return;
+    }
 
     setError(null);
 
@@ -445,24 +581,19 @@ export function ArticleReader({
         return;
       }
 
+      setPendingSubtitlePath(selected);
       setIsImportingSubtitles(true);
-      const updatedArticle = await invoke<Article>("import_article_subtitles_cmd", {
-        articleId: article.id,
-        subtitlePath: selected,
+      await subtitleImportPreview.startPreview({
+        sourceKind: "subtitle",
+        sourceUri: `file://${selected}`,
+        filePath: selected,
+        title: article.title,
+        metadata: {
+          target_material_id: article.id,
+          mode: "attach",
+          skip_material_duplicate_check: true,
+        },
       });
-      const importedCount = updatedArticle.segments?.length || 0;
-      const successTemplate = t(
-        "subtitleImport.successMessage",
-        "Imported {{count}} subtitle segments"
-      );
-
-      setLocalSegments(updatedArticle.segments || []);
-      setContent(updatedArticle.content);
-      setSuccessMessage(successTemplate.replace("{{count}}", String(importedCount)));
-
-      onUpdate?.();
-      await refreshArticle();
-      setTimeout(() => setSuccessMessage(null), 3000);
     } catch (err) {
       console.error("[ArticleReader] Subtitle import failed:", err);
       setError(t("subtitleImport.error", "Subtitle import failed") + ": " + String(err));
@@ -492,18 +623,126 @@ export function ArticleReader({
 
   const selectedSegment = localSegments.find(s => s.id === selectedSegmentId) || null;
 
+  const handleReaderSelection = () => {
+    const selection = window.getSelection();
+    const selected = selection?.toString().trim() || "";
+    if (!selection || !selected) return;
+
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    const container = readerContentRef.current;
+    if (!anchorNode || !focusNode || !container) return;
+    if (!container.contains(anchorNode) || !container.contains(focusNode)) return;
+
+    const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    const commonNode = range?.commonAncestorContainer || anchorNode;
+    const commonElement = commonNode.nodeType === Node.ELEMENT_NODE
+      ? commonNode as Element
+      : commonNode.parentElement;
+    if (!commonElement) return;
+
+    const segmentElement = commonElement.closest<HTMLElement>("[data-reader-segment-id]");
+    const segmentId = segmentElement?.dataset.readerSegmentId;
+    const segment = segmentId ? localSegments.find(s => s.id === segmentId) : null;
+    const sourceSentence = segment?.text || selected;
+    const selectedIndex = sourceSentence.toLowerCase().indexOf(selected.toLowerCase());
+    const contextBefore = selectedIndex >= 0
+      ? sourceSentence.slice(Math.max(0, selectedIndex - 100), selectedIndex).trim()
+      : undefined;
+    const contextAfter = selectedIndex >= 0
+      ? sourceSentence.slice(selectedIndex + selected.length, selectedIndex + selected.length + 100).trim()
+      : undefined;
+
+    setSelectedText(selected);
+    setReaderSelection({
+      materialId: article.id,
+      segmentId,
+      selectedText: selected,
+      sourceSentence,
+      contextBefore,
+      contextAfter,
+    });
+    const isMedia = Boolean(article.media_path);
+    const selectedSegment = segment ?? localSegments.find((candidate) => candidate.start_time !== undefined
+      && candidate.end_time !== undefined
+      && (annotationResolution?.locator?.kind === "time_range"
+        ? candidate.start_time <= annotationResolution.locator.current_time && candidate.end_time >= annotationResolution.locator.current_time
+        : false));
+    if (!isMedia) {
+      onAnnotationDraftCreated?.(createAnnotationDraft({
+        materialId: article.id,
+        readerKind: "article",
+        sourceText: sourceSentence,
+        selectedText: selected,
+        segmentId: selectedSegment?.id,
+        segmentOrder: selectedSegment?.order,
+        materialRevision,
+        contentSha256,
+      }));
+    }
+    setShowCandidateBox(true);
+  };
+
   const handleSegmentClick = (id: string) => {
+    const selection = window.getSelection();
+    if (selection?.toString().trim()) return;
+
     setSelectedSegmentId(id);
     setActiveTab("explanation");
     setShowAssistant(true);
 
+    if (!article.media_path) {
+      const sortedSegments = [...localSegments].sort((left, right) => left.order - right.order);
+      const position = sortedSegments.findIndex((segment) => segment.id === id);
+      if (position >= 0) {
+        reportProgress(createReadingProgressUpdate(
+          "article",
+          createSegmentLocator(sortedSegments[position].order, sortedSegments.length, id),
+          (position + 1) / sortedSegments.length,
+        ));
+      }
+    }
+
     // Check if we need to auto-generate explanation
     const segment = localSegments.find(s => s.id === id);
-    if (segment && !segment.explanation && !isGeneratingExplanation) {
+    if (canUseAi && segment && !segment.explanation && !isGeneratingExplanation) {
       // Auto-trigger generation
       setTimeout(() => handleGenerateExplanation(id), 0);
     }
   };
+
+  const reportArticleScrollProgress = useCallback(() => {
+    scrollProgressFrameRef.current = null;
+    const container = readerContentRef.current;
+    if (!container || article.media_path || localSegments.length === 0) return;
+    const elements = Array.from(container.querySelectorAll<HTMLElement>("[data-reader-segment-id]"));
+    if (elements.length === 0) return;
+    const containerRect = container.getBoundingClientRect();
+    const readingLine = containerRect.top + Math.min(containerRect.height * 0.4, 240);
+    const activeElement = elements.find((element) => element.getBoundingClientRect().bottom >= readingLine)
+      ?? elements[elements.length - 1];
+    const segmentId = activeElement.dataset.readerSegmentId;
+    const sortedSegments = [...localSegments].sort((left, right) => left.order - right.order);
+    const position = sortedSegments.findIndex((segment) => segment.id === segmentId);
+    if (position < 0) return;
+    reportProgress(createReadingProgressUpdate(
+      "article",
+      createSegmentLocator(sortedSegments[position].order, sortedSegments.length, segmentId),
+      (position + 1) / sortedSegments.length,
+    ));
+  }, [article.media_path, localSegments, reportProgress]);
+
+  const handleReaderScroll = useCallback(() => {
+    if (article.media_path || scrollProgressFrameRef.current !== null) return;
+    scrollProgressFrameRef.current = window.requestAnimationFrame(reportArticleScrollProgress);
+  }, [article.media_path, reportArticleScrollProgress]);
+
+  useEffect(() => () => {
+    if (scrollProgressFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollProgressFrameRef.current);
+      scrollProgressFrameRef.current = null;
+    }
+  }, []);
 
   // Batch Translation State
   const [isBatchTranslating, setIsBatchTranslating] = useState(false);
@@ -513,6 +752,11 @@ export function ArticleReader({
 
   // 启动批量分析 - 显示确认对话框
   const handleBatchTranslate = () => {
+    if (!canUseAi) {
+      setError(aiUnavailableMessage);
+      return;
+    }
+
     console.log("[ArticleReader] handleBatchTranslate clicked!");
     console.log("[ArticleReader] localSegments:", localSegments);
     if (!localSegments || localSegments.length === 0) {
@@ -579,7 +823,8 @@ export function ArticleReader({
                 segmentId: segment.id,
                 explanation: explanation,
                 reading: explanation.reading_text,
-                translation: explanation.translation
+                translation: explanation.translation,
+                expectedTextSha256: segment.text_sha256,
               });
 
               console.log(`[ArticleReader] Segment ${segment.id} saved, updating local state`);
@@ -620,6 +865,10 @@ export function ArticleReader({
   const handleGenerateExplanation = async (segmentId?: string) => {
     const targetId = segmentId || selectedSegmentId;
     if (!targetId || !article.id) return;
+    if (!canUseAi) {
+      setError(aiUnavailableMessage);
+      return;
+    }
 
     setIsGeneratingExplanation(true);
     setError(null);
@@ -652,7 +901,8 @@ export function ArticleReader({
           segmentId: targetId,
           explanation: explanation,
           reading: explanation.reading_text,
-          translation: explanation.translation
+          translation: explanation.translation,
+          expectedTextSha256: segment.text_sha256,
         });
         console.log(`[ArticleReader] Segment updated successfully`);
 
@@ -908,8 +1158,34 @@ export function ArticleReader({
     }
   };
 
+  if (isEditing && !article.media_path && !article.book_path && !article.book_type) {
+    return (
+      <MaterialDocumentEditor
+        materialId={article.id}
+        title={article.title}
+        onCancel={() => {
+          setContent(article.content);
+          setIsEditing(false);
+          onUpdate?.();
+        }}
+        onCommitted={(document) => {
+          setStructuredDocument(document);
+          void refreshArticle();
+        }}
+      />
+    );
+  }
+
   const mainContent = (
     <>
+        <MaterialImportPreviewDialogs
+          preview={subtitleImportPreview.preview}
+          duplicate={subtitleImportPreview.duplicate}
+          isBusy={subtitleImportPreview.isBusy}
+          onConfirm={() => void subtitleImportPreview.confirmPreview()}
+          onCancel={() => void subtitleImportPreview.cancelPreview()}
+          onResolve={(action) => void subtitleImportPreview.resolveDuplicate(action)}
+        />
         {error && (
           <div className="absolute top-0 left-0 right-0 z-50 bg-destructive/90 border-b border-destructive text-destructive-foreground px-4 py-2 text-sm flex justify-between items-center backdrop-blur-md animate-in slide-in-from-top-full duration-300">
             <span>{error}</span>
@@ -959,275 +1235,36 @@ export function ArticleReader({
           </div>
         )}
 
-        {/* Header */}
-        <div className="flex flex-col gap-3 p-4 border-b border-border bg-card/50 backdrop-blur-sm supports-[backdrop-filter]:bg-card/50">
-          <div className="flex items-center gap-4 min-w-0">
-            {onBack && (
-              <Button variant="ghost" size="sm" onClick={onBack}>
-                <ChevronLeft size={18} />
-              </Button>
-            )}
-            <div className="min-w-0 overflow-hidden">
-              <h1 className="text-xl font-semibold text-foreground truncate">
-                {article.title || t("articleReader.untitled")}
-              </h1>
-              {hasSegments && (
-                <div className="flex items-center gap-2 mt-1">
-                  {/* 合并后的状态指示器 */}
-                  <div className="flex items-center gap-3 px-2 py-0.5 bg-muted/40 rounded-md border border-border/50">
-                    {/* 翻译计数 */}
-                    <div className="flex items-center gap-1.5">
-                      <div className="h-1.5 w-1.5 rounded-full bg-yellow-500"></div>
-                      <span className="text-[10px] text-muted-foreground font-medium">
-                        {localSegments.filter(s => s.translation).length} / {localSegments.length}
-                        <span className="ml-1 opacity-80">{t("articleReader.translated") || "已翻译"}</span>
-                      </span>
-                    </div>
-
-                    <div className="w-px h-3 bg-border/50" />
-
-                    {/* 解析计数 */}
-                    <div className="flex items-center gap-1.5">
-                      <div className="h-1.5 w-1.5 rounded-full bg-green-500"></div>
-                      <span className="text-[10px] text-muted-foreground font-medium">
-                        {localSegments.filter(s => s.explanation).length} / {localSegments.length}
-                        <span className="ml-1 opacity-80">{t("articleReader.parsed") || "已解析"}</span>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            {onPrev && (
-              <Button variant="ghost" size="sm" onClick={onPrev} disabled={!hasPrev} title="Previous Article">
-                <ChevronLeft size={18} />
-              </Button>
-            )}
-            {onNext && (
-              <Button variant="ghost" size="sm" onClick={onNext} disabled={!hasNext} title="Next Article">
-                <ChevronRight size={18} />
-              </Button>
-            )}
-
-            <div className="w-px h-4 bg-border mx-1" />
-
-            {/* Font Size Control - Compact */}
-            <div className="flex items-center gap-0.5 bg-muted/50 rounded-lg p-0.5 mr-2 border border-border">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setFontSize(Math.max(12, fontSize - 2))}
-                className="h-7 w-7 p-0 hover:bg-background text-foreground"
-                title="Decrease font size"
-              >
-                <Minus size={14} />
-              </Button>
-              <span className="text-xs text-muted-foreground w-6 text-center">{fontSize}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setFontSize(Math.min(32, fontSize + 2))}
-                className="h-7 w-7 p-0 hover:bg-background text-foreground"
-                title="Increase font size"
-              >
-                <Plus size={14} />
-              </Button>
-            </div>
-
-            {hasSegments ? (
-              <>
-                {!article.media_path && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant={viewMode !== 'original' ? "default" : "secondary"}
-                        size="sm"
-                        title={t("articleReader.viewMode") || "View Mode"}
-                        className="h-8 md:h-9"
-                        data-testid="reader-toolbar-view-mode-trigger"
-                      >
-                        {viewMode === 'original' && <Eye size={16} />}
-                        {viewMode === 'bilingual' && <Split size={16} />}
-                        {viewMode === 'translation' && <Languages size={16} />}
-                        <span className="ml-2 hidden xl:inline">
-                          {t(`articleReader.viewMode.${viewMode}`) || (viewMode === 'original' ? "Original" : viewMode === 'bilingual' ? "Bilingual" : "Translation")}
-                        </span>
-                        <ChevronDown size={14} className="ml-1 opacity-50" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => setViewMode('original')}>
-                        <div className="flex items-center justify-between w-full min-w-[120px]">
-                          <span>{t("articleReader.viewMode.original") || "Original"}</span>
-                          {viewMode === 'original' && <Check size={14} />}
-                        </div>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setViewMode('bilingual')}>
-                        <div className="flex items-center justify-between w-full">
-                          <span>{t("articleReader.viewMode.bilingual") || "Bilingual"}</span>
-                          {viewMode === 'bilingual' && <Check size={14} />}
-                        </div>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setViewMode('translation')}>
-                        <div className="flex items-center justify-between w-full">
-                          <span>{t("articleReader.viewMode.translation") || "Translation"}</span>
-                          {viewMode === 'translation' && <Check size={14} />}
-                        </div>
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-
-                {isBatchTranslating ? (
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-muted rounded-md border border-border h-8 md:h-9">
-                    <Loader2 size={14} className="animate-spin text-primary" />
-                    <span className="text-xs text-muted-foreground font-mono">
-                      {Math.round((batchProgress.current / batchProgress.total) * 100)}%
-                    </span>
-                  </div>
-                ) : (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleBatchTranslate}
-                    disabled={isBatchTranslating || !hasSegments}
-                    title={t("articleReader.analyzeAll")}
-                    className="h-8 md:h-9"
-                  >
-                    <Sparkles size={16} />
-                    <span className="ml-2 hidden xl:inline">{t("articleReader.analyzeAll") || "Deep Dive Translate"}</span>
-                  </Button>
-                )}
-
-                {/* Resegment Button - Hide for Video */}
-                {!article.media_path && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleResegment}
-                    disabled={isResegmenting}
-                    className="h-8 md:h-9"
-                    title={t("articleReader.resegment")}
-                  >
-                    {isResegmenting ? <Loader2 size={16} className="animate-spin" /> : <Split size={16} />}
-                    <span className="ml-2 hidden xl:inline">{t("articleReader.segment")}</span>
-                  </Button>
-                )}
-
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="h-8 md:h-9 gap-2"
-                      title={t("articleReader.export") || "Export"}
-                    >
-                      <FileDown size={16} />
-                      <span className="hidden xl:inline">{t("articleReader.export") || "Export"}</span>
-                      <ChevronDown size={14} className="opacity-60" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="min-w-[220px]">
-                    <DropdownMenuLabel>{t("articleReader.exportMarkdown") || "Markdown"}</DropdownMenuLabel>
-                    <DropdownMenuItem onClick={() => handleArticleExport("md", false)}>
-                      {t("articleReader.exportOriginalTranslationMd") || "Original + Translation (MD)"}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleArticleExport("md", true)}>
-                      {t("articleReader.exportAnnotatedMd") || "Original + Translation + Notes (MD)"}
-                    </DropdownMenuItem>
-
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel>{t("articleReader.exportDocx") || "DOCX"}</DropdownMenuLabel>
-                    <DropdownMenuItem onClick={() => handleArticleExport("docx", false)}>
-                      {t("articleReader.exportOriginalTranslationDocx") || "Original + Translation (DOCX)"}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleArticleExport("docx", true)}>
-                      {t("articleReader.exportAnnotatedDocx") || "Original + Translation + Notes (DOCX)"}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </>
-            ) : (
-              // No Segments - Show Segment buttons if NOT video (Wait, video should extract subtitles, not segmentation usually)
-              // If video has no segments, it usually implies subtitles extraction needed.
-              // Let's keep logic: Hide Segment/Edit button for video.
-              !article.media_path ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleResegment}
-                  disabled={isResegmenting}
-                  className="h-8 md:h-9"
-                >
-                  {isResegmenting ? <Loader2 size={16} className="animate-spin" /> : <Split size={16} />}
-                  <span className="ml-2 hidden xl:inline">{t("articleReader.segment")}</span>
-                </Button>
-              ) : null
-            )}
-
-            <div className="w-px h-4 bg-border mx-1" />
-
-            {/* Edit & Translate - Hide Edit for Video */}
-            {!article.media_path && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setIsEditing(!isEditing)}
-                className="h-8 md:h-9"
-                title={t("articleReader.edit")}
-              >
-                <FileText size={16} />
-                <span className="ml-2 hidden xl:inline">{isEditing ? t("articleReader.cancel") : t("articleReader.edit")}</span>
-              </Button>
-            )}
-
-            <Button
-              size="sm"
-              onClick={handleTranslate}
-              disabled={isTranslating}
-              className="gap-2 h-8 md:h-9 relative overflow-hidden"
-              title={t("articleReader.translate")}
-              variant="secondary"
-            >
-              {/* Progress Bar Background */}
-              {isTranslating && translationProgress && translationProgress.total > 0 && (
-                <div
-                  className="absolute inset-0 bg-primary/10 transition-all duration-300"
-                  style={{ width: `${Math.min(100, (translationProgress.current / translationProgress.total) * 100)}%` }}
-                />
-              )}
-
-              {isTranslating ? (
-                translationProgress && translationProgress.total > 0 ? (
-                  <span className="text-xs font-mono z-10 text-primary">
-                    {Math.round((translationProgress.current / translationProgress.total) * 100)}%
-                  </span>
-                ) : (
-                  <Loader2 size={16} className="animate-spin" />
-                )
-              ) : (
-                <Languages size={16} />
-              )}
-              <span className="hidden xl:inline z-10">{t("articleReader.translate")}</span>
-            </Button>
-
-            <div className="w-px h-4 bg-border mx-1" />
-
-            {/* Assistant Toggle */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowAssistant(!showAssistant)}
-              title={showAssistant ? "Hide Assistant" : "Show Assistant"}
-              className="h-8 w-8 p-0"
-            >
-              {showAssistant ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-            </Button>
-          </div>
-        </div>
+        <ArticleReaderHeader
+          article={article}
+          segments={localSegments}
+          hasSegments={hasSegments}
+          onBack={onBack}
+          onNext={onNext}
+          onPrev={onPrev}
+          hasNext={hasNext}
+          hasPrev={hasPrev}
+          fontSize={fontSize}
+          onFontSizeChange={setFontSize}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          isBatchTranslating={isBatchTranslating}
+          batchProgress={batchProgress}
+          canUseAi={canUseAi}
+          aiUnavailableMessage={aiUnavailableMessage}
+          onBatchTranslate={handleBatchTranslate}
+          isResegmenting={isResegmenting}
+          onResegment={handleResegment}
+          onOpenCandidateBox={() => setShowCandidateBox(true)}
+          onArticleExport={handleArticleExport}
+          isEditing={isEditing}
+          onToggleEditing={() => setIsEditing((current) => !current)}
+          isTranslating={isTranslating}
+          translationProgress={translationProgress}
+          onTranslate={handleTranslate}
+          showAssistant={showAssistant}
+          onToggleAssistant={() => setShowAssistant((current) => !current)}
+        />
 
         {error && (
           <div className="mx-4 mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg text-destructive text-sm">
@@ -1248,25 +1285,21 @@ export function ArticleReader({
             )}
 
             <TabsContent value="content" className="flex-1 overflow-hidden outline-none mt-0">
-              {isEditing ? (
-                <div className="h-full flex flex-col p-4">
-                  <Textarea
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
-                    className="flex-1 font-mono text-sm resize-none bg-background text-foreground"
-                  />
-                  <div className="flex justify-end gap-2 mt-4">
-                    <Button variant="secondary" onClick={() => setIsEditing(false)}>
-                      {t("articleReader.cancel")}
-                    </Button>
-                    <Button onClick={handleSaveContent}>{t("articleReader.save")}</Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth">
+              <div
+                ref={readerContentRef}
+                data-testid="article-reader-scroll"
+                onMouseUp={handleReaderSelection}
+                onKeyUp={handleReaderSelection}
+                onScroll={handleReaderScroll}
+                className="h-full overflow-y-auto px-4 py-6 md:px-8 lg:px-12 scroll-smooth"
+              >
+                  {annotationResolution && (
+                    <div role="status" className="mb-3 text-xs text-muted-foreground" data-testid="article-annotation-status">
+                      {annotationResolution.message}
+                    </div>
+                  )}
                   {/* 视频/音频模式：使用 VideoSubtitlePlayer 组件 */}
                   {article.media_path && (() => {
-                    const mediaUrl = buildMediaResourceUrl(article.media_path, "video");
                     const filename = article.media_path.split('/').pop() || article.media_path.split('\\').pop() || '';
                     const audioExtensions = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'wma'];
                     const ext = filename.split('.').pop()?.toLowerCase() || '';
@@ -1281,25 +1314,47 @@ export function ArticleReader({
                         viewMode={viewMode}
                         isExtractingSubtitles={isExtractingSubtitles}
                         isImportingSubtitles={isImportingSubtitles}
-                        onExtractSubtitles={handleExtractSubtitles}
+                        onExtractSubtitles={canAutoExtractSubtitles ? handleExtractSubtitles : undefined}
                         asrOptions={asrOptions}
                         onImportSubtitles={handleImportSubtitles}
                         articleTitle={article.title}
                         articleId={article.id}
                         extractionProgress={extractionProgress}
                         isTranslating={isTranslating}
-                        onQuickTranslate={handleTranslate}
+                        onQuickTranslate={canUseAi ? handleTranslate : undefined}
                         translationProgress={translationProgress}
                         isAudio={isAudioFile}
-                        onOpenKtvExport={onOpenKtvExport}
+                        onOpenKtvExport={canOpenKtvExport ? onOpenKtvExport : undefined}
                         onViewModeChange={setViewMode}
+                        initialProgress={initialProgress}
+                        onProgressChange={onProgressChange}
+                        annotation={annotation}
+                        onAnnotationResolved={undefined}
+                        onAnnotationDraftCreated={onAnnotationDraftCreated}
+                        materialRevision={materialRevision}
+                        contentSha256={contentSha256}
+                        onTextSelect={setSelectedText}
                       />
                     );
                   })()}
 
                   {/* 非视频模式：段落式显示 */}
-                  {hasSegments && !article.media_path && (
-                    <div className="max-w-3xl mx-auto pb-20">
+                  {structuredDocument && !article.media_path && (
+                    <StructuredDocumentReader
+                      blocks={structuredDocument.blocks}
+                      liveSegments={localSegments}
+                      fontSize={fontSize}
+                      viewMode={viewMode}
+                      selectedSegmentId={selectedSegmentId}
+                      activeSegmentRef={activeSegmentRef}
+                      annotationLocator={annotationResolution?.locator}
+                      annotationResolved={annotationResolution?.status !== "unresolved"}
+                      onSegmentClick={handleSegmentClick}
+                    />
+                  )}
+
+                  {hasSegments && !article.media_path && !structuredDocument && (
+                    <div className="openkoto-reader-font max-w-3xl mx-auto pb-20">
                       {(() => {
                         const sortedSegments = [...localSegments].sort((a, b) => a.order - b.order);
                         const paragraphGroups: typeof sortedSegments[] = [];
@@ -1332,9 +1387,21 @@ export function ArticleReader({
                                 const isSelected = segment.id === selectedSegmentId;
 
                                 return (
-                                  <React.Fragment key={segment.id}>
+                                  (() => {
+                                    const displayedText = viewMode === 'translation' && segment.translation ? segment.translation : segment.text;
+                                    const annotationLocator = annotationResolution?.locator;
+                                    const hasAnnotationRange = viewMode !== 'translation'
+                                      && annotationLocator?.kind === "text_range"
+                                      && annotationLocator.reader_kind === "article"
+                                      && (annotationLocator.segment_id === segment.id || annotationLocator.segment_order === segment.order)
+                                      && annotationResolution?.status !== "unresolved";
+                                    return (
+                                    <React.Fragment key={segment.id}>
                                     <span
                                       ref={isSelected ? activeSegmentRef : null}
+                                      data-reader-segment-id={segment.id}
+                                      data-reader-segment-order={segment.order}
+                                      data-annotation-active={hasAnnotationRange ? "true" : undefined}
                                       onClick={() => handleSegmentClick(segment.id)}
                                       className={`inline decoration-clone rounded-lg border-2 px-1 py-0.5 mx-0.5 transition-all duration-200 cursor-pointer ${isSelected
                                         ? "bg-primary/20 border-primary shadow-sm text-foreground ring-2 ring-primary/20"
@@ -1350,10 +1417,20 @@ export function ArticleReader({
                                         boxDecorationBreak: 'clone'
                                       }}
                                     >
-                                      {viewMode === 'translation' && segment.translation ? segment.translation : segment.text}
+                                      {hasAnnotationRange ? (
+                                        <>
+                                          {segment.text.slice(0, annotationLocator.start_offset)}
+                                          <mark data-testid="article-annotation-highlight" className="bg-primary/25 text-foreground rounded-sm">
+                                            {segment.text.slice(annotationLocator.start_offset, annotationLocator.end_offset)}
+                                          </mark>
+                                          {segment.text.slice(annotationLocator.end_offset)}
+                                        </>
+                                      ) : displayedText}
                                     </span>
                                     {segIndex < group.length - 1 && " "}
-                                  </React.Fragment>
+                                    </React.Fragment>
+                                    );
+                                  })()
                                 );
                               })}
                             </div>
@@ -1394,13 +1471,12 @@ export function ArticleReader({
                   )}
 
                   {/* 纯文本模式：Markdown 渲染 */}
-                  {!hasSegments && !article.media_path && (
-                    <article className="prose dark:prose-invert max-w-none pb-20 text-foreground">
+                  {!hasSegments && !article.media_path && !structuredDocument && (
+                    <article className="openkoto-reader-font prose dark:prose-invert max-w-none pb-20 text-foreground">
                       <ReactMarkdown>{content}</ReactMarkdown>
                     </article>
                   )}
-                </div>
-              )}
+              </div>
             </TabsContent>
 
             <TabsContent value="analysis" className="flex-1 overflow-hidden p-4 mt-0">
@@ -1413,7 +1489,9 @@ export function ArticleReader({
                         variant={analysisType === type.value ? "default" : "secondary"}
                         size="sm"
                         onClick={() => setAnalysisType(type.value)}
+                        disabled={!canUseAi}
                         className="gap-2"
+                        title={canUseAi ? type.label : aiUnavailableMessage}
                       >
                         {type.icon}
                         {type.label}
@@ -1422,8 +1500,9 @@ export function ArticleReader({
                   </div>
                   <Button
                     onClick={handleAnalyze}
-                    disabled={isAnalyzing}
+                    disabled={isAnalyzing || !canUseAi}
                     className="gap-2 ml-auto"
+                    title={canUseAi ? t("articleReader.analyze") : aiUnavailableMessage}
                   >
                     {isAnalyzing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
                     {t("articleReader.analyze")}
@@ -1452,76 +1531,38 @@ export function ArticleReader({
               </div>
             </TabsContent>
           </Tabs>
+          <LearningCandidateBox
+            article={article}
+            selection={readerSelection}
+            open={showCandidateBox}
+            canUseAi={canUseAi}
+            targetLanguage={targetLanguage}
+            onOpenChange={setShowCandidateBox}
+            onError={setError}
+            onSuccess={(message) => {
+              setSuccessMessage(message);
+              setTimeout(() => setSuccessMessage(null), 2200);
+            }}
+          />
         </div>
     </>
   );
 
-  const sidebarTabs = [
-    {
-      value: "explanation",
-      label: t("articleReader.explanation", "讲解"),
-      content: selectedSegment ? (
-        <ArticleExplanationPanel
-          segment={selectedSegment}
-          explanation={selectedSegment.explanation || null}
-          isLoading={isGeneratingExplanation}
-          onRegenerate={handleGenerateExplanation}
-        />
-      ) : (
-        <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
-          <BookOpen size={48} className="mb-4 opacity-50" />
-          <p>{t("articleReader.selectSegment") || "Select a sentence to see explanation"}</p>
-        </div>
-      ),
-    },
-    {
-      value: "mind_map",
-      label: t("articleReader.mindMap", "思维导图"),
-      content: ({ panelMode }: { panelMode: AssistantPanelMode }) => (
-        <ArticleMindMapPanel
-          article={article}
-          targetLanguage={targetLanguage}
-          panelMode={panelMode}
-        />
-      ),
-    },
-    {
-      value: "chat",
-      label: t("articleReader.chat", "对话"),
-      content: (
-        <ArticleChatAssistant
-          articleId={article.id}
-          articleTitle={article.title}
-          targetLanguage={targetLanguage}
-          selectedText={selectedText || (selectedSegment ? selectedSegment.text : "")}
-        />
-      ),
-    },
-    {
-      value: "agent",
-      label: t("assistant.mode.agent", "Agent"),
-      content: (
-        <AgentPanel
-          articleId={article.id}
-          articleTitle={article.title}
-          targetLanguage={targetLanguage}
-        />
-      ),
-    },
-  ] as const;
-
   return (
-    <AssistantSidebarShell
-      storageKey={assistantModeStorageKey}
-      showAssistant={showAssistant}
-      shellTestId="article-reader-shell"
-      mainPaneTestId="article-reader-main-pane"
-      assistantPaneTestId="article-reader-assistant-pane"
-      defaultTab="explanation"
-      activeTab={activeTab}
-      onTabChange={(value) => setActiveTab(value as "explanation" | "mind_map" | "chat" | "agent")}
-      tabs={sidebarTabs as unknown as { value: string; label: string; content: React.ReactNode | ((context: { panelMode: AssistantPanelMode }) => React.ReactNode); }[]}
+    <ArticleReaderAssistantShell
+      article={article}
       mainContent={mainContent}
+      showAssistant={showAssistant}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      canUseAi={canUseAi}
+      aiUnavailableMessage={aiUnavailableMessage}
+      selectedSegment={selectedSegment}
+      isGeneratingExplanation={isGeneratingExplanation}
+      onGenerateExplanation={handleGenerateExplanation}
+      targetLanguage={targetLanguage}
+      selectedText={selectedText}
+      onNavigateAssistantSource={onNavigateAssistantSource}
     />
   );
 }

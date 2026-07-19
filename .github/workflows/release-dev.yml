@@ -1,6 +1,6 @@
 # 开发版本构建工作流
 # 用于测试新功能，不会触发用户更新弹窗
-# 使用方法：git tag dev-xxx && git push origin dev-xxx
+# 使用方法：git tag dev-v0.7.0 && git push origin dev-v0.7.0
 name: "publish-dev"
 
 on:
@@ -11,6 +11,20 @@ on:
 jobs:
   ci-gate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: openkoto_release
+          POSTGRES_USER: openkoto
+          POSTGRES_PASSWORD: openkoto_release_password
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U openkoto -d openkoto_release"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v5
 
@@ -30,9 +44,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.19.0
           cache: npm
-          cache-dependency-path: textlingo-desktop/package-lock.json
+          cache-dependency-path: |
+            textlingo-desktop/package-lock.json
+            textlingo-desktop/agent-worker/package-lock.json
 
       - name: setup python
         uses: actions/setup-python@v6
@@ -46,9 +62,35 @@ jobs:
         run: npm ci
         working-directory: ./textlingo-desktop
 
+      - name: Install agent worker dependencies
+        run: npm ci
+        working-directory: ./textlingo-desktop/agent-worker
+
+      - name: Build and test agent worker
+        run: npm run typecheck && npm run test && npm run build
+        working-directory: ./textlingo-desktop/agent-worker
+
+      - name: Verify Pi agent runtime guardrails
+        run: |
+          EXPECTED_VERSION="$(node -p "require('./textlingo-desktop/package.json').version")" \
+            bash script/verify_pr12_assistant_observability.sh
+
       - name: Typecheck
         run: npm run typecheck
         working-directory: ./textlingo-desktop
+
+      - name: Build frontend production bundle
+        run: npm run build
+        working-directory: ./textlingo-desktop
+
+      - name: Backend service checks and tests
+        run: |
+          cargo fmt --manifest-path openkoto-backend/Cargo.toml --all -- --check
+          cargo check --manifest-path openkoto-backend/Cargo.toml
+          cargo test --manifest-path openkoto-backend/Cargo.toml --no-fail-fast
+        env:
+          DATABASE_URL: postgres://openkoto:openkoto_release_password@127.0.0.1:5433/openkoto_release
+          OPENKOTO_TEST_DATABASE_URL: postgres://openkoto:openkoto_release_password@127.0.0.1:5433/openkoto_release
 
       - name: Download sidecar binaries
         run: |
@@ -76,15 +118,23 @@ jobs:
           ls -la textlingo-desktop/src-tauri/binaries
         shell: bash
 
-      - name: Prepare frontend dist for Tauri context
-        run: mkdir -p textlingo-desktop/dist
-
-      - name: Rust tests
-        run: cargo test --all-features --all-targets
+      - name: Desktop Rust format, check, and tests
+        run: |
+          cargo fmt --all -- --check
+          cargo check --all-features --all-targets
+          cargo test --all-features --all-targets
         working-directory: ./textlingo-desktop/src-tauri
 
       - name: Frontend coverage gate (>=80%)
         run: npm run coverage
+        working-directory: ./textlingo-desktop
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: ./textlingo-desktop
+
+      - name: Playwright E2E
+        run: npm run e2e
         working-directory: ./textlingo-desktop
 
   publish-tauri:
@@ -99,8 +149,6 @@ jobs:
             args: "--target aarch64-apple-darwin --bundles app,dmg"
           - platform: "macos-15-intel"
             args: "--target x86_64-apple-darwin --bundles app,dmg"
-          - platform: "windows-latest"
-            args: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -109,7 +157,7 @@ jobs:
       - name: setup node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.19.0
 
       - name: setup python
         uses: actions/setup-python@v6
@@ -121,7 +169,34 @@ jobs:
 
       - name: install dependencies (macos only)
         if: startsWith(matrix.platform, 'macos-')
-        run: brew install create-dmg
+        run: brew install create-dmg postgresql@16
+
+      - name: verify Apple release credentials (macos only)
+        if: startsWith(matrix.platform, 'macos-')
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          required=(
+            APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
+            APPLE_API_KEY_CONTENT APPLE_API_ISSUER APPLE_API_KEY APPLE_TEAM_ID
+            KEYCHAIN_PASSWORD
+          )
+          missing=()
+          for variable in "${required[@]}"; do
+            if [ -z "${!variable:-}" ]; then missing+=("$variable"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing Apple release secrets: ${missing[*]}"
+            exit 1
+          fi
 
       - name: import Apple Developer ID certificate (macos only)
         if: startsWith(matrix.platform, 'macos-')
@@ -130,7 +205,7 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          printf '%s' "$APPLE_CERTIFICATE" | base64 -D > certificate.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
@@ -149,8 +224,12 @@ jobs:
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8" >> "$GITHUB_ENV"
 
       - name: install frontend dependencies
-        run: npm install
+        run: npm ci
         working-directory: ./textlingo-desktop
+
+      - name: install agent worker dependencies
+        run: npm ci
+        working-directory: ./textlingo-desktop/agent-worker
 
       - name: download sidecar binaries
         run: |
@@ -183,6 +262,26 @@ jobs:
         run: python script/build_pdf_offline_assets.py
         shell: bash
 
+      - name: verify release version
+        env:
+          OPENKOTO_RELEASE_TAG: ${{ github.ref_name }}
+        run: bash script/verify_release_version.sh
+        shell: bash
+
+      - name: build packaged local runtime (macos only)
+        if: startsWith(matrix.platform, 'macos-')
+        working-directory: ./textlingo-desktop
+        run: |
+          export POSTGRES_CONFIG="$(brew --prefix postgresql@16)/bin/pg_config"
+          npm run build:backend-sidecar
+          npm run build:postgres-runtime
+          npm run build:node-runtime
+          test -x src-tauri/resources/backend/openkoto-backend
+          test -x src-tauri/resources/postgres/bin/postgres
+          test -x src-tauri/resources/postgres/bin/initdb
+          test -x src-tauri/resources/node/bin/node
+        shell: bash
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -202,12 +301,12 @@ jobs:
             
             ---
             Tag: `${{ github.ref_name }}`
-          releaseDraft: false
+          releaseDraft: true
           prerelease: true   # 关键：标记为预发布，不会触发用户更新弹窗
           projectPath: "./textlingo-desktop"
           args: ${{ matrix.args }}
 
-      - name: assert PDF sidecar entitlements (macos only)
+      - name: assert packaged resources and PDF sidecar entitlements (macos only)
         if: startsWith(matrix.platform, 'macos-')
         shell: bash
         run: |
@@ -215,6 +314,34 @@ jobs:
           APP=$(find textlingo-desktop/src-tauri/target -type d -name "*.app" -path "*/release/bundle/macos/*" | head -1)
           if [ -z "$APP" ]; then echo "::error::No .app bundle found"; exit 1; fi
           echo "App bundle: $APP"
+          test -x "$APP/Contents/Resources/backend/openkoto-backend"
+          test -x "$APP/Contents/Resources/postgres/bin/postgres"
+          test -x "$APP/Contents/Resources/postgres/bin/initdb"
+          test -x "$APP/Contents/Resources/node/bin/node"
+          test -f "$APP/Contents/Resources/agent-worker/package.json"
+          test -f "$APP/Contents/Resources/agent-worker/dist/index.js"
+          test -f "$APP/Contents/Resources/agent-worker/dist/piRuntime.js"
+          APP_ROOT="$PWD/$APP"
+          "$APP_ROOT/Contents/Resources/node/bin/node" -e '
+            const [major, minor] = process.versions.node.split(".").map(Number);
+            if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
+          '
+          (
+            cd "$APP_ROOT/Contents/Resources/agent-worker"
+            "$APP_ROOT/Contents/Resources/node/bin/node" --input-type=module -e '
+              await import("@earendil-works/pi-agent-core");
+              await import("@earendil-works/pi-ai");
+            '
+          )
+          grep -Eq '"pi-agent-core"' "$APP/Contents/Resources/agent-worker/dist/index.js"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
+          xcrun stapler validate "$APP"
+          DMG=$(find textlingo-desktop/src-tauri/target -type f -name "*.dmg" -path "*/release/bundle/dmg/*" | head -1)
+          if [ -z "$DMG" ]; then echo "::error::No DMG found"; exit 1; fi
+          hdiutil verify "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+          xcrun stapler validate "$DMG"
           SIDECAR="$APP/Contents/MacOS/openkoto-pdf-translator"
           if [ ! -f "$SIDECAR" ]; then
             echo "::error::PDF sidecar not found at $SIDECAR"
@@ -232,3 +359,14 @@ jobs:
             echo "::error::disable-library-validation entitlement missing on PDF sidecar — PDF translation will fail at runtime"
             exit 1
           fi
+
+  finalize-release:
+    needs: publish-tauri
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish validated prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --prerelease=true

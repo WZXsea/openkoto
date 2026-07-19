@@ -1,6 +1,6 @@
 use openkoto_desktop_lib::{
     commands::{
-        filter_material_summaries, material_summary_from_article,
+        default_task_source_locator, filter_material_summaries, material_summary_from_article,
         require_active_agent_model_config, MaterialSummary,
     },
     ffmpeg::{
@@ -13,8 +13,15 @@ use openkoto_desktop_lib::{
     },
     pdf_sidecar::{build_pdf_sidecar_command_for_dir, resolve_pdf_sidecar_for_dir},
     subtitle_import::{create_article_from_srt, import_subtitles_into_article, parse_srt_content},
-    types::{AppConfig, Article, ArticleSegment, ModelConfig},
+    types::{
+        is_supported_material_import_source_kind, material_import_commit_recovery_strategy,
+        material_import_commit_state_from_metadata, material_import_effective_duplicate_policy,
+        material_import_metadata_with_commit_state, AppConfig, Article, ArticleSegment,
+        MaterialImportCommitState, MaterialImportRecoveryStrategy, ModelConfig,
+    },
 };
+
+use openkoto_desktop_lib::source_locator::{SourceAnchor, SourceLocator};
 
 fn sample_model_config() -> ModelConfig {
     ModelConfig {
@@ -43,6 +50,10 @@ fn sample_article_defaults() -> Article {
         translated: false,
         active_mind_map_artifact_id: None,
         segments: Vec::new(),
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     }
 }
 
@@ -54,6 +65,122 @@ fn sample_material_summary(id: &str, title: &str, material_type: &str) -> Materi
         created_at: "2026-03-08T00:00:00Z".to_string(),
         translated: false,
     }
+}
+
+#[test]
+fn default_agent_task_locator_targets_the_first_material_segment() {
+    let mut article = sample_article_defaults();
+    article.book_type = Some("pdf".to_string());
+    article.segments = vec![ArticleSegment {
+        id: "segment-7".to_string(),
+        article_id: article.id.clone(),
+        order: 7,
+        text: "Source context".to_string(),
+        text_sha256: None,
+        reading_text: None,
+        translation: None,
+        explanation: None,
+        start_time: None,
+        end_time: None,
+        created_at: "2026-07-15T00:00:00Z".to_string(),
+        is_new_paragraph: true,
+    }];
+
+    let value = default_task_source_locator(&article).expect("locator");
+    let locator: SourceLocator = serde_json::from_value(value).unwrap();
+    locator.validate().unwrap();
+    assert_eq!(locator.reader_kind.as_deref(), Some("pdf"));
+    assert!(matches!(
+        locator.anchor,
+        SourceAnchor::Segment {
+            segment_order: 7,
+            total_segments: 1,
+            segment_id: Some(ref id),
+        } if id == "segment-7"
+    ));
+}
+
+#[test]
+fn material_import_commit_state_preserves_policy_target_and_result() {
+    let metadata = serde_json::json!({
+        "resume_payload": { "source_kind": "url", "source_uri": "https://example.com" },
+        "source": "desktop_import",
+    });
+    let state = MaterialImportCommitState {
+        duplicate_policy: Some("replace".to_string()),
+        commit_kind: Some("replace".to_string()),
+        target_material_id: Some("target-material".to_string()),
+        result_material_id: Some("target-material".to_string()),
+    };
+
+    let persisted = material_import_metadata_with_commit_state(metadata, &state);
+
+    assert_eq!(persisted["source"], "desktop_import");
+    assert_eq!(persisted["resume_payload"]["source_kind"], "url");
+    assert_eq!(
+        material_import_commit_state_from_metadata(&persisted),
+        state
+    );
+    assert_eq!(
+        material_import_commit_recovery_strategy(&state),
+        MaterialImportRecoveryStrategy::SettleRecordedMaterial("target-material".to_string())
+    );
+}
+
+#[test]
+fn material_import_response_loss_recovery_is_idempotent_for_replace_and_open_existing() {
+    let open_existing = MaterialImportCommitState {
+        duplicate_policy: Some("open_existing".to_string()),
+        commit_kind: Some("open_existing".to_string()),
+        target_material_id: Some("existing-material".to_string()),
+        result_material_id: None,
+    };
+    let replace = MaterialImportCommitState {
+        duplicate_policy: Some("replace".to_string()),
+        commit_kind: Some("replace".to_string()),
+        target_material_id: Some("existing-material".to_string()),
+        result_material_id: None,
+    };
+
+    assert_eq!(
+        material_import_commit_recovery_strategy(&open_existing),
+        MaterialImportRecoveryStrategy::SettleOpenExisting("existing-material".to_string())
+    );
+    assert_eq!(
+        material_import_commit_recovery_strategy(&replace),
+        MaterialImportRecoveryStrategy::VerifyTargetMaterialImportMarker(
+            "existing-material".to_string()
+        )
+    );
+    assert_eq!(
+        material_import_commit_recovery_strategy(&replace),
+        material_import_commit_recovery_strategy(&replace)
+    );
+}
+
+#[test]
+fn material_import_replay_keeps_recorded_duplicate_policy_and_accepts_all_source_kinds() {
+    assert_eq!(
+        material_import_effective_duplicate_policy(None, Some("replace")).unwrap(),
+        Some("replace".to_string())
+    );
+    assert!(
+        material_import_effective_duplicate_policy(Some("open_existing"), Some("replace")).is_err()
+    );
+
+    for source_kind in [
+        "article",
+        "url",
+        "text_file",
+        "book",
+        "audio",
+        "video",
+        "subtitle",
+        "youtube",
+    ] {
+        assert!(is_supported_material_import_source_kind(source_kind));
+    }
+    assert!(!is_supported_material_import_source_kind("unknown"));
 }
 
 #[test]
@@ -325,6 +452,7 @@ fn prepare_ktv_segments_fills_missing_reading_text_for_video_segments() {
             article_id: "video-1".to_string(),
             order: 0,
             text: "こんにちは".to_string(),
+            text_sha256: None,
             reading_text: None,
             translation: Some("你好".to_string()),
             explanation: None,
@@ -361,6 +489,7 @@ fn generate_ktv_ass_contains_reading_original_and_translation_styles() {
             article_id: "video-1".to_string(),
             order: 0,
             text: "こんにちは".to_string(),
+            text_sha256: None,
             reading_text: Some("コンニチハ".to_string()),
             translation: Some("你好".to_string()),
             explanation: None,
@@ -406,6 +535,7 @@ fn generate_ktv_ass_uses_vocabulary_readings_when_sentence_reading_matches_origi
             article_id: "video-1".to_string(),
             order: 0,
             text: "氷は全部溶けた".to_string(),
+            text_sha256: None,
             reading_text: Some("氷は全部溶けた".to_string()),
             translation: Some("冰都融化了".to_string()),
             explanation: Some(openkoto_desktop_lib::types::SegmentExplanation {
@@ -465,6 +595,7 @@ fn generate_ktv_ass_translation_mode_only_contains_translation_dialogue() {
             article_id: "video-1".to_string(),
             order: 0,
             text: "こんにちは".to_string(),
+            text_sha256: None,
             reading_text: Some("コンニチハ".to_string()),
             translation: Some("你好".to_string()),
             explanation: None,
@@ -509,6 +640,7 @@ fn generate_ktv_ass_uses_source_video_resolution_when_provided() {
             article_id: "video-1".to_string(),
             order: 0,
             text: "こんにちは".to_string(),
+            text_sha256: None,
             reading_text: Some("コンニチハ".to_string()),
             translation: Some("你好".to_string()),
             explanation: None,
@@ -546,10 +678,8 @@ fn build_ktv_ffmpeg_args_uses_ass_filter_and_output_path() {
 
 #[test]
 fn ensure_ktv_output_created_rejects_missing_output_file() {
-    let output = std::env::temp_dir().join(format!(
-        "openkoto-ktv-missing-{}.mp4",
-        uuid::Uuid::new_v4()
-    ));
+    let output =
+        std::env::temp_dir().join(format!("openkoto-ktv-missing-{}.mp4", uuid::Uuid::new_v4()));
 
     let error = ensure_ktv_output_created(&output).unwrap_err();
 
@@ -558,10 +688,8 @@ fn ensure_ktv_output_created_rejects_missing_output_file() {
 
 #[test]
 fn resolve_ffmpeg_invocation_prefers_system_binary_in_dev_mode() {
-    let temp_dir = std::env::temp_dir().join(format!(
-        "openkoto-system-ffmpeg-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let temp_dir =
+        std::env::temp_dir().join(format!("openkoto-system-ffmpeg-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
 
     let binary_name = if cfg!(target_os = "windows") {

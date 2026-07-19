@@ -40,6 +40,9 @@ export interface AppConfig {
   target_language: string;
   interface_language: string;
   batch_translation_concurrency?: number;
+  // Optional font-family overrides
+  ui_font_family?: string;
+  reader_font_family?: string;
   // Backend API URL for services like webpage fetching
   backend_url?: string;
   // Auth token for backend API
@@ -54,9 +57,54 @@ export interface AppConfig {
   active_asr_model_id?: string;
 }
 
-import { AgentTask, AgentWorkerStatusSnapshot, Artifact, Article, MindMapResult } from "../types";
+export interface BackendUser {
+  id: string;
+  email: string;
+  display_name?: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
-export { type AgentTask, type AgentWorkerStatusSnapshot, type Artifact, type Article, type MindMapResult };
+export interface BackendSessionCheck {
+  configured: boolean;
+  connected: boolean;
+  authenticated: boolean;
+  backend_url?: string | null;
+  user?: BackendUser | null;
+  error?: string | null;
+}
+
+export interface BackendAuthResult {
+  config: AppConfig;
+  user: BackendUser;
+  expires_at: string;
+}
+
+import {
+  AgentTask,
+  AgentWorkerStatusSnapshot,
+  Artifact,
+  Article,
+  CreateLearningItemFromSelectionInput,
+  CreateLearningItemInput,
+  LearningItem,
+  ListLearningItemsQuery,
+  MindMapResult,
+  UpdateLearningItemInput,
+} from "../types";
+
+export {
+  type AgentTask,
+  type AgentWorkerStatusSnapshot,
+  type Artifact,
+  type Article,
+  type CreateLearningItemFromSelectionInput,
+  type CreateLearningItemInput,
+  type LearningItem,
+  type ListLearningItemsQuery,
+  type MindMapResult,
+  type UpdateLearningItemInput,
+};
 
 export type AnalysisType = "summary" | "key_points" | "vocabulary" | "grammar" | "full";
 
@@ -144,6 +192,20 @@ export type TauriCommand = {
   init_app: () => Promise<string>;
   get_config: () => Promise<AppConfig | null>;
   save_config_cmd: (config: AppConfig) => Promise<string>;
+  backend_check_session_cmd: () => Promise<BackendSessionCheck>;
+  backend_health_cmd: (backendUrl: string) => Promise<unknown>;
+  backend_login_cmd: (
+    backendUrl: string,
+    email: string,
+    password: string
+  ) => Promise<BackendAuthResult>;
+  backend_register_cmd: (
+    backendUrl: string,
+    email: string,
+    password: string,
+    displayName?: string
+  ) => Promise<BackendAuthResult>;
+  backend_logout_cmd: () => Promise<AppConfig>;
   set_api_key: (apiKey: string, provider: string, model: string) => Promise<string>;
   create_article: (
     title: string,
@@ -164,9 +226,20 @@ export type TauriCommand = {
     segmentId: string,
     explanation?: any,
     reading?: string,
-    translation?: string
+    translation?: string,
+    expectedTextSha256?: string
   ) => Promise<Article>;
   delete_article_cmd: (id: string) => Promise<void>;
+  list_learning_items_cmd: (query?: ListLearningItemsQuery) => Promise<LearningItem[]>;
+  create_learning_item_cmd: (payload: CreateLearningItemInput) => Promise<LearningItem>;
+  create_learning_item_from_selection_cmd: (
+    payload: CreateLearningItemFromSelectionInput
+  ) => Promise<LearningItem>;
+  update_learning_item_cmd: (
+    id: string,
+    payload: UpdateLearningItemInput
+  ) => Promise<LearningItem>;
+  delete_learning_item_cmd: (id: string) => Promise<void>;
   translate_text: (request: TranslationRequest) => Promise<TranslationResponse>;
   analyze_text: (request: AnalysisRequest) => Promise<AnalysisResponse>;
   chat_completion: (request: ChatRequest) => Promise<ChatResponse>;
@@ -199,8 +272,12 @@ export type TauriCommand = {
   get_artifact_cmd: (articleId: string, artifactId: string) => Promise<Artifact>;
   get_agent_worker_status_cmd: () => Promise<AgentWorkerStatusSnapshot>;
   stop_agent_worker_cmd: () => Promise<void>;
-  import_article_subtitles_cmd: (articleId: string, subtitlePath: string) => Promise<Article>;
-  import_srt_file_cmd: (filePath: string, title?: string) => Promise<Article>;
+  import_article_subtitles_cmd: (articleId: string, subtitlePath: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  import_srt_file_cmd: (filePath: string, title?: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  import_text_file_cmd: (filePath: string, title?: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  import_book_cmd: (filePath: string, title?: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  import_web_material_cmd: (url: string, title: string | undefined, content: string, importJobId?: string, duplicatePolicy?: string) => Promise<Article>;
+  material_library_resume_import_job_cmd: (id: string, duplicatePolicy?: string) => Promise<Article>;
   prepare_ktv_segments_cmd: (articleId: string, languageHint?: string) => Promise<Article>;
   export_ktv_video_cmd: (articleId: string, outputPath: string, config: KtvExportConfig) => Promise<KtvExportResult>;
 };

@@ -25,6 +25,22 @@ import {
 import { useTranslation } from "react-i18next";
 import { ArticleSegment } from "../../types";
 import type { ModelConfig } from "../../lib/tauri";
+import {
+    createMediaTimeLocator,
+    createReadingProgressUpdate,
+    getInitialProgressForReader,
+    getMediaTimeFromLocator,
+    useReadingProgressReporter,
+    type ReadingProgressChangeHandler,
+    type ReadingProgressUpdate,
+} from "../../features/reader";
+import {
+    createAnnotationDraft,
+    resolveAnnotation,
+    type AnnotationResolution,
+    type ReaderAnnotationDraft,
+    type ReaderAnnotationReference,
+} from "../../features/reader";
 
 export interface AsrExtractOptions {
     configs: ModelConfig[];
@@ -37,7 +53,7 @@ const PLAYBACK_POSITION_KEY_PREFIX = "textlingo_video_position_";
 
 export type ViewMode = 'original' | 'bilingual' | 'translation';
 
-interface VideoSubtitlePlayerProps {
+export interface VideoSubtitlePlayerProps {
     /** 媒体URL（视频或音频） */
     videoUrl: string;
     /** 字幕段落数组 */
@@ -80,6 +96,16 @@ interface VideoSubtitlePlayerProps {
     onOpenKtvExport?: () => void;
     /** 切换阅读模式 */
     onViewModeChange?: (mode: ViewMode) => void;
+    /** 后端保存的播放进度，优先于旧版本地存储 */
+    initialProgress?: ReadingProgressUpdate;
+    /** 播放位置变化回调 */
+    onProgressChange?: ReadingProgressChangeHandler;
+    annotation?: ReaderAnnotationReference | null;
+    onAnnotationResolved?: (resolution: AnnotationResolution) => void;
+    onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
+    materialRevision?: string;
+    contentSha256?: string;
+    onTextSelect?: (text: string) => void;
 }
 
 /** 提取字幕的「选模型」下拉菜单：trigger 用原按钮外观 */
@@ -169,6 +195,14 @@ export function VideoSubtitlePlayer({
     isAudio = false,
     onOpenKtvExport,
     onViewModeChange,
+    initialProgress,
+    onProgressChange,
+    annotation,
+    onAnnotationResolved,
+    onAnnotationDraftCreated,
+    materialRevision,
+    contentSha256,
+    onTextSelect,
 }: VideoSubtitlePlayerProps) {
     const { t } = useTranslation();
     const videoRef = useRef<HTMLVideoElement & HTMLAudioElement>(null);
@@ -178,6 +212,39 @@ export function VideoSubtitlePlayer({
     const [isMiniMode, setIsMiniMode] = useState(false);
     const activeSegmentRef = useRef<HTMLDivElement>(null);
     const hasRestoredPosition = useRef(false);
+    const { reportProgress } = useReadingProgressReporter(onProgressChange);
+    const [annotationResolution, setAnnotationResolution] = useState<AnnotationResolution | undefined>();
+
+    useEffect(() => {
+        if (!annotation) {
+            setAnnotationResolution(undefined);
+            return;
+        }
+        const resolution = resolveAnnotation(annotation, {
+            reader_kind: "media",
+            material_revision: materialRevision,
+            content_sha256: contentSha256,
+            duration: Number.isFinite(videoRef.current?.duration) ? videoRef.current?.duration : undefined,
+            segments: segments.map((segment) => ({
+                id: segment.id,
+                order: segment.order,
+                text: segment.text,
+                start_time: segment.start_time,
+                end_time: segment.end_time,
+            })),
+        });
+        setAnnotationResolution(resolution);
+        onAnnotationResolved?.(resolution);
+        if (resolution.locator?.reader_kind === "media") {
+            const media = videoRef.current;
+            if (media) {
+                media.currentTime = resolution.locator.current_time;
+                setCurrentTime(resolution.locator.current_time);
+                hasRestoredPosition.current = true;
+            }
+            if (resolution.locator.segment_id) onSegmentClick(resolution.locator.segment_id);
+        }
+    }, [annotation, contentSha256, materialRevision, onAnnotationResolved, onSegmentClick, segments]);
 
     // 获取播放位置存储的 key
     const getStorageKey = useCallback(() => {
@@ -196,23 +263,59 @@ export function VideoSubtitlePlayer({
     }, [getStorageKey]);
 
     // 恢复播放位置
+    const reportMediaProgress = useCallback((media: HTMLMediaElement, flushImmediately = false) => {
+        if (!Number.isFinite(media.duration) || media.duration <= 0) return;
+        reportProgress(createReadingProgressUpdate(
+            "media",
+            createMediaTimeLocator(media.currentTime, media.duration),
+            media.currentTime / media.duration,
+        ), flushImmediately);
+    }, [reportProgress]);
+
     const restorePlaybackPosition = useCallback(() => {
         if (hasRestoredPosition.current) return;
 
+        const media = videoRef.current;
+        if (!media) return;
+
+        if (annotation) {
+            hasRestoredPosition.current = true;
+            return;
+        }
+
+        const initialMediaProgress = getInitialProgressForReader(initialProgress, "media");
+        const initialTime = getMediaTimeFromLocator(initialMediaProgress?.locator)
+            ?? (initialMediaProgress && Number.isFinite(media.duration)
+                ? initialMediaProgress.progress_ratio * media.duration
+                : undefined);
+        if (initialTime !== undefined) {
+            const safeTime = Number.isFinite(media.duration) && media.duration > 0
+                ? Math.min(Math.max(0, initialTime), media.duration)
+                : Math.max(0, initialTime);
+            media.currentTime = safeTime;
+            setCurrentTime(safeTime);
+            hasRestoredPosition.current = true;
+            return;
+        }
+
         try {
             const savedTime = localStorage.getItem(getStorageKey());
-            if (savedTime && videoRef.current) {
+            if (savedTime) {
                 const time = parseFloat(savedTime);
                 if (!isNaN(time) && time > 0) {
-                    videoRef.current.currentTime = time;
+                    media.currentTime = time;
                     setCurrentTime(time);
-                    hasRestoredPosition.current = true;
                 }
             }
         } catch (e) {
             console.warn("Failed to restore playback position:", e);
         }
-    }, [getStorageKey]);
+        hasRestoredPosition.current = true;
+    }, [getStorageKey, initialProgress]);
+
+    useEffect(() => {
+        hasRestoredPosition.current = false;
+    }, [initialProgress, videoUrl]);
 
     // 视频加载完成后恢复播放位置
     useEffect(() => {
@@ -251,20 +354,52 @@ export function VideoSubtitlePlayer({
         return () => {
             if (videoRef.current) {
                 savePlaybackPosition(videoRef.current.currentTime);
+                reportMediaProgress(videoRef.current, true);
             }
         };
-    }, [savePlaybackPosition]);
+    }, [reportMediaProgress, savePlaybackPosition]);
 
     // 处理媒体时间更新
     const handleTimeUpdate = (e: React.SyntheticEvent<HTMLMediaElement>) => {
         const time = e.currentTarget.currentTime;
         setCurrentTime(time);
         onTimeUpdate?.(time);
+        reportMediaProgress(e.currentTarget);
     };
+
+    const handleTextSelection = useCallback(() => {
+        const selection = window.getSelection();
+        const text = selection?.toString().trim() ?? "";
+        if (!text) return;
+        onTextSelect?.(text);
+        const anchor = selection?.anchorNode;
+        const element = anchor?.nodeType === Node.ELEMENT_NODE ? anchor as Element : anchor?.parentElement;
+        const segmentId = element?.closest<HTMLElement>("[data-reader-segment-id]")?.dataset.readerSegmentId;
+        const segment = segments.find((candidate) => candidate.id === segmentId)
+            ?? segments.find((candidate) => candidate.start_time !== undefined && candidate.end_time !== undefined && currentTime >= candidate.start_time && currentTime < candidate.end_time);
+        onAnnotationDraftCreated?.(createAnnotationDraft({
+            materialId: articleId ?? videoUrl,
+            readerKind: "media",
+            sourceText: segment?.text ?? text,
+            selectedText: text,
+            segmentId: segment?.id,
+            currentTime: segment?.start_time ?? currentTime,
+            endTime: segment?.end_time,
+            duration: Number.isFinite(videoRef.current?.duration) ? videoRef.current?.duration : undefined,
+            materialRevision,
+            contentSha256,
+        }));
+    }, [articleId, contentSha256, currentTime, materialRevision, onAnnotationDraftCreated, onTextSelect, segments, videoUrl]);
 
     // 媒体暂停时保存播放位置
     const handlePause = (e: React.SyntheticEvent<HTMLMediaElement>) => {
         savePlaybackPosition(e.currentTarget.currentTime);
+        reportMediaProgress(e.currentTarget, true);
+    };
+
+    const handleEnded = (e: React.SyntheticEvent<HTMLMediaElement>) => {
+        savePlaybackPosition(e.currentTarget.currentTime);
+        reportMediaProgress(e.currentTarget, true);
     };
 
     // 辅助函数：格式化时间为 MM:SS
@@ -469,7 +604,12 @@ export function VideoSubtitlePlayer({
     // 无字幕时显示提取按钮
     if (segments.length === 0) {
         return (
-            <div className="max-w-3xl mx-auto">
+            <div className="max-w-3xl mx-auto" onMouseUp={handleTextSelection}>
+                {annotationResolution && (
+                    <div role="status" className="mb-2 text-xs text-muted-foreground" data-testid="media-annotation-status">
+                        {annotationResolution.message}
+                    </div>
+                )}
                 {/* 媒体播放器 */}
                 <div
                     ref={videoContainerRef}
@@ -489,6 +629,7 @@ export function VideoSubtitlePlayer({
                                 onTimeUpdate={handleTimeUpdate}
                                 onSeeked={handleTimeUpdate}
                                 onPause={handlePause}
+                                onEnded={handleEnded}
                                 onError={(e) => {
                                     console.error("Audio playback error:", e);
                                 }}
@@ -505,6 +646,7 @@ export function VideoSubtitlePlayer({
                             onTimeUpdate={handleTimeUpdate}
                             onSeeked={handleTimeUpdate}
                             onPause={handlePause}
+                            onEnded={handleEnded}
                             onError={(e) => {
                                 console.error("Video playback error:", e);
                             }}
@@ -578,7 +720,12 @@ export function VideoSubtitlePlayer({
     }
 
     return (
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-3xl mx-auto" onMouseUp={handleTextSelection}>
+            {annotationResolution && (
+                <div role="status" className="mb-2 text-xs text-muted-foreground" data-testid="media-annotation-status">
+                    {annotationResolution.message}
+                </div>
+            )}
             {/* 迷你播放器浮层（仅视频模式） */}
             {!isAudio && isMiniMode && (
                 <div className="fixed bottom-4 right-4 z-50 w-80 bg-background rounded-xl border border-border shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300">
@@ -594,6 +741,7 @@ export function VideoSubtitlePlayer({
                             onTimeUpdate={handleTimeUpdate}
                             onSeeked={handleTimeUpdate}
                             onPause={handlePause}
+                            onEnded={handleEnded}
                         />
                         {/* 退出迷你模式按钮 */}
                         <Button
@@ -644,6 +792,7 @@ export function VideoSubtitlePlayer({
                                     onTimeUpdate={handleTimeUpdate}
                                     onSeeked={handleTimeUpdate}
                                     onPause={handlePause}
+                                    onEnded={handleEnded}
                                     onError={(e) => {
                                         console.error("Audio playback error:", e);
                                     }}
@@ -661,6 +810,7 @@ export function VideoSubtitlePlayer({
                                     onTimeUpdate={handleTimeUpdate}
                                     onSeeked={handleTimeUpdate}
                                     onPause={handlePause}
+                                    onEnded={handleEnded}
                                     onError={(e) => {
                                         console.error("Video playback error:", e);
                                     }}
@@ -686,6 +836,7 @@ export function VideoSubtitlePlayer({
                 {currentSubtitle ? (
                     <div
                         className="p-4 bg-card/60 backdrop-blur-sm rounded-xl border border-border shadow-sm cursor-pointer hover:bg-card/80 transition-all active:scale-[0.99]"
+                        data-reader-segment-id={currentSubtitle.id}
                         onClick={() => handleSubtitleClick(currentSubtitle)}
                     >
                         {/* 内容显示：根据视图模式调整 */}
@@ -982,6 +1133,7 @@ export function VideoSubtitlePlayer({
                             return (
                                 <div
                                     key={segment.id}
+                                    data-reader-segment-id={segment.id}
                                     ref={isActive ? activeSegmentRef : undefined}
                                     className={`p-3 cursor-pointer transition-colors ${isActive
                                         ? "bg-primary/10 border-l-4 border-l-primary"

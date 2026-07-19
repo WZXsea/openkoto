@@ -45,7 +45,7 @@ Built with **Tauri + React + Rust**, it runs locally on your machine for **fast 
 
 | Version | Description | Link |
 |---------|-------------|------|
-| **Desktop** | **Recommended** 🖥️ Native performance, local data, Mac/Windows/Linux | [Download Latest Release](https://github.com/hikariming/OpenKoto/releases) |
+| **Desktop** | **Recommended** 🖥️ Native performance, local data, macOS (Apple Silicon/Intel) | [Download Latest Release](https://github.com/hikariming/OpenKoto/releases) |
 | Web | Convenient online access, no installation required | [https://openkoto.app](https://openkoto.app) |
 | Source Code | 🆓 Fully open source, Apache 2.0 License | [GitHub Repository](https://github.com/hikariming/OpenKoto) |
 
@@ -73,7 +73,11 @@ Built with **Tauri + React + Rust**, it runs locally on your machine for **fast 
 ## Coming Soon
 
 - 📚 Personalized vocabulary and grammar exercise system
-- 🎥 YouTube video learning support
+
+## WZX PR-13 macOS engineering candidate
+The standalone `0.11.0` Apple Silicon prerelease closes the phase-one engineering scope: configuration/auth commands and large frontend components are split behind compatibility contracts, Backend/offline diagnostics have recovery paths, and packaged upgrades use checksum-verified backups and dry-restore checks. It retains the PR-11 reading-first home and PR-12 observable Assistant while keeping external software writes disabled. This engineering candidate is not Apple-notarized; see [macOS installation and data notes](docs/INSTALL_MACOS.md) before installing.
+
+[Download the WZX PR-13 engineering candidate](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.11.0-pr13-phase1-engineering-candidate)
 
 ## Getting Started
 
@@ -149,7 +153,7 @@ We welcome contributions! Please feel free to submit PRs or open issues.
 
 ## Current Version
 
-**v0.1.4** (Development)
+**v0.11.0** (WZX PR-13 phase-one engineering candidate)
 
 ## Related Projects by the Author
 

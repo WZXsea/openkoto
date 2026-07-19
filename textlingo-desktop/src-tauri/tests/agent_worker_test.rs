@@ -2,13 +2,17 @@ use std::{fs, path::PathBuf, thread::sleep, time::Duration};
 
 use openkoto_desktop_lib::{
     agent_worker::{
-        apply_worker_event_in_dir, build_assistant_worker_request, build_mind_map_worker_request,
-        build_status_snapshot, mark_running_tasks_interrupted_in_dir, parse_worker_event_line,
-        push_worker_log, resolve_runtime_provider_config, worker_bundle_is_fresh,
-        worker_event_log_entry, WorkerHealth, WorkerLogEntry, WorkerLogLevel,
+        apply_worker_event_in_dir, apply_worker_event_to_task, build_assistant_worker_request,
+        build_mind_map_worker_request, build_status_snapshot, build_worker_cancel_request,
+        mark_running_tasks_interrupted_in_dir, parse_worker_event_line, push_worker_log,
+        reconcile_orphaned_task_after_restart, reconcile_task_after_restart,
+        resolve_runtime_provider_config, worker_bundle_is_fresh, worker_event_log_entry,
+        worker_event_timeline_request, WorkerHealth, WorkerLogEntry, WorkerLogLevel,
         WorkerRuntimeState,
     },
-    storage::{load_agent_task_in_dir, load_artifact_in_dir, save_agent_task_in_dir},
+    storage::{
+        load_legacy_agent_task_in_dir, load_legacy_artifact_in_dir, save_legacy_agent_task_in_dir,
+    },
     types::{
         AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Article,
         AssistantConversationMessage, MaterialSummary, ModelConfig,
@@ -58,6 +62,10 @@ fn sample_task(status: AgentTaskStatus) -> AgentTask {
             max_depth: 3,
             evidence_mode: "strict".to_string(),
             prefer_structure: "topic_tree".to_string(),
+            user_message: None,
+            conversation: Vec::new(),
+            source_locator: None,
+            learning_item_id: None,
         },
         progress: 0.0,
         stage: Some("queued".to_string()),
@@ -69,6 +77,12 @@ fn sample_task(status: AgentTaskStatus) -> AgentTask {
         updated_at: "2026-03-07T00:00:00Z".to_string(),
         started_at: None,
         finished_at: None,
+        root_task_id: Some("task-1".to_string()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: serde_json::json!({}),
+        output_version: 1,
+        legacy_status: None,
     }
 }
 
@@ -84,6 +98,10 @@ fn sample_assistant_task(status: AgentTaskStatus) -> AgentTask {
             max_depth: 0,
             evidence_mode: "none".to_string(),
             prefer_structure: "none".to_string(),
+            user_message: Some("查看当前素材".to_string()),
+            conversation: Vec::new(),
+            source_locator: None,
+            learning_item_id: None,
         },
         progress: 0.0,
         stage: Some("queued".to_string()),
@@ -95,6 +113,15 @@ fn sample_assistant_task(status: AgentTaskStatus) -> AgentTask {
         updated_at: "2026-03-07T00:00:00Z".to_string(),
         started_at: None,
         finished_at: None,
+        root_task_id: Some("task-assistant-1".to_string()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: serde_json::json!({
+            "user_message": "查看当前素材",
+            "conversation": []
+        }),
+        output_version: 1,
+        legacy_status: None,
     }
 }
 
@@ -112,6 +139,10 @@ fn sample_article() -> Article {
         translated: false,
         active_mind_map_artifact_id: None,
         segments: Vec::new(),
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     }
 }
 
@@ -350,16 +381,142 @@ fn worker_health_turns_unhealthy_after_timeout() {
 }
 
 #[test]
+fn worker_health_reports_starting_before_ready_event() {
+    let now = chrono::Utc::now();
+    let starting = WorkerRuntimeState {
+        worker_session_id: None,
+        started_at: Some(now),
+        last_heartbeat_at: None,
+    };
+
+    assert!(matches!(
+        starting.health(now, chrono::Duration::seconds(10)),
+        WorkerHealth::Starting
+    ));
+}
+
+#[test]
 fn running_tasks_can_be_marked_interrupted_after_restart() {
     let data_dir = temp_data_dir("interrupt");
     let task = sample_task(AgentTaskStatus::Running);
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let interrupted = mark_running_tasks_interrupted_in_dir(&data_dir).unwrap();
-    let stored = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
 
     assert_eq!(interrupted, vec![task.id]);
     assert!(matches!(stored.status, AgentTaskStatus::Interrupted));
+}
+
+#[test]
+fn cancel_request_targets_only_the_requested_task() {
+    let request = build_worker_cancel_request("task-42");
+
+    assert_eq!(request["method"], "agent.cancel");
+    assert_eq!(request["params"]["task_id"], "task-42");
+    assert!(request["id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("cancel-task-42-")));
+}
+
+#[test]
+fn restart_recovery_never_reopens_terminal_state() {
+    let now = chrono::Utc::now();
+    for status in [AgentTaskStatus::Queued, AgentTaskStatus::Running] {
+        let checkpoint = sample_task(status.clone());
+        let backend = sample_task(status);
+        let recovered = reconcile_task_after_restart(&checkpoint, &backend, now);
+        assert!(matches!(recovered.status, AgentTaskStatus::Interrupted));
+        assert_eq!(recovered.stage.as_deref(), Some("worker_restarted"));
+    }
+
+    let checkpoint_running = sample_task(AgentTaskStatus::Running);
+    let backend_cancelled = sample_task(AgentTaskStatus::Cancelled);
+    let recovered = reconcile_task_after_restart(&checkpoint_running, &backend_cancelled, now);
+    assert!(matches!(recovered.status, AgentTaskStatus::Cancelled));
+
+    let checkpoint_succeeded = sample_task(AgentTaskStatus::Succeeded);
+    let backend_running = sample_task(AgentTaskStatus::Running);
+    let recovered = reconcile_task_after_restart(&checkpoint_succeeded, &backend_running, now);
+    assert!(matches!(recovered.status, AgentTaskStatus::Succeeded));
+}
+
+#[test]
+fn restart_recovery_finalizes_backend_tasks_without_local_checkpoints() {
+    let now = chrono::Utc::now();
+    for status in [AgentTaskStatus::Queued, AgentTaskStatus::Running] {
+        let backend = sample_task(status);
+        let recovered = reconcile_orphaned_task_after_restart(&backend, now);
+
+        assert!(matches!(recovered.status, AgentTaskStatus::Failed));
+        assert_eq!(
+            recovered.stage.as_deref(),
+            Some("worker_checkpoint_missing")
+        );
+        assert!(recovered
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("checkpoint")));
+        assert_eq!(recovered.finished_at, Some(now.to_rfc3339()));
+    }
+}
+
+#[test]
+fn late_worker_result_cannot_overwrite_cancelled_task() {
+    let mut task = sample_task(AgentTaskStatus::Cancelled);
+    task.finished_at = Some("2026-03-07T00:00:01Z".to_string());
+    let before = task.clone();
+    let event = parse_worker_event_line(
+        &serde_json::json!({
+            "type": "event",
+            "event": "task.result",
+            "payload": {
+                "task_id": task.id,
+                "artifact_type": "mind_map",
+                "content": sample_mind_map_result(),
+                "timestamp": "2026-03-07T00:00:02Z"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let artifact =
+        apply_worker_event_to_task(&mut task, &mut WorkerRuntimeState::default(), &event).unwrap();
+    let timeline = worker_event_timeline_request(&before, &task, &event).unwrap();
+
+    assert!(matches!(task.status, AgentTaskStatus::Cancelled));
+    assert!(task.artifact_ids.is_empty());
+    assert!(artifact.is_none());
+    assert_eq!(timeline.event_type, "worker.late_event_ignored");
+    assert_eq!(timeline.metadata["original_event_type"], "task.result");
+}
+
+#[test]
+fn worker_timeline_event_id_is_stable_for_backend_idempotency() {
+    let before = sample_task(AgentTaskStatus::Running);
+    let mut after = before.clone();
+    let raw = serde_json::json!({
+        "type": "event",
+        "event": "task.progress",
+        "payload": {
+            "task_id": before.id,
+            "stage": "generating",
+            "progress": 0.5,
+            "message": "Generating map",
+            "timestamp": "2026-03-07T00:00:02Z"
+        }
+    })
+    .to_string();
+    let first = parse_worker_event_line(&raw).unwrap();
+    apply_worker_event_to_task(&mut after, &mut WorkerRuntimeState::default(), &first).unwrap();
+    let first_timeline = worker_event_timeline_request(&before, &after, &first).unwrap();
+    let second = parse_worker_event_line(&raw).unwrap();
+    let second_timeline = worker_event_timeline_request(&before, &after, &second).unwrap();
+
+    assert_eq!(first_timeline.event_id, second_timeline.event_id);
+    assert_eq!(first_timeline.created_at, "2026-03-07T00:00:02Z");
+    assert_eq!(first_timeline.metadata["progress"], 0.5);
 }
 
 #[test]
@@ -404,7 +561,7 @@ fn result_events_persist_artifact_and_complete_task() {
     let data_dir = temp_data_dir("result");
     let task = sample_task(AgentTaskStatus::Running);
     save_article_fixture(&data_dir, &sample_article());
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let event = parse_worker_event_line(
         &serde_json::json!({
@@ -430,11 +587,11 @@ fn result_events_persist_artifact_and_complete_task() {
     )
     .unwrap();
 
-    let stored_task = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored_task = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
     assert!(matches!(stored_task.status, AgentTaskStatus::Succeeded));
     assert_eq!(stored_task.artifact_ids.len(), 1);
 
-    let artifact = load_artifact_in_dir(
+    let artifact = load_legacy_artifact_in_dir(
         &data_dir,
         &stored_task.article_id,
         &stored_task.artifact_ids[0],
@@ -449,7 +606,7 @@ fn assistant_result_events_complete_task_without_persisting_artifacts() {
     let data_dir = temp_data_dir("assistant-result");
     let task = sample_assistant_task(AgentTaskStatus::Running);
     save_article_fixture(&data_dir, &sample_article());
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let event = parse_worker_event_line(
         &serde_json::json!({
@@ -482,7 +639,7 @@ fn assistant_result_events_complete_task_without_persisting_artifacts() {
     )
     .unwrap();
 
-    let stored_task = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored_task = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
     assert!(matches!(stored_task.status, AgentTaskStatus::Succeeded));
     assert!(stored_task.artifact_ids.is_empty());
     assert_eq!(stored_task.message.as_deref(), Some("Agent turn completed"));
@@ -493,7 +650,7 @@ fn assistant_result_events_complete_task_without_persisting_artifacts() {
 fn task_started_event_marks_task_running() {
     let data_dir = temp_data_dir("task-started");
     let task = sample_task(AgentTaskStatus::Queued);
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let event = parse_worker_event_line(
         &serde_json::json!({
@@ -520,7 +677,7 @@ fn task_started_event_marks_task_running() {
     )
     .unwrap();
 
-    let stored_task = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored_task = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
     assert!(matches!(stored_task.status, AgentTaskStatus::Running));
     assert_eq!(stored_task.stage.as_deref(), Some("started"));
     assert_eq!(stored_task.worker_session_id.as_deref(), Some("worker-1"));
@@ -533,7 +690,7 @@ fn progress_events_do_not_reopen_completed_tasks() {
     task.progress = 1.0;
     task.stage = Some("done".to_string());
     task.finished_at = Some("2026-03-07T00:00:02Z".to_string());
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
     let event = parse_worker_event_line(
         &serde_json::json!({
@@ -552,7 +709,7 @@ fn progress_events_do_not_reopen_completed_tasks() {
 
     apply_worker_event_in_dir(&data_dir, &mut WorkerRuntimeState::default(), event).unwrap();
 
-    let stored_task = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    let stored_task = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
     assert!(matches!(stored_task.status, AgentTaskStatus::Succeeded));
     assert_eq!(stored_task.stage.as_deref(), Some("done"));
 }
@@ -647,7 +804,7 @@ fn worker_ready_event_updates_runtime_state() {
             "payload": {
                 "worker_session_id": "worker-ready-1",
                 "timestamp": "2026-03-07T00:00:00Z",
-                "runtime": "opencode",
+                "runtime": "pi-agent-core",
                 "version": "0.1.0"
             }
         })
@@ -662,6 +819,32 @@ fn worker_ready_event_updates_runtime_state() {
         Some("worker-ready-1".to_string())
     );
     assert!(runtime_state.started_at.is_some());
+}
+
+#[test]
+fn worker_ready_event_rejects_non_pi_runtime() {
+    let mut runtime_state = WorkerRuntimeState::default();
+    let data_dir = temp_data_dir("worker-ready-runtime-mismatch");
+
+    let event = parse_worker_event_line(
+        &serde_json::json!({
+            "type": "event",
+            "event": "worker.ready",
+            "payload": {
+                "worker_session_id": "worker-ready-legacy",
+                "timestamp": "2026-03-07T00:00:00Z",
+                "runtime": "direct-provider",
+                "version": "0.1.0"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let error = apply_worker_event_in_dir(&data_dir, &mut runtime_state, event).unwrap_err();
+
+    assert!(error.contains("expected pi-agent-core, received direct-provider"));
+    assert_eq!(runtime_state.worker_session_id, None);
 }
 
 #[test]
@@ -690,8 +873,19 @@ fn task_log_events_are_converted_into_log_entries() {
 #[test]
 fn worker_bundle_is_stale_when_required_output_is_missing() {
     let project_dir = temp_worker_project_dir("missing-output");
-    for file in ["index", "assistantTask", "mindMapTask", "protocol", "runtime"] {
-        fs::write(project_dir.join("src").join(format!("{file}.ts")), "export {};\n").unwrap();
+    for file in [
+        "index",
+        "assistantTask",
+        "mindMapTask",
+        "piRuntime",
+        "protocol",
+        "runtime",
+    ] {
+        fs::write(
+            project_dir.join("src").join(format!("{file}.ts")),
+            "export {};\n",
+        )
+        .unwrap();
     }
     fs::write(project_dir.join("dist").join("index.js"), "export {};\n").unwrap();
 
@@ -701,9 +895,24 @@ fn worker_bundle_is_stale_when_required_output_is_missing() {
 #[test]
 fn worker_bundle_is_stale_when_source_is_newer_than_dist() {
     let project_dir = temp_worker_project_dir("stale-output");
-    for file in ["index", "assistantTask", "mindMapTask", "protocol", "runtime"] {
-        fs::write(project_dir.join("src").join(format!("{file}.ts")), "export {};\n").unwrap();
-        fs::write(project_dir.join("dist").join(format!("{file}.js")), "export {};\n").unwrap();
+    for file in [
+        "index",
+        "assistantTask",
+        "mindMapTask",
+        "piRuntime",
+        "protocol",
+        "runtime",
+    ] {
+        fs::write(
+            project_dir.join("src").join(format!("{file}.ts")),
+            "export {};\n",
+        )
+        .unwrap();
+        fs::write(
+            project_dir.join("dist").join(format!("{file}.js")),
+            "export {};\n",
+        )
+        .unwrap();
     }
 
     sleep(Duration::from_millis(20));

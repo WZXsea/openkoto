@@ -1,5 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
-import { mkdtempSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,31 +6,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildMindMapWorkspaceFiles,
-  findAvailablePort,
   normalizeMindMapResult,
-  resolveProviderModel,
   runMindMapTask,
 } from "./mindMapTask.js";
 
 describe("mindMapTask", () => {
-  it("registers native google models explicitly for OpenCode", () => {
-    const resolved = resolveProviderModel({
-      kind: "native_google",
-      provider: "google-ai-studio",
-      model: "models/gemini-3-flash-preview",
-      api_key: "secret",
-    });
-
-    expect(resolved.model).toBe("google/models/gemini-3-flash-preview");
-    expect(resolved.config.enabled_providers).toEqual(["google"]);
-    expect(resolved.config.plugin).toEqual([]);
-    expect(resolved.config.autoupdate).toBe(false);
-    expect(resolved.config.provider?.google?.models?.["models/gemini-3-flash-preview"]).toMatchObject({
-      id: "models/gemini-3-flash-preview",
-      name: "models/gemini-3-flash-preview",
-    });
-  });
-
   it("builds workspace files from the article snapshot", () => {
     const files = buildMindMapWorkspaceFiles({
       taskId: "task-1",
@@ -50,11 +29,6 @@ describe("mindMapTask", () => {
     expect(files["article-source.json"]).toContain("\"content\": \"Alpha beta gamma.\"");
     expect(files["TASK.md"]).toContain("article-source.json");
     expect(files["TASK.md"]).toContain("zh-CN");
-  });
-
-  it("allocates an ephemeral port for OpenCode server startup", async () => {
-    const port = await findAvailablePort();
-    expect(port).toBeGreaterThan(0);
   });
 
   it("normalizes partial model output into a schema-valid result", () => {
@@ -108,16 +82,22 @@ describe("mindMapTask", () => {
     });
   });
 
-  it("runs the OpenCode prompt runner in a temporary workspace and saves the result", async () => {
+  it("runs the Pi prompt runner in a temporary workspace and saves the result", async () => {
     const saveArtifact = vi.fn(async () => ({ artifact_id: "artifact-1" }));
     const reportProgress = vi.fn(async () => undefined);
     const log = vi.fn();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "mind-map-task-test-"));
-    const promptRunner = vi.fn(async ({ cwd, model }: { cwd: string; model: string }) => {
-      expect(model).toBe("google/gemini-2.0-flash-exp");
-      expect(existsSync(cwd)).toBe(true);
-      expect(readFileSync(join(cwd, "article-source.json"), "utf8")).toContain("Alpha beta gamma.");
-      expect(readFileSync(join(cwd, "TASK.md"), "utf8")).toContain("article-source.json");
+    const promptRunner = vi.fn(async ({ cwd, providerConfig }: {
+      cwd?: string;
+      providerConfig: { kind: string };
+    }) => {
+      expect(providerConfig.kind).toBe("native_google");
+      expect(cwd).toBeTruthy();
+      expect(existsSync(cwd!)).toBe(true);
+      expect(readFileSync(join(cwd!, "article-source.json"), "utf8")).toContain(
+        "Alpha beta gamma.",
+      );
+      expect(readFileSync(join(cwd!, "TASK.md"), "utf8")).toContain("article-source.json");
       return {
         status: "applicable",
         reason: null,
@@ -187,19 +167,72 @@ describe("mindMapTask", () => {
     );
     expect(reportProgress.mock.calls).toEqual([
       ["task-1", "planning", 0.1, "Preparing mind map task"],
-      ["task-1", "starting_agent", 0.2, "Starting OpenCode agent"],
-      ["task-1", "analyzing", 0.35, "OpenCode agent is analyzing the source"],
+      ["task-1", "starting_agent", 0.2, "Starting agent runtime"],
+      ["task-1", "analyzing", 0.35, "Agent runtime is analyzing the source"],
       ["task-1", "validating", 0.75, "Validating mind map output"],
       ["task-1", "saving", 0.9, "Saving mind map artifact"],
     ]);
     expect(log.mock.calls).toEqual([
       ["info", expect.stringContaining("Prepared task workspace:"), "recipe"],
-      ["info", "Starting OpenCode mind map run", "provider"],
-      ["info", "OpenCode agent returned a final result", "provider"],
+      ["info", "Starting mind map model request", "provider"],
+      ["info", "Mind map model returned a final result", "provider"],
       ["info", "Mind map result validated", "recipe"],
       ["info", "Mind map artifact saved: artifact-1", "runtime"],
     ]);
     expect(readdirSync(workspaceRoot)).toEqual([]);
     expect(result.artifact_id).toBe("artifact-1");
+  });
+
+  it("does not save a partial artifact after user cancellation", async () => {
+    const controller = new AbortController();
+    const saveArtifact = vi.fn(async () => ({ artifact_id: "should-not-save" }));
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "mind-map-cancel-test-"));
+
+    await expect(
+      runMindMapTask(
+        {
+          taskId: "task-cancel",
+          articleId: "article-1",
+          displayLanguage: "zh-CN",
+          maxDepth: 3,
+          mode: "balanced",
+          articleSnapshot: {
+            title: "Sample",
+            content: "Alpha beta gamma.",
+            sourceType: "article",
+          },
+        },
+        {
+          promptRunner: vi.fn(async () => {
+            controller.abort();
+            return JSON.stringify({
+              status: "not_applicable",
+              map: null,
+              diagnostics: {
+                content_type: "unknown",
+                coverage: "none",
+                notes: [],
+                window_count: 1,
+                evidence_density: 0,
+                low_confidence_node_ids: [],
+              },
+            });
+          }),
+          saveArtifact,
+          reportProgress: vi.fn(async () => undefined),
+          workspaceRoot,
+          providerConfig: {
+            kind: "native_google",
+            provider: "google",
+            model: "gemini-2.0-flash-exp",
+            api_key: "secret",
+          },
+          signal: controller.signal,
+        },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(saveArtifact).not.toHaveBeenCalled();
+    expect(readdirSync(workspaceRoot)).toEqual([]);
   });
 });

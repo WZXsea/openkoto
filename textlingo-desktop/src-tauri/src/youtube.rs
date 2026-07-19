@@ -162,6 +162,10 @@ pub async fn import_youtube_video(app: AppHandle, url: String) -> Result<Article
         translated: false,
         active_mind_map_artifact_id: None,
         segments,
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     };
 
     Ok(article)
@@ -321,6 +325,7 @@ fn parse_srt(path: &Path) -> Result<Vec<ArticleSegment>, String> {
                         article_id: String::new(), // Will be set by caller
                         order: segments.len() as i32,
                         text,
+                        text_sha256: None,
                         reading_text: None,
                         translation: None,
                         explanation: None,

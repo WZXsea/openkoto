@@ -3,8 +3,11 @@ import { join } from "node:path";
 
 import { z } from "zod";
 
+import {
+  runPiAgentPrompt,
+  type PiAgentPromptRequest,
+} from "./piRuntime.js";
 import type { AssistantRunInput, RuntimeProvider } from "./protocol.js";
-import { runOpenCodePrompt, type OpenCodePromptRequest, resolveProviderModel } from "./mindMapTask.js";
 
 const assistantActionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -42,9 +45,20 @@ export interface AssistantTaskDeps {
     message: string,
     source?: "runtime" | "provider" | "tool" | "recipe",
   ) => void;
-  promptRunner?: (request: OpenCodePromptRequest) => Promise<unknown>;
+  promptRunner?: (request: PiAgentPromptRequest) => Promise<unknown>;
   workspaceRoot?: string;
   providerConfig: RuntimeProvider;
+  signal?: AbortSignal;
+  runtimeTimeoutMs?: number;
+}
+
+function throwIfCancelled(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+  const error = new Error("Agent task cancelled");
+  error.name = "AbortError";
+  throw error;
 }
 
 function extractJsonText(text: string) {
@@ -175,6 +189,7 @@ function createToolLog(
 }
 
 export async function runAssistantTask(input: AssistantTaskInput, deps: AssistantTaskDeps) {
+  throwIfCancelled(deps.signal);
   const log =
     deps.log ??
     ((level: "debug" | "info" | "warn" | "error", message: string) => {
@@ -183,25 +198,44 @@ export async function runAssistantTask(input: AssistantTaskInput, deps: Assistan
 
   await deps.reportProgress(input.taskId, "planning", 0.1, "Preparing assistant turn");
 
-  const resolvedProvider = resolveProviderModel(deps.providerConfig);
-  const promptRunner = deps.promptRunner ?? runOpenCodePrompt;
+  const promptRunner = deps.promptRunner ?? runPiAgentPrompt;
   const cwd = deps.workspaceRoot
     ? join(deps.workspaceRoot, input.taskId)
     : process.cwd();
+  let reportedStreaming = false;
 
   await mkdir(cwd, { recursive: true });
   log("info", "Starting assistant agent turn", "provider");
 
   try {
+    throwIfCancelled(deps.signal);
     await deps.reportProgress(input.taskId, "thinking", 0.4, "Understanding the request");
     const result = await promptRunner({
       cwd,
-      model: resolvedProvider.model,
       prompt: buildPrompt(input),
       system: buildSystemPrompt(),
-      config: resolvedProvider.config,
+      providerConfig: deps.providerConfig,
+      signal: deps.signal,
+      timeoutMs: deps.runtimeTimeoutMs,
+      async onEvent(event) {
+        if (
+          !reportedStreaming &&
+          event.type === "message_update" &&
+          (event.assistantMessageEvent.type === "text_start" ||
+            event.assistantMessageEvent.type === "text_delta")
+        ) {
+          reportedStreaming = true;
+          await deps.reportProgress(
+            input.taskId,
+            "streaming",
+            0.6,
+            "Agent runtime is streaming the response",
+          );
+        }
+      },
     });
 
+    throwIfCancelled(deps.signal);
     await deps.reportProgress(input.taskId, "finalizing", 0.8, "Preparing the final response");
     const normalized = normalizeAssistantTaskResult(parsePromptResult(result));
     const parsed = assistantTaskResultSchema.parse(normalized);

@@ -2,20 +2,16 @@ use std::{fs, path::PathBuf};
 
 use openkoto_desktop_lib::{
     storage::{
-        load_agent_task_in_dir, load_artifact_in_dir, save_agent_task_in_dir,
-        save_artifact_in_dir, update_article_active_mind_map_artifact_in_dir,
+        load_legacy_agent_task_in_dir, load_legacy_artifact_in_dir, save_legacy_agent_task_in_dir,
+        save_legacy_artifact_in_dir, update_article_active_mind_map_artifact_in_dir,
     },
     types::{
-        AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Artifact, ArtifactType, Article,
+        AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Article, Artifact, ArtifactType,
     },
 };
 
 fn temp_data_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "openkoto-{}-{}",
-        name,
-        uuid::Uuid::new_v4()
-    ));
+    let dir = std::env::temp_dir().join(format!("openkoto-{}-{}", name, uuid::Uuid::new_v4()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -32,6 +28,10 @@ fn sample_task() -> AgentTask {
             max_depth: 3,
             evidence_mode: "strict".to_string(),
             prefer_structure: "topic_tree".to_string(),
+            user_message: None,
+            conversation: Vec::new(),
+            source_locator: None,
+            learning_item_id: None,
         },
         progress: 0.0,
         stage: Some("queued".to_string()),
@@ -43,6 +43,12 @@ fn sample_task() -> AgentTask {
         updated_at: "2026-03-07T00:00:00Z".to_string(),
         started_at: None,
         finished_at: None,
+        root_task_id: Some("task-1".to_string()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: serde_json::json!({}),
+        output_version: 1,
+        legacy_status: None,
     }
 }
 
@@ -78,6 +84,10 @@ fn sample_article() -> Article {
         translated: false,
         active_mind_map_artifact_id: None,
         segments: Vec::new(),
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     }
 }
 
@@ -86,8 +96,8 @@ fn saves_and_loads_agent_task_in_data_dir() {
     let data_dir = temp_data_dir("agent-task");
     let task = sample_task();
 
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
-    let restored = load_agent_task_in_dir(&data_dir, &task.id).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
+    let restored = load_legacy_agent_task_in_dir(&data_dir, &task.id).unwrap();
 
     assert_eq!(restored.id, task.id);
     assert_eq!(restored.article_id, task.article_id);
@@ -99,8 +109,9 @@ fn saves_and_loads_artifact_in_data_dir() {
     let data_dir = temp_data_dir("artifact");
     let artifact = sample_artifact();
 
-    save_artifact_in_dir(&data_dir, &artifact).unwrap();
-    let restored = load_artifact_in_dir(&data_dir, &artifact.article_id, &artifact.id).unwrap();
+    save_legacy_artifact_in_dir(&data_dir, &artifact).unwrap();
+    let restored =
+        load_legacy_artifact_in_dir(&data_dir, &artifact.article_id, &artifact.id).unwrap();
 
     assert_eq!(restored.id, artifact.id);
     assert!(matches!(restored.artifact_type, ArtifactType::MindMap));
@@ -126,10 +137,8 @@ fn updates_article_active_mind_map_artifact_id_without_touching_other_fields() {
     )
     .unwrap();
 
-    let updated: Article = serde_json::from_str(
-        &fs::read_to_string(articles_dir.join(&article.id)).unwrap(),
-    )
-    .unwrap();
+    let updated: Article =
+        serde_json::from_str(&fs::read_to_string(articles_dir.join(&article.id)).unwrap()).unwrap();
 
     assert_eq!(
         updated.active_mind_map_artifact_id.as_deref(),
@@ -139,4 +148,43 @@ fn updates_article_active_mind_map_artifact_id_without_touching_other_fields() {
     assert_eq!(updated.content, article.content);
     assert_eq!(updated.source_type, article.source_type);
     assert_eq!(updated.translated, article.translated);
+}
+
+#[test]
+fn storage_rejects_agent_task_path_traversal() {
+    let data_dir = temp_data_dir("agent-task-traversal");
+    fs::write(data_dir.join("config.json"), "{}").unwrap();
+
+    let error = load_legacy_agent_task_in_dir(&data_dir, "../config").unwrap_err();
+
+    assert!(error.contains("Invalid agent task id"));
+    assert!(data_dir.join("config.json").exists());
+}
+
+#[test]
+fn storage_rejects_artifact_article_id_path_traversal() {
+    let data_dir = temp_data_dir("artifact-traversal");
+    let mut artifact = sample_artifact();
+    artifact.article_id = "../outside".to_string();
+
+    let error = save_legacy_artifact_in_dir(&data_dir, &artifact).unwrap_err();
+
+    assert!(error.contains("Invalid artifact article id"));
+    assert!(!data_dir.join("artifacts/outside").exists());
+}
+
+#[test]
+fn storage_rejects_article_update_path_traversal() {
+    let data_dir = temp_data_dir("article-update-traversal");
+    fs::write(data_dir.join("config.json"), "{}").unwrap();
+
+    let error = update_article_active_mind_map_artifact_in_dir(
+        &data_dir,
+        "../config.json",
+        Some("artifact-1".to_string()),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("Invalid article id"));
+    assert!(data_dir.join("config.json").exists());
 }

@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/button";
-import { ChevronLeft, BookOpen, PanelRightClose, PanelRightOpen, Languages, Loader2, Download, FileText, Split, File, Columns } from "lucide-react";
+import { ChevronLeft, BookOpen, PanelRightClose, PanelRightOpen, Languages, Loader2, Download, FileText, Split, File, Columns, Sparkles, FilePenLine } from "lucide-react";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -25,14 +25,29 @@ import { ArticleMindMapPanel } from "./ArticleMindMapPanel";
 import { AssistantSidebarShell, type AssistantPanelMode } from "./AssistantSidebarShell";
 import { useConfig } from "../../lib/hooks";
 import { logger } from "../../lib/logger";
+import { buildMediaResourceUrl } from "../../lib/media";
+import { hasActiveModelConfig, isPhase1CapabilityEnabled } from "../../lib/phase1Capabilities";
+import type {
+    AnnotationResolution,
+    ReaderAnnotationDraft,
+    ReaderAnnotationReference,
+    ReadingProgressChangeHandler,
+    ReadingProgressUpdate,
+} from "../../features/reader";
 
 interface BookReaderProps {
     article: Article;
     onBack?: () => void;
     onUpdate?: () => void;
+    initialProgress?: ReadingProgressUpdate;
+    onProgressChange?: ReadingProgressChangeHandler;
+    annotation?: ReaderAnnotationReference | null;
+    onAnnotationResolved?: (resolution: AnnotationResolution) => void;
+    onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
+    onOpenEditableDerivative?: () => Promise<void> | void;
 }
 
-export function BookReader({ article, onBack }: BookReaderProps) {
+export function BookReader({ article, onBack, initialProgress, onProgressChange, annotation, onAnnotationResolved, onAnnotationDraftCreated, onOpenEditableDerivative }: BookReaderProps) {
     const { t } = useTranslation();
     const assistantModeStorageKey = "book-reader-assistant-mode";
     const backToMaterialsLabel = t("bookReader.backToMaterials", "返回素材列表");
@@ -49,6 +64,9 @@ export function BookReader({ article, onBack }: BookReaderProps) {
     // Config hook
     const { config } = useConfig();
     const targetLanguage = config?.target_language || "zh-CN";
+    const canUseAi = hasActiveModelConfig(config);
+    const canTranslatePdf = isPhase1CapabilityEnabled("pdfTranslation") && canUseAi;
+    const aiUnavailableMessage = t("common.aiUnavailable", "基础阅读可用。配置 AI 模型后可启用翻译、讲解和分析。");
 
     // PDF版本控制
     const [pdfVersion, setPdfVersion] = useState<"original" | "mono" | "dual" | "split">("original");
@@ -56,11 +74,16 @@ export function BookReader({ article, onBack }: BookReaderProps) {
         mono?: string;
         dual?: string;
     }>({});
+    const [bookUrl, setBookUrl] = useState("");
+    const [monoPdfUrl, setMonoPdfUrl] = useState("");
+    const [dualPdfUrl, setDualPdfUrl] = useState("");
 
     // PDF翻译状态
     const [isTranslating, setIsTranslating] = useState(false);
     // 翻译进度百分比（null 表示尚未收到进度）
     const [translateProgress, setTranslateProgress] = useState<number | null>(null);
+    const [isCreatingDerivative, setIsCreatingDerivative] = useState(false);
+    const [derivativeError, setDerivativeError] = useState<string | null>(null);
 
     // 判断书籍类型
     const isEpub = article.book_type === "epub";
@@ -73,6 +96,55 @@ export function BookReader({ article, onBack }: BookReaderProps) {
             checkTranslationFiles();
         }
     }, [isPdf, article.book_path]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadBookUrl = async () => {
+            try {
+                const url = await buildMediaResourceUrl(article.book_path, "book");
+                if (!cancelled) setBookUrl(url);
+            } catch (error) {
+                console.warn("[BookReader] Failed to build book URL:", error);
+                if (!cancelled) setBookUrl("");
+            }
+        };
+
+        void loadBookUrl();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [article.book_path]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadTranslatedUrls = async () => {
+            try {
+                const [monoUrl, dualUrl] = await Promise.all([
+                    availableVersions.mono ? buildMediaResourceUrl(availableVersions.mono, "book") : Promise.resolve(""),
+                    availableVersions.dual ? buildMediaResourceUrl(availableVersions.dual, "book") : Promise.resolve(""),
+                ]);
+                if (!cancelled) {
+                    setMonoPdfUrl(monoUrl);
+                    setDualPdfUrl(dualUrl);
+                }
+            } catch (error) {
+                console.warn("[BookReader] Failed to build translated PDF URLs:", error);
+                if (!cancelled) {
+                    setMonoPdfUrl("");
+                    setDualPdfUrl("");
+                }
+            }
+        };
+
+        void loadTranslatedUrls();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [availableVersions.mono, availableVersions.dual]);
 
     const checkTranslationFiles = async () => {
         try {
@@ -98,23 +170,17 @@ export function BookReader({ article, onBack }: BookReaderProps) {
 
     // 获取当前显示的 PDF 路径
     const getCurrentPdfPath = () => {
-        if (!isPdf) return getBookUrl();
+        if (!isPdf) return bookUrl;
 
         switch (pdfVersion) {
             case "mono":
-                if (availableVersions.mono) {
-                    const filename = availableVersions.mono.split(/[/\\]/).pop();
-                    return `http://127.0.0.1:19420/book/${encodeURIComponent(filename || "")}`;
-                }
+                if (monoPdfUrl) return monoPdfUrl;
                 break;
             case "dual":
-                if (availableVersions.dual) {
-                    const filename = availableVersions.dual.split(/[/\\]/).pop();
-                    return `http://127.0.0.1:19420/book/${encodeURIComponent(filename || "")}`;
-                }
+                if (dualPdfUrl) return dualPdfUrl;
                 break;
         }
-        return getBookUrl();
+        return bookUrl;
     };
 
     // 导出文件
@@ -171,24 +237,13 @@ export function BookReader({ article, onBack }: BookReaderProps) {
     };
 
     // 获取书籍文件 URL
-    const getBookUrl = () => {
-        if (!article.book_path) return "";
-
-        // 如果已经是 HTTP URL，直接返回
-        if (article.book_path.startsWith("http")) return article.book_path;
-
-        // 对于本地文件，使用本地资源服务器提供
-        const filename = article.book_path.split(/[/\\]/).pop();
-        if (filename) {
-            return `http://127.0.0.1:19420/book/${encodeURIComponent(filename)}`;
-        }
-
-        return article.book_path;
-    };
-
     // PDF全文翻译处理
     const handlePdfTranslate = async () => {
         if (!article.book_path || isTranslating) return;
+        if (!canTranslatePdf) {
+            alert(aiUnavailableMessage);
+            return;
+        }
 
         logger.info("pdf", `[UI] translate requested for ${article.book_path}`);
 
@@ -285,6 +340,19 @@ export function BookReader({ article, onBack }: BookReaderProps) {
         }
     };
 
+    const handleOpenEditableDerivative = async () => {
+        if (!onOpenEditableDerivative || isCreatingDerivative) return;
+        setIsCreatingDerivative(true);
+        setDerivativeError(null);
+        try {
+            await onOpenEditableDerivative();
+        } catch (error) {
+            setDerivativeError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsCreatingDerivative(false);
+        }
+    };
+
     const mainContent = (
         <div className="flex-1 flex flex-col min-w-0">
                 {/* 顶部工具栏 */}
@@ -313,6 +381,20 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                     </div>
 
                     <div className="flex items-center gap-2">
+                        {onOpenEditableDerivative && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void handleOpenEditableDerivative()}
+                                disabled={isCreatingDerivative}
+                                className="gap-1.5"
+                                aria-label="创建或打开可编辑副本"
+                                title="原始文件保持不变，在可编辑副本中修改正文"
+                            >
+                                {isCreatingDerivative ? <Loader2 size={16} className="animate-spin" /> : <FilePenLine size={16} />}
+                                <span className="hidden lg:inline">{isCreatingDerivative ? "正在准备" : "编辑文本副本"}</span>
+                            </Button>
+                        )}
                         {isPdf && (
                             <>
                                 {/* 版本切换器 */}
@@ -369,8 +451,8 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                                     variant="outline"
                                     size="sm"
                                     onClick={handlePdfTranslate}
-                                    disabled={isTranslating}
-                                    title={t("pdfTranslate.button", "翻译全文")}
+                                    disabled={isTranslating || !canTranslatePdf}
+                                    title={canTranslatePdf ? t("pdfTranslate.button", "翻译全文") : aiUnavailableMessage}
                                     className="flex items-center gap-1.5"
                                 >
                                     {isTranslating ? (
@@ -428,19 +510,38 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                     </div>
                 </div>
 
+                {derivativeError && (
+                    <p className="border-b border-destructive/20 bg-destructive/10 px-4 py-2 text-xs text-destructive" role="alert">
+                        无法创建可编辑副本：{derivativeError}
+                    </p>
+                )}
+
                 <div className="flex-1 overflow-hidden">
                     {isEpub && (
                         <EpubReader
-                            bookPath={getBookUrl()}
+                            bookPath={bookUrl}
                             title={article.title}
                             onTextSelect={handleTextSelect}
+                            initialProgress={initialProgress}
+                            onProgressChange={onProgressChange}
+                            materialId={article.id}
+                            annotation={annotation}
+                            onAnnotationResolved={onAnnotationResolved}
+                            onAnnotationDraftCreated={onAnnotationDraftCreated}
                         />
                     )}
                     {isTxt && (
                         <TxtReader
                             content={article.content}
                             title={article.title}
+                            bookPath={article.book_path}
                             onTextSelect={handleTextSelect}
+                            initialProgress={initialProgress}
+                            onProgressChange={onProgressChange}
+                            materialId={article.id}
+                            annotation={annotation}
+                            onAnnotationResolved={onAnnotationResolved}
+                            onAnnotationDraftCreated={onAnnotationDraftCreated}
                         />
                     )}
                     {isPdf && (
@@ -449,16 +550,25 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                                 <div className="flex h-full w-full">
                                     <div className="flex-1 border-r border-border min-w-0">
                                         <PdfReader
-                                            bookPath={getBookUrl()}
+                                            bookPath={bookUrl}
                                             title="原文"
                                             onTextSelect={handleTextSelect}
+                                            initialProgress={initialProgress}
+                                            onProgressChange={onProgressChange}
+                                            materialId={article.id}
+                                            annotation={annotation}
+                                            onAnnotationResolved={onAnnotationResolved}
+                                            onAnnotationDraftCreated={onAnnotationDraftCreated}
                                         />
                                     </div>
                                     <div className="flex-1 min-w-0">
                                         <PdfReader
-                                            bookPath={availableVersions.mono ? `http://127.0.0.1:19420/book/${encodeURIComponent(availableVersions.mono.split(/[/\\]/).pop() || "")}` : ""}
+                                            bookPath={monoPdfUrl}
                                             title="译文"
                                             onTextSelect={handleTextSelect}
+                                            initialProgress={initialProgress}
+                                            onProgressChange={onProgressChange}
+                                            materialId={article.id}
                                         />
                                     </div>
                                 </div>
@@ -467,11 +577,24 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                                     bookPath={getCurrentPdfPath()}
                                     title={article.title}
                                     onTextSelect={handleTextSelect}
+                                    initialProgress={initialProgress}
+                                    onProgressChange={onProgressChange}
+                                    materialId={article.id}
+                                    annotation={annotation}
+                                    onAnnotationResolved={onAnnotationResolved}
+                                    onAnnotationDraftCreated={onAnnotationDraftCreated}
                                 />
                             )}
                         </>
                     )}
                 </div>
+        </div>
+    );
+
+    const aiDisabledPanel = (
+        <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
+            <Sparkles size={48} className="mb-4 opacity-50" />
+            <p>{aiUnavailableMessage}</p>
         </div>
     );
 
@@ -489,25 +612,25 @@ export function BookReader({ article, onBack }: BookReaderProps) {
                 {
                     value: "mind_map",
                     label: t("articleReader.mindMap", "思维导图"),
-                    content: ({ panelMode }: { panelMode: AssistantPanelMode }) => (
+                    content: canUseAi ? ({ panelMode }: { panelMode: AssistantPanelMode }) => (
                         <ArticleMindMapPanel
                             article={article}
                             targetLanguage={targetLanguage}
                             panelMode={panelMode}
                         />
-                    ),
+                    ) : aiDisabledPanel,
                 },
                 {
                     value: "chat",
                     label: t("articleReader.chat", "对话"),
-                    content: (
+                    content: canUseAi ? (
                         <ArticleChatAssistant
                             articleId={article.id}
                             articleTitle={article.title}
                             targetLanguage={targetLanguage}
                             selectedText={selectedText}
                         />
-                    ),
+                    ) : aiDisabledPanel,
                 },
             ]}
             headerContent={({ panelMode }) =>

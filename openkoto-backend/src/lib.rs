@@ -1,0 +1,15 @@
+pub mod annotations;
+pub mod assistant;
+pub mod auth;
+pub mod config;
+pub mod database;
+pub mod document_editing;
+pub mod error;
+pub mod files;
+pub mod learning;
+pub mod learning_activity;
+pub mod learning_items;
+pub mod legacy_imports;
+pub mod material_library;
+pub mod materials;
+pub mod routes;

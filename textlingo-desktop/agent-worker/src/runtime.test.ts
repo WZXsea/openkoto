@@ -207,13 +207,18 @@ describe("runtime", () => {
         task_type: "mind_map.generate",
       },
     });
-    expect(writes[1]).toMatchObject(
-      createTaskErrorEvent(
-        "task-3",
-        "provider_unsupported",
-        "Provider is not supported for the agent runtime",
-        "Provider weird-provider is not supported for the agent runtime",
-      ),
+    expect(writes[1]).toMatchObject({
+      type: "event",
+      event: "task.error",
+      payload: {
+        task_id: "task-3",
+        code: "provider_unsupported",
+        message: "Provider is not supported for the agent runtime",
+        details: "Provider weird-provider is not supported for the agent runtime",
+      },
+    });
+    expect((writes[1] as { payload: { timestamp: string } }).payload.timestamp).toEqual(
+      expect.any(String),
     );
   });
 

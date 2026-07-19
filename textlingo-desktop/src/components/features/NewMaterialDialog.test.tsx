@@ -42,6 +42,10 @@ vi.mock("./LocalSubtitleImportForm", () => ({
   LocalSubtitleImportForm: () => <div>local subtitle import form</div>,
 }));
 
+vi.mock("./TextFileImportForm", () => ({
+  TextFileImportForm: () => <div>text file import form</div>,
+}));
+
 describe("NewMaterialDialog theme styling", () => {
   beforeEach(() => {
     invokeMock.mockReset();
@@ -60,6 +64,7 @@ describe("NewMaterialDialog theme styling", () => {
     const expectations = [
       { name: "newArticle.title", forbiddenClass: "text-blue-500" },
       { name: "网页导入", forbiddenClass: "text-blue-500" },
+      { name: "文本文件", forbiddenClass: "text-blue-500" },
       { name: "导入书籍", forbiddenClass: "text-purple-500" },
       { name: "youtubeImport.title", forbiddenClass: "text-red-500" },
       { name: "localImport.title", forbiddenClass: "text-accent-foreground" },
@@ -84,5 +89,14 @@ describe("NewMaterialDialog theme styling", () => {
     await user.click(screen.getByRole("button", { name: "字幕文件" }));
 
     expect(screen.getByText("local subtitle import form")).toBeInTheDocument();
+  });
+
+  it("renders the text file import form from the new material dialog", async () => {
+    render(<NewMaterialDialog isOpen onClose={() => {}} />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "文本文件" }));
+
+    expect(screen.getByText("text file import form")).toBeInTheDocument();
   });
 });

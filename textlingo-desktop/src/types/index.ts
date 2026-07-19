@@ -1,9 +1,11 @@
+import type { SourceLocatorV1 } from "../features/reader/sourceLocator";
+
 export interface Article {
     id: string;
     title: string;
     content: string;
-    /** 素材来源类型: web | article | youtube | local_video | audio | book */
-    source_type?: "web" | "article" | "youtube" | "local_video" | "audio" | "book";
+    /** 素材来源类型: web | article | text_file | youtube | local_video | audio | book */
+    source_type?: "web" | "article" | "text_file" | "youtube" | "local_video" | "audio" | "book";
     source_url?: string;
     media_path?: string;
     /** 书籍文件路径 (EPUB/TXT/PDF) */
@@ -12,8 +14,232 @@ export interface Article {
     book_type?: "epub" | "txt" | "pdf";
     created_at: string;
     translated: boolean;
+    /** 当前正文修订标识，用于编辑冲突检测与批注重定位。 */
+    material_revision?: string;
+    /** 后端规范正文的单调修订号。 */
+    current_revision?: number;
+    /** 当前规范化正文的 SHA-256。 */
+    content_sha256?: string;
+    updated_at?: string;
+    content_updated_at?: string | null;
+    /** 存在时表示当前素材是该不可变原件的可编辑派生稿。 */
+    editable_source_material_id?: string | null;
     active_mind_map_artifact_id?: string;
     segments?: ArticleSegment[];
+    metadata?: Record<string, unknown>;
+    tags?: Array<string | { id?: string; name?: string; color?: string | null }>;
+    reading_progress?: {
+        material_id?: string;
+        reader_kind?: "article" | "pdf" | "epub" | "txt" | "media";
+        locator?: Record<string, unknown>;
+        progress_ratio?: number;
+        status?: "unread" | "reading" | "completed" | "archived";
+        last_opened_at?: string;
+        completed_at?: string | null;
+        updated_at?: string;
+    } | number | null;
+    archived_at?: string | null;
+}
+
+export type LearningItemStatus =
+    | "candidate"
+    | "accepted"
+    | "rejected"
+    | "archived"
+    | (string & {});
+
+export type LearningItemType =
+    | "word"
+    | "phrase"
+    | "sentence"
+    | "grammar"
+    | (string & {});
+
+export interface LearningItem {
+    id: string;
+    material_id?: string | null;
+    segment_id?: string | null;
+    item_type: LearningItemType;
+    text: string;
+    source_sentence: string;
+    context_before?: string | null;
+    context_after?: string | null;
+    meaning_in_context?: string | null;
+    definition_en?: string | null;
+    definition_zh?: string | null;
+    collocations: unknown[];
+    examples: unknown[];
+    tags: string[];
+    status: LearningItemStatus;
+    priority: number;
+    difficulty?: number | null;
+    ai_explanation?: unknown | null;
+    review_state: unknown;
+    source_material_title?: string | null;
+    source_type?: string | null;
+    source_segment_order?: number | null;
+    accepted_at?: string | null;
+    rejected_at?: string | null;
+    status_before_archive?: LearningItemStatus | null;
+    merged_into_id?: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ListLearningItemsQuery {
+    status?: LearningItemStatus;
+    item_type?: LearningItemType;
+    material_id?: string;
+    limit?: number;
+    offset?: number;
+}
+
+export interface CreateLearningItemInput {
+    id?: string;
+    material_id?: string | null;
+    segment_id?: string | null;
+    item_type?: LearningItemType;
+    text: string;
+    source_sentence?: string | null;
+    context_before?: string | null;
+    context_after?: string | null;
+    meaning_in_context?: string | null;
+    definition_en?: string | null;
+    definition_zh?: string | null;
+    collocations?: unknown[];
+    examples?: unknown[];
+    tags?: string[];
+    status?: LearningItemStatus;
+    priority?: number;
+    difficulty?: number | null;
+    ai_explanation?: unknown | null;
+    review_state?: unknown;
+}
+
+export interface UpdateLearningItemInput {
+    material_id?: string | null;
+    segment_id?: string | null;
+    item_type?: LearningItemType;
+    text?: string;
+    source_sentence?: string | null;
+    context_before?: string | null;
+    context_after?: string | null;
+    meaning_in_context?: string | null;
+    definition_en?: string | null;
+    definition_zh?: string | null;
+    collocations?: unknown[];
+    examples?: unknown[];
+    tags?: string[];
+    status?: LearningItemStatus;
+    priority?: number;
+    difficulty?: number | null;
+    ai_explanation?: unknown | null;
+    review_state?: unknown;
+}
+
+export interface CreateLearningItemFromSelectionInput {
+    material_id: string;
+    segment_id?: string | null;
+    selected_text: string;
+    item_type?: LearningItemType;
+    source_sentence?: string | null;
+    context_before?: string | null;
+    context_after?: string | null;
+    tags?: string[];
+}
+
+export interface AcceptLearningItemInput {
+    favorite_type: "vocabulary" | "grammar";
+    pack_ids?: string[];
+}
+
+export type AcceptedFavorite =
+    | { type: "vocabulary"; id: string; pack_ids: string[] }
+    | { type: "grammar"; id: string };
+
+export interface AcceptLearningItemResponse {
+    learning_item: LearningItem;
+    favorite: AcceptedFavorite;
+}
+
+export type AnnotationKind = "highlight" | "excerpt" | "note" | "vocabulary" | "grammar";
+
+export interface Annotation {
+    id: string;
+    material_id: string;
+    segment_id?: string | null;
+    kind: AnnotationKind;
+    locator: SourceLocatorV1;
+    source_text: string;
+    material_revision?: string | null;
+    content_sha256?: string | null;
+    color?: string | null;
+    note?: string | null;
+    tags: string[];
+    learning_item_id?: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ListAnnotationsQuery {
+    material_id?: string;
+    kind?: AnnotationKind;
+    tag?: string;
+    q?: string;
+    created_after?: string;
+    created_before?: string;
+    limit?: number;
+    offset?: number;
+}
+
+export interface CreateAnnotationInput {
+    id?: string;
+    material_id: string;
+    segment_id?: string | null;
+    kind: AnnotationKind;
+    locator: SourceLocatorV1;
+    source_text: string;
+    material_revision?: string | null;
+    content_sha256?: string | null;
+    color?: string | null;
+    note?: string | null;
+    tags?: string[];
+    learning_item_id?: string | null;
+    /** Caller-stable idempotency key. Reuse it only when retrying the same creation. */
+    client_request_id: string;
+}
+
+export interface UpdateAnnotationInput {
+    material_id?: string;
+    segment_id?: string | null;
+    kind?: AnnotationKind;
+    locator?: SourceLocatorV1;
+    source_text?: string;
+    material_revision?: string | null;
+    content_sha256?: string | null;
+    color?: string | null;
+    note?: string | null;
+    tags?: string[];
+    learning_item_id?: string | null;
+}
+
+export interface AnnotationLearningItem {
+    id: string;
+    material_id?: string | null;
+    segment_id?: string | null;
+    item_type: string;
+    text: string;
+    source_sentence: string;
+    tags: string[];
+    status: string;
+    review_state: unknown;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ConvertAnnotationResponse {
+    annotation: Annotation;
+    learning_item: AnnotationLearningItem;
 }
 
 export type AgentTaskType =
@@ -140,6 +366,7 @@ export interface ArticleSegment {
     article_id: string;
     order: number;
     text: string;
+    text_sha256?: string;
     reading_text?: string;
     translation?: string;
     explanation?: SegmentExplanation;

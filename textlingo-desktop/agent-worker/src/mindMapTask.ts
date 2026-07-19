@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createOpencode } from "@opencode-ai/sdk";
-import type { Config, Part, SessionPromptResponse } from "@opencode-ai/sdk";
-
 import { parseMindMapResult } from "./mindMapSchema.js";
-import type { ArticleSnapshot, RuntimeProvider } from "./protocol.js";
+import {
+  runPiAgentPrompt,
+  type PiAgentPromptRequest,
+} from "./piRuntime.js";
+import type { RuntimeProvider } from "./protocol.js";
 
 const MIND_MAP_OUTPUT_SCHEMA = {
   type: "object",
@@ -136,16 +136,8 @@ export interface MindMapTaskInput {
   };
 }
 
-export interface OpenCodePromptRequest {
-  cwd: string;
-  model: string;
-  prompt: string;
-  system: string;
-  config: Config;
-}
-
 export interface MindMapTaskDeps {
-  promptRunner?: (request: OpenCodePromptRequest) => Promise<unknown>;
+  promptRunner?: (request: PiAgentPromptRequest) => Promise<unknown>;
   saveArtifact(taskId: string, artifactType: "mind_map", content: unknown): Promise<{ artifact_id: string }>;
   reportProgress(taskId: string, stage: string, progress: number, message?: string): Promise<void>;
   log?: (
@@ -155,6 +147,17 @@ export interface MindMapTaskDeps {
   ) => void;
   workspaceRoot?: string;
   providerConfig: RuntimeProvider;
+  signal?: AbortSignal;
+  runtimeTimeoutMs?: number;
+}
+
+function throwIfCancelled(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+  const error = new Error("Agent task cancelled");
+  error.name = "AbortError";
+  throw error;
 }
 
 export function buildMindMapWorkspaceFiles(input: MindMapTaskInput): Record<string, string> {
@@ -357,129 +360,6 @@ export function normalizeMindMapResult(raw: unknown, input: MindMapTaskInput) {
   };
 }
 
-function createNamedModelDefinition(model: string) {
-  return {
-    id: model,
-    name: model,
-    tool_call: false,
-    reasoning: false,
-  };
-}
-
-export function resolveProviderModel(providerConfig: RuntimeProvider): {
-  model: string;
-  config: Config;
-} {
-  const baseConfig: Config = {
-    plugin: [],
-    autoupdate: false,
-    permission: {
-      edit: "deny",
-      bash: "deny",
-      webfetch: "deny",
-      external_directory: "deny",
-    },
-  };
-
-  if (providerConfig.kind === "native_google") {
-    const model = `google/${providerConfig.model}`;
-    return {
-      model,
-      config: {
-        ...baseConfig,
-        model,
-        enabled_providers: ["google"],
-        provider: {
-          google: {
-            options: {
-              apiKey: providerConfig.api_key,
-            },
-            models: {
-              [providerConfig.model]: createNamedModelDefinition(providerConfig.model),
-            },
-          },
-        },
-      },
-    };
-  }
-
-  if (providerConfig.kind === "native_anthropic") {
-    const model = `anthropic/${providerConfig.model}`;
-    return {
-      model,
-      config: {
-        ...baseConfig,
-        model,
-        enabled_providers: ["anthropic"],
-        provider: {
-          anthropic: {
-            options: {
-              apiKey: providerConfig.api_key,
-            },
-            models: {
-              [providerConfig.model]: createNamedModelDefinition(providerConfig.model),
-            },
-          },
-        },
-      },
-    };
-  }
-
-  if (providerConfig.kind === "openai_compatible") {
-    const normalizedBaseUrl = providerConfig.baseUrl.replace(/\/$/, "");
-    if (providerConfig.provider === "openai" || providerConfig.provider === "openrouter") {
-      const model = `${providerConfig.provider}/${providerConfig.model}`;
-      return {
-        model,
-        config: {
-          ...baseConfig,
-          model,
-          enabled_providers: [providerConfig.provider],
-          provider: {
-            [providerConfig.provider]: {
-              options: {
-                apiKey: providerConfig.api_key,
-                baseURL: normalizedBaseUrl,
-              },
-              models: {
-                [providerConfig.model]: createNamedModelDefinition(providerConfig.model),
-              },
-            },
-          },
-        },
-      };
-    }
-
-    const providerId = "textlingo_openai_compatible";
-    const endpoint = normalizedBaseUrl.endsWith("/chat/completions")
-      ? normalizedBaseUrl
-      : `${normalizedBaseUrl}/chat/completions`;
-    const model = `${providerId}/${providerConfig.model}`;
-    return {
-      model,
-      config: {
-        ...baseConfig,
-        model,
-        enabled_providers: [providerId],
-        provider: {
-          [providerId]: {
-            api: endpoint,
-            options: {
-              apiKey: providerConfig.api_key,
-              baseURL: normalizedBaseUrl,
-            },
-            models: {
-              [providerConfig.model]: createNamedModelDefinition(providerConfig.model),
-            },
-          },
-        },
-      },
-    };
-  }
-
-  throw new Error(`Unsupported provider kind: ${providerConfig.kind}`);
-}
-
 async function createTaskWorkspace(input: MindMapTaskInput, workspaceRoot?: string) {
   const root = workspaceRoot ?? tmpdir();
   await mkdir(root, { recursive: true });
@@ -492,37 +372,27 @@ async function createTaskWorkspace(input: MindMapTaskInput, workspaceRoot?: stri
 }
 
 function buildPrompt(input: MindMapTaskInput) {
-  return [
-    "Generate an evidence-grounded mind map for this article.",
-    "Read `TASK.md`, `article-source.json`, and `mind-map-schema.json` from the workspace.",
-    "Return only valid JSON, with no markdown fences.",
-    "Include every required field in `map` and `diagnostics`.",
-    "If the source is unsuitable, return status `not_applicable`, map `null`, and complete diagnostics.",
-    `The display language must be ${input.displayLanguage}.`,
-  ].join("\n");
-}
-
-export async function findAvailablePort() {
-  return new Promise<number>((resolve, reject) => {
-    const server = createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to resolve an available port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
+  return JSON.stringify(
+    {
+      task: "Generate an evidence-grounded mind map for this article.",
+      instructions: [
+        "Use article_source as the only source document.",
+        "Return only valid JSON, with no markdown fences.",
+        "Include every required field in map and diagnostics.",
+        "If the source is unsuitable, return status not_applicable, map null, and complete diagnostics.",
+        `The display language must be ${input.displayLanguage}.`,
+      ],
+      article_source: {
+        article_id: input.articleId,
+        title: input.articleSnapshot.title,
+        source_type: input.articleSnapshot.sourceType ?? null,
+        content: input.articleSnapshot.content,
+      },
+      output_schema: MIND_MAP_OUTPUT_SCHEMA,
+    },
+    null,
+    2,
+  );
 }
 
 function buildSystemPrompt(input: MindMapTaskInput) {
@@ -534,67 +404,8 @@ function buildSystemPrompt(input: MindMapTaskInput) {
   ].join(" ");
 }
 
-function extractTextParts(response: SessionPromptResponse) {
-  return response.parts
-    .filter((part: Part): part is Extract<Part, { type: "text" }> => part.type === "text")
-    .map((part) => part.text)
-    .join("\n")
-    .trim();
-}
-
-export async function runOpenCodePrompt(request: OpenCodePromptRequest) {
-  const port = await findAvailablePort();
-  const { client, server } = await createOpencode({
-    hostname: "127.0.0.1",
-    port,
-    config: request.config,
-  });
-
-  try {
-    const session = await client.session.create({
-      query: {
-        directory: request.cwd,
-      },
-      body: {
-        title: "Mind Map Generation",
-      },
-    });
-    if (!session.data || session.error) {
-      throw new Error(session.error ? JSON.stringify(session.error) : "Failed to create OpenCode session");
-    }
-
-    const response = await client.session.prompt({
-      path: {
-        id: session.data.id,
-      },
-      query: {
-        directory: request.cwd,
-      },
-      body: {
-        system: request.system,
-        model: {
-          providerID: request.model.split("/")[0],
-          modelID: request.model.slice(request.model.indexOf("/") + 1),
-        },
-        parts: [
-          {
-            type: "text",
-            text: request.prompt,
-          },
-        ],
-      },
-    });
-    if (!response.data || response.error) {
-      throw new Error(response.error ? JSON.stringify(response.error) : "OpenCode prompt failed");
-    }
-
-    return parsePromptResult(extractTextParts(response.data));
-  } finally {
-    server.close();
-  }
-}
-
 export async function runMindMapTask(input: MindMapTaskInput, deps: MindMapTaskDeps) {
+  throwIfCancelled(deps.signal);
   await deps.reportProgress(input.taskId, "planning", 0.1, "Preparing mind map task");
   const log =
     deps.log ??
@@ -606,32 +417,52 @@ export async function runMindMapTask(input: MindMapTaskInput, deps: MindMapTaskD
   log("info", `Prepared task workspace: ${cwd}`, "recipe");
 
   try {
-    const resolvedProvider = resolveProviderModel(deps.providerConfig);
-    const promptRunner = deps.promptRunner ?? runOpenCodePrompt;
+    const promptRunner = deps.promptRunner ?? runPiAgentPrompt;
+    let reportedStreaming = false;
+    throwIfCancelled(deps.signal);
 
-    await deps.reportProgress(input.taskId, "starting_agent", 0.2, "Starting OpenCode agent");
+    await deps.reportProgress(input.taskId, "starting_agent", 0.2, "Starting agent runtime");
     await deps.reportProgress(
       input.taskId,
       "analyzing",
       0.35,
-      "OpenCode agent is analyzing the source",
+      "Agent runtime is analyzing the source",
     );
-    log("info", "Starting OpenCode mind map run", "provider");
+    log("info", "Starting mind map model request", "provider");
 
     const result = await promptRunner({
       cwd,
-      model: resolvedProvider.model,
       prompt: buildPrompt(input),
       system: buildSystemPrompt(input),
-      config: resolvedProvider.config,
+      providerConfig: deps.providerConfig,
+      signal: deps.signal,
+      timeoutMs: deps.runtimeTimeoutMs,
+      async onEvent(event) {
+        if (
+          !reportedStreaming &&
+          event.type === "message_update" &&
+          (event.assistantMessageEvent.type === "text_start" ||
+            event.assistantMessageEvent.type === "text_delta")
+        ) {
+          reportedStreaming = true;
+          await deps.reportProgress(
+            input.taskId,
+            "streaming",
+            0.6,
+            "Agent runtime is streaming the mind map",
+          );
+        }
+      },
     });
 
-    log("info", "OpenCode agent returned a final result", "provider");
+    throwIfCancelled(deps.signal);
+    log("info", "Mind map model returned a final result", "provider");
     await deps.reportProgress(input.taskId, "validating", 0.75, "Validating mind map output");
     const normalized = normalizeMindMapResult(parsePromptResult(result), input);
     const parsed = parseMindMapResult(normalized);
     log("info", "Mind map result validated", "recipe");
     await deps.reportProgress(input.taskId, "saving", 0.9, "Saving mind map artifact");
+    throwIfCancelled(deps.signal);
     const artifact = await deps.saveArtifact(input.taskId, "mind_map", parsed);
     log("info", `Mind map artifact saved: ${artifact.artifact_id}`, "runtime");
 

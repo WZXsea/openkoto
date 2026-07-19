@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "OpenKoto",
-    "subtitle": "跨语言的阅读、播放与学习工具",
+    "subtitle": "本地阅读工作台，AI 翻译与讲解是增强能力",
     "loading": "正在加载 OpenKoto...",
     "notConfigured": "未配置"
   },
@@ -9,19 +9,35 @@
     "refresh": "刷新",
     "close": "关闭",
     "cancel": "取消",
-    "fast": "快速翻译"
+    "fast": "快速翻译",
+    "aiUnavailable": "基础阅读可用。配置 AI 模型后可启用翻译、讲解和分析。",
+    "phase1Disabled": "第一阶段保留本地阅读核心能力，此增强功能暂不启用。"
   },
   "header": {
-    "configureApiKey": "配置您的 API 密钥以开始使用",
+    "configureApiKey": "基础阅读可用；配置 AI 后启用翻译、讲解和分析",
+    "localReadingReady": "本地阅读可用；AI 是可选增强",
     "newArticle": "新建文章",
     "settings": "设置",
     "favorites": "收藏夹",
+    "annotations": "批注",
+    "learningWorkbench": "学习工作台",
     "newMaterial": "新建素材"
+  },
+  "navigation": {
+    "home": "首页",
+    "materials": "素材库"
   },
   "footer": {
     "provider": "提供商",
     "model": "模型",
     "quickSwitch": "快速切换"
+  },
+  "account": {
+    "menuLabel": "账户",
+    "signedIn": "已登录",
+    "switch": "切换账户",
+    "logout": "退出登录",
+    "loggingOut": "正在退出"
   },
   "assistant": {
     "mode": {
@@ -74,7 +90,7 @@
     "back": "返回",
     "prev": "上一篇",
     "next": "下一篇",
-    "edit": "编辑",
+    "edit": "编辑正文",
     "cancel": "取消",
     "translate": "快速翻译",
     "translating": "翻译中...",
@@ -93,6 +109,7 @@
     "resegment": "重新分段",
     "translated": "已翻译",
     "parsed": "已精讲",
+    "viewModeLabel": "阅读模式",
     "viewMode": {
       "original": "仅原文",
       "bilingual": "对照阅读",
@@ -341,6 +358,25 @@
       "themeName": "主题风格",
       "themeMode": "显示模式"
     },
+    "fonts": {
+      "uiFont": "界面字体",
+      "readerFont": "阅读字体",
+      "uiFontInput": "界面字体族",
+      "readerFontInput": "阅读字体族",
+      "custom": "自定义",
+      "customInput": "自定义 font-family",
+      "inputPlaceholder": "例如 \"PingFang SC\", sans-serif",
+      "uiHelp": "作用于导航、按钮、弹窗和大多数界面文字。",
+      "readerHelp": "作用于文章正文、纯文本和 EPUB 阅读区域。",
+      "preview": "The quick brown fox jumps over OpenKoto. 中文字体预览。",
+      "themeDefault": "跟随主题默认",
+      "systemSans": "系统无衬线",
+      "inter": "Inter",
+      "helvetica": "Helvetica / Arial",
+      "chineseSans": "中文无衬线",
+      "serif": "衬线字体",
+      "chineseSerif": "中文仿宋/楷体"
+    },
     "models": {
       "siliconflow": {
         "deepseek-v3": "DeepSeek V3",
@@ -576,7 +612,7 @@
   },
   "dropImport": {
     "hint": "松开以导入",
-    "types": "PDF / EPUB / 视频 / 音频 / 字幕",
+    "types": "PDF / EPUB / MD / TXT / DOCX / 视频 / 音频 / 字幕",
     "importing": "正在导入 {{count}} 个文件…",
     "done": "已导入 {{count}} 个",
     "unsupported": "不支持的文件类型: {{name}}",
@@ -623,12 +659,12 @@
   },
   "bookImport": {
     "title": "阅读素材",
-    "hint": "支持论文、书籍、小说等，支持pdf、txt、epub等格式，用于文章文献的多语言无障碍阅读、学习等。",
+    "hint": "支持论文、书籍、小说等，支持 PDF、EPUB 等格式，用于文章文献的多语言无障碍阅读、学习等。",
     "fileLabel": "书籍文件",
-    "filePlaceholder": "选择 EPUB、TXT 或 PDF 文件...",
+    "filePlaceholder": "选择 EPUB 或 PDF 文件...",
     "titleLabel": "书籍标题",
     "titlePlaceholder": "留空则使用文件名",
-    "description": "支持 EPUB、TXT 和 PDF 格式。EPUB 支持复杂排版，TXT 适合纯文本，PDF 保持原始排版。",
+    "description": "支持 EPUB 和 PDF 格式。EPUB 支持复杂排版，PDF 保持原始排版。Markdown、TXT、DOCX 请使用文本文件入口。",
     "import": "导入书籍",
     "importing": "导入中...",
     "fileFilterName": "电子书",
@@ -636,6 +672,24 @@
       "fileRequired": "请选择文件",
       "selectFailed": "选择文件失败",
       "unsupportedFormat": "不支持的文件格式"
+    }
+  },
+  "textFileImport": {
+    "title": "文本文件",
+    "hint": "导入本地文本内容，并转成可逐句精读、划词和生成学习候选的文章素材。",
+    "fileLabel": "文本文件",
+    "filePlaceholder": "选择 Markdown、TXT 或 DOCX 文件...",
+    "selectFileTitle": "选择文本文件",
+    "description": "支持 .md、.markdown、.txt 和 .docx。PDF/EPUB 请继续使用阅读素材入口。",
+    "titleLabel": "标题",
+    "titlePlaceholder": "留空则使用文件名",
+    "import": "导入文本",
+    "importing": "导入中...",
+    "fileFilterName": "文本文件",
+    "errors": {
+      "fileRequired": "请选择文本文件",
+      "selectFailed": "选择文件失败",
+      "unsupportedFormat": "不支持的文本文件格式"
     }
   },
   "epubReader": {
@@ -666,7 +720,7 @@
   },
   "onboarding": {
     "title": "欢迎使用 OpenKoto",
-    "subtitle": "让我们几步简单的设置，开启您的跨语言学习之旅。",
+    "subtitle": "先完成本地阅读基础设置。AI 模型是增强能力，可现在配置，也可稍后在设置中开启。",
     "steps": {
       "style": "基础设置",
       "model": "模型设置",
@@ -680,7 +734,7 @@
     },
     "model": {
       "title": "配置 AI 模型",
-      "desc": "连接 AI 服务以开启翻译和分析功能。您可以现在配置，或稍后在设置中完成。",
+      "desc": "基础阅读无需 AI。连接 AI 服务后，可启用翻译、讲解、分析和对话等增强能力。",
       "regionTitle": "选择您的区域",
       "globalUser": "全球用户",
       "chinaUser": "中国用户",
@@ -725,7 +779,7 @@
     },
     "welcome": {
       "title": "恭喜！",
-      "desc": "一切都已设置完毕。欢迎来到 OpenKoto 的世界！",
+      "desc": "基础阅读已可使用。后续配置 AI 模型后，可启用翻译、讲解和分析能力。",
       "celebration": "🎉 祝贺您完成设置！",
       "ready": "准备就绪",
       "startButton": "开启之旅"

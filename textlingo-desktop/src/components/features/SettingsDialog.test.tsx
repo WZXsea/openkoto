@@ -139,6 +139,9 @@ describe("SettingsDialog", () => {
   });
 
   it("saves the batch explanation concurrency setting", async () => {
+    const onClose = vi.fn();
+    const onSave = vi.fn();
+
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_config") {
         return Promise.resolve({
@@ -153,7 +156,7 @@ describe("SettingsDialog", () => {
       return Promise.resolve("ok");
     });
 
-    render(<SettingsDialog isOpen onClose={vi.fn()} onSave={vi.fn()} />);
+    render(<SettingsDialog isOpen onClose={onClose} onSave={onSave} />);
 
     await userEvent.click(await screen.findByRole("button", { name: "settings.nav.advanced" }));
     const concurrencyInput = await screen.findByLabelText("Batch explanation concurrency");
@@ -167,6 +170,81 @@ describe("SettingsDialog", () => {
           config: expect.objectContaining({
             batch_translation_concurrency: 6,
           }),
+        }),
+      );
+    });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves custom UI and reader font settings", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      return Promise.resolve("ok");
+    });
+
+    render(<SettingsDialog isOpen onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "settings.nav.appearance" }));
+
+    fireEvent.change(await screen.findByLabelText("UI font family"), {
+      target: { value: '"PingFang SC", sans-serif' },
+    });
+    fireEvent.change(screen.getByLabelText("Reader font family"), {
+      target: { value: "Georgia, serif" },
+    });
+
+    await userEvent.click(screen.getByText("Close"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_config_cmd",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            ui_font_family: '"PingFang SC", sans-serif',
+            reader_font_family: "Georgia, serif",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("keeps language and runtime log panels reachable after panel extraction", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+      if (command === "get_logs_cmd") return Promise.resolve([]);
+      return Promise.resolve("ok");
+    });
+
+    render(<SettingsDialog isOpen onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "settings.nav.language" }));
+    fireEvent.change(screen.getByLabelText("settings.interfaceLanguage"), { target: { value: "zh" } });
+    fireEvent.change(screen.getByLabelText("settings.targetLanguage"), { target: { value: "ja" } });
+    await userEvent.click(screen.getByRole("button", { name: "settings.nav.logs" }));
+    expect(await screen.findByRole("region", { name: "运行日志" })).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Close"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_config_cmd",
+        expect.objectContaining({
+          config: expect.objectContaining({ interface_language: "zh", target_language: "ja" }),
         }),
       );
     });

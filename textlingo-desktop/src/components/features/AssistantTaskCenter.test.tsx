@@ -1,0 +1,248 @@
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type {
+  AssistantArtifact,
+  AssistantTaskDetail,
+  AssistantTasksApi,
+} from "../../features/assistant";
+import type { Article } from "../../types";
+import { AssistantTaskCenter } from "./AssistantTaskCenter";
+
+afterEach(cleanup);
+
+const ARTICLE: Article = {
+  id: "article-1",
+  title: "Clinical Trial Reading",
+  content: "Alpha beta gamma.",
+  source_type: "article",
+  created_at: "2026-07-15T08:00:00Z",
+  translated: false,
+};
+
+const STATUS_LABELS_FOR_TEST = {
+  queued: "排队中",
+  running: "运行中",
+} as const;
+
+function task(overrides: Partial<AssistantTaskDetail> = {}): AssistantTaskDetail {
+  return {
+    id: "task-1",
+    task_type: "assistant_agent_turn",
+    status: "running",
+    article_id: ARTICLE.id,
+    input: {
+      prompt: "Explain the result",
+      source_locator: {
+        version: 1,
+        kind: "text_range",
+        start_offset: 0,
+        end_offset: 5,
+        quote: { exact: "Alpha" },
+      },
+      learning_item_id: "learning-1",
+    },
+    progress: 0.4,
+    stage: "reasoning",
+    message: "Reading evidence",
+    error: null,
+    worker_session_id: "worker-1",
+    artifact_ids: [],
+    created_at: "2026-07-15T08:00:00Z",
+    updated_at: "2026-07-15T08:01:00Z",
+    started_at: "2026-07-15T08:00:10Z",
+    finished_at: null,
+    retry_attempt: 1,
+    retry_lineage: [],
+    ...overrides,
+  };
+}
+
+function apiFor(getCurrent: () => AssistantTaskDetail, artifacts: AssistantArtifact[] = []): AssistantTasksApi {
+  return {
+    list: vi.fn(async () => ({ items: [getCurrent()], total: 1 })),
+    detail: vi.fn(async () => getCurrent()),
+    timeline: vi.fn(async () => [{
+      id: "event-1",
+      task_id: getCurrent().id,
+      event_type: "status_changed",
+      status: getCurrent().status,
+      from_status: "queued" as const,
+      to_status: getCurrent().status,
+      stage: "reasoning",
+      message: "Worker accepted task",
+      level: "info" as const,
+      details: {},
+      occurred_at: "2026-07-15T08:00:10Z",
+    }]),
+    artifacts: vi.fn(async () => artifacts),
+    cancel: vi.fn(async () => getCurrent()),
+    retry: vi.fn(async () => getCurrent()),
+  };
+}
+
+describe("AssistantTaskCenter", () => {
+  it.each(["queued", "running"] as const)("shows accessible, reduced-motion-safe activity for %s tasks", async (status) => {
+    const current = task({
+      status,
+      progress: status === "queued" ? 0 : 0.4,
+      stage: status,
+      message: status === "queued" ? "Waiting for local worker" : "Worker is running",
+    });
+    const api = apiFor(() => current);
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
+
+    expect(await screen.findByTestId("assistant-task-detail-task-1")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: STATUS_LABELS_FOR_TEST[status] })).toHaveAttribute("aria-live", "polite");
+    const statusIndicators = screen.getAllByTestId("assistant-active-status-indicator");
+    expect(statusIndicators).toHaveLength(2);
+    for (const indicator of statusIndicators) {
+      expect(indicator).toHaveClass("motion-safe:animate-spin", "motion-reduce:animate-none");
+      expect(indicator).toHaveAttribute("aria-hidden", "true");
+    }
+
+    const listProgress = screen.getByRole("progressbar", { name: "Assistant 任务列表进度" });
+    const detailProgress = screen.getByRole("progressbar", { name: "Assistant 任务详情进度" });
+    const expectedPercentage = status === "queued" ? "0" : "40";
+    expect(listProgress).toHaveAttribute("aria-valuenow", expectedPercentage);
+    expect(listProgress).toHaveAttribute("aria-valuetext", `${STATUS_LABELS_FOR_TEST[status]}，已完成 ${expectedPercentage}%`);
+    expect(detailProgress).toHaveAttribute("aria-valuenow", expectedPercentage);
+
+    const progressIndicators = screen.getAllByTestId("assistant-active-progress-indicator");
+    expect(progressIndicators).toHaveLength(2);
+    for (const indicator of progressIndicators) {
+      expect(indicator).toHaveClass("motion-safe:animate-pulse", "motion-reduce:hidden");
+      expect(indicator).toHaveAttribute("aria-hidden", "true");
+    }
+  });
+
+  it("shows the current user's workflow, evidence timeline, and source navigation", async () => {
+    const current = task();
+    const api = apiFor(() => current);
+    const onNavigateSource = vi.fn();
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={onNavigateSource} />);
+
+    const list = await screen.findByRole("list", { name: "Assistant 任务列表" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(list).getByRole("button")).toBeInTheDocument();
+    expect(screen.getAllByText("Clinical Trial Reading").length).toBeGreaterThan(0);
+    expect(screen.queryByText("other-user-secret-task")).not.toBeInTheDocument();
+    expect(await screen.findByText("排队中 → 运行中")).toBeInTheDocument();
+    expect(screen.getByText("尝试 1")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "任务输入来源 · 原文" }));
+    expect(onNavigateSource).toHaveBeenCalledWith(expect.objectContaining({
+      target: "source",
+      articleId: ARTICLE.id,
+      locator: expect.objectContaining({ kind: "text_range" }),
+    }));
+    await userEvent.click(screen.getByRole("button", { name: "任务输入来源 · 学习项" }));
+    expect(onNavigateSource).toHaveBeenCalledWith(expect.objectContaining({
+      target: "learning_item",
+      learningItemId: "learning-1",
+    }));
+  });
+
+  it("cancels a running task and retries a failed task as a new attempt", async () => {
+    let current = task();
+    const api = apiFor(() => current);
+    vi.mocked(api.cancel).mockImplementation(async () => {
+      current = task({ status: "cancelled", finished_at: "2026-07-15T08:02:00Z", progress: 0.4 });
+      return current;
+    });
+    vi.mocked(api.retry).mockImplementation(async () => {
+      current = task({
+        id: "task-2",
+        status: "queued",
+        progress: 0,
+        retry_of_task_id: "task-1",
+        retry_root_task_id: "task-1",
+        retry_attempt: 2,
+        retry_lineage: [
+          { task_id: "task-1", status: "failed", attempt: 1 },
+          { task_id: "task-2", status: "queued", attempt: 2 },
+        ],
+      });
+      return current;
+    });
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
+    await userEvent.click(await screen.findByRole("button", { name: "取消任务" }));
+    await waitFor(() => expect(api.cancel).toHaveBeenCalledWith("task-1"));
+    await waitFor(() => expect(screen.getAllByText("已取消").length).toBeGreaterThan(1));
+
+    current = task({ status: "failed", error: "Model request timed out" });
+    await userEvent.click(screen.getByRole("button", { name: "刷新 Assistant 任务" }));
+    await waitFor(() => expect(screen.getByText("失败原因")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "重试" }));
+
+    await waitFor(() => expect(api.retry).toHaveBeenCalledWith("task-1"));
+    expect(await screen.findByTestId("assistant-task-detail-task-2")).toBeInTheDocument();
+    expect(screen.getByText("尝试 2")).toBeInTheDocument();
+  });
+
+  it("reports missing artifacts without hiding the task record", async () => {
+    const current = task({ status: "succeeded", progress: 1, finished_at: "2026-07-15T08:02:00Z" });
+    const api = apiFor(() => current, [{
+      id: "artifact-file",
+      task_id: current.id,
+      article_id: ARTICLE.id,
+      artifact_type: "file",
+      version: "2",
+      content: null,
+      metadata: { file_name: "deleted-report.md" },
+      file_available: false,
+      created_at: current.created_at,
+      updated_at: current.updated_at,
+    }]);
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
+    expect(await screen.findByText("产物文件不可用")).toBeInTheDocument();
+    expect(screen.getByText(/deleted-report\.md/)).toBeInTheDocument();
+    expect(screen.queryByTestId("assistant-active-status-indicator")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("assistant-active-progress-indicator")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Assistant 任务详情进度" })).toHaveAttribute("aria-valuenow", "100");
+  });
+
+  it("keeps task details visible when artifact loading fails independently", async () => {
+    const current = task({ status: "succeeded", progress: 1, finished_at: "2026-07-15T08:02:00Z" });
+    const api = apiFor(() => current);
+    vi.mocked(api.artifacts).mockRejectedValueOnce({ code: "assistant_artifact_not_found", message: "artifact file missing" });
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
+
+    expect(await screen.findByTestId("assistant-task-detail-task-1")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("任务产物不可用：artifact file missing");
+    await userEvent.click(screen.getByRole("button", { name: "重试产物" }));
+    await waitFor(() => expect(api.artifacts).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("当前任务没有可查看的产物")).toBeInTheDocument();
+  });
+
+  it("recovers the timeline independently from an otherwise available task detail", async () => {
+    const current = task({ status: "succeeded", progress: 1, finished_at: "2026-07-15T08:02:00Z" });
+    const api = apiFor(() => current);
+    vi.mocked(api.timeline).mockRejectedValueOnce({ code: "offline", message: "timeline unavailable" });
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
+
+    expect(await screen.findByTestId("assistant-task-detail-task-1")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("时间线暂不可用：timeline unavailable");
+    await userEvent.click(screen.getByRole("button", { name: "重试时间线" }));
+    await waitFor(() => expect(api.timeline).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("排队中 → 已完成")).toBeInTheDocument();
+  });
+
+  it("keeps the failure boundary local when the task service is offline", async () => {
+    const api = apiFor(() => task());
+    vi.mocked(api.list).mockRejectedValue({ code: "offline", message: "Backend unavailable" });
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法连接任务服务");
+    expect(screen.getByRole("alert")).toHaveTextContent("Backend unavailable");
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+});

@@ -3,9 +3,10 @@ use std::{fs, path::PathBuf};
 use openkoto_desktop_lib::{
     commands::{
         build_article_overview, collect_article_evidence, read_article_window,
-        save_mind_map_artifact_in_dir, search_article_segments, update_agent_task_progress_in_dir,
+        save_legacy_mind_map_artifact_in_dir, search_article_segments,
+        update_legacy_agent_task_progress_in_dir,
     },
-    storage::save_agent_task_in_dir,
+    storage::save_legacy_agent_task_in_dir,
     types::{
         AgentTask, AgentTaskInput, AgentTaskStatus, AgentTaskType, Article, ArticleSegment,
         ArtifactType,
@@ -13,11 +14,8 @@ use openkoto_desktop_lib::{
 };
 
 fn temp_data_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "openkoto-tools-{}-{}",
-        name,
-        uuid::Uuid::new_v4()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("openkoto-tools-{}-{}", name, uuid::Uuid::new_v4()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -41,6 +39,7 @@ fn sample_article() -> Article {
                 article_id: "article-1".to_string(),
                 order: 0,
                 text: "Alpha beta gamma.".to_string(),
+                text_sha256: None,
                 reading_text: None,
                 translation: None,
                 explanation: None,
@@ -54,6 +53,7 @@ fn sample_article() -> Article {
                 article_id: "article-1".to_string(),
                 order: 1,
                 text: "Delta epsilon zeta.".to_string(),
+                text_sha256: None,
                 reading_text: None,
                 translation: None,
                 explanation: None,
@@ -67,6 +67,7 @@ fn sample_article() -> Article {
                 article_id: "article-1".to_string(),
                 order: 2,
                 text: "Theta iota kappa.".to_string(),
+                text_sha256: None,
                 reading_text: None,
                 translation: None,
                 explanation: None,
@@ -76,6 +77,10 @@ fn sample_article() -> Article {
                 is_new_paragraph: false,
             },
         ],
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     }
 }
 
@@ -91,6 +96,10 @@ fn sample_task() -> AgentTask {
             max_depth: 3,
             evidence_mode: "strict".to_string(),
             prefer_structure: "topic_tree".to_string(),
+            user_message: None,
+            conversation: Vec::new(),
+            source_locator: None,
+            learning_item_id: None,
         },
         progress: 0.0,
         stage: Some("queued".to_string()),
@@ -102,6 +111,12 @@ fn sample_task() -> AgentTask {
         updated_at: "2026-03-07T00:00:00Z".to_string(),
         started_at: None,
         finished_at: None,
+        root_task_id: Some("task-1".to_string()),
+        retry_of_task_id: None,
+        attempt: 1,
+        input_snapshot: serde_json::json!({}),
+        output_version: 1,
+        legacy_status: None,
     }
 }
 
@@ -126,7 +141,10 @@ fn article_read_window_returns_stable_cursor_and_segment_ids() {
     assert!(window.end_offset > window.start_offset);
     assert!(!window.text.is_empty());
     assert!(window.has_more);
-    assert_eq!(window.source_segment_ids, vec!["seg-1".to_string(), "seg-2".to_string()]);
+    assert_eq!(
+        window.source_segment_ids,
+        vec!["seg-1".to_string(), "seg-2".to_string()]
+    );
     assert_eq!(window.time_range.unwrap().start, 0.0);
 }
 
@@ -154,9 +172,9 @@ fn article_get_evidence_returns_requested_items_in_input_order() {
 fn task_report_progress_updates_stored_task() {
     let data_dir = temp_data_dir("progress");
     let task = sample_task();
-    save_agent_task_in_dir(&data_dir, &task).unwrap();
+    save_legacy_agent_task_in_dir(&data_dir, &task).unwrap();
 
-    let updated = update_agent_task_progress_in_dir(
+    let updated = update_legacy_agent_task_progress_in_dir(
         &data_dir,
         &task.id,
         "reading".to_string(),
@@ -175,7 +193,7 @@ fn task_report_progress_updates_stored_task() {
 fn artifact_save_persists_mind_map_payload() {
     let data_dir = temp_data_dir("artifact-save");
 
-    let artifact = save_mind_map_artifact_in_dir(
+    let artifact = save_legacy_mind_map_artifact_in_dir(
         &data_dir,
         "task-1",
         "article-1",

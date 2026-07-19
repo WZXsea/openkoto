@@ -104,6 +104,12 @@ pub struct AppConfig {
     /// Concurrent workers used by article batch explanation
     #[serde(default = "default_batch_translation_concurrency")]
     pub batch_translation_concurrency: i32,
+    /// Optional global UI font-family override.
+    #[serde(default)]
+    pub ui_font_family: Option<String>,
+    /// Optional reader content font-family override.
+    #[serde(default)]
+    pub reader_font_family: Option<String>,
     /// Backend API URL for enhanced features
     #[serde(default)]
     pub backend_url: Option<String>,
@@ -141,6 +147,8 @@ impl Default for AppConfig {
             target_language: "zh-CN".to_string(),
             interface_language: default_interface_language(),
             batch_translation_concurrency: default_batch_translation_concurrency(),
+            ui_font_family: None,
+            reader_font_family: None,
             backend_url: None,
             auth_token: None,
             srs_daily_new_limit: default_srs_daily_new_limit(),
@@ -310,6 +318,14 @@ pub struct Article {
     pub active_mind_map_artifact_id: Option<String>,
     #[serde(default)]
     pub segments: Vec<ArticleSegment>,
+    #[serde(default = "empty_json_object")]
+    pub metadata: serde_json::Value,
+    #[serde(default)]
+    pub tags: Vec<MaterialTag>,
+    #[serde(default)]
+    pub reading_progress: Option<ReadingProgress>,
+    #[serde(default)]
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +335,351 @@ pub struct MaterialSummary {
     pub material_type: String,
     pub created_at: String,
     pub translated: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListMaterialsQuery {
+    pub query: Option<String>,
+    pub source_type: Option<String>,
+    pub tag: Option<String>,
+    pub reading_status: Option<String>,
+    pub sort: Option<String>,
+    pub limit: Option<String>,
+    pub offset: Option<String>,
+    pub include_archived: Option<String>,
+    pub created_from: Option<String>,
+    pub created_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MaterialTag {
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateMaterialTagRequest {
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PatchMaterialTagRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub color: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeMaterialTagRequest {
+    pub target_tag_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetMaterialTagsRequest {
+    #[serde(default)]
+    pub tag_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkMaterialTagsRequest {
+    pub ids: Vec<String>,
+    #[serde(default)]
+    pub tag_ids: Vec<String>,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadingProgress {
+    pub material_id: String,
+    pub reader_kind: String,
+    pub locator: serde_json::Value,
+    pub progress_ratio: f64,
+    pub status: String,
+    pub last_opened_at: String,
+    pub completed_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertReadingProgressRequest {
+    pub reader_kind: String,
+    #[serde(default = "empty_json_object")]
+    pub locator: serde_json::Value,
+    pub progress_ratio: f64,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaterialImportJob {
+    pub id: String,
+    pub source_kind: String,
+    pub source_uri: Option<String>,
+    pub normalized_source_url: Option<String>,
+    pub file_id: Option<String>,
+    pub input_hash: Option<String>,
+    pub file_sha256: Option<String>,
+    pub content_sha256: Option<String>,
+    pub status: String,
+    pub progress: f64,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub result_material_id: Option<String>,
+    pub preview: serde_json::Value,
+    pub metadata: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateMaterialImportJobRequest {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub source_kind: String,
+    #[serde(default)]
+    pub source_uri: Option<String>,
+    #[serde(default)]
+    pub file_id: Option<String>,
+    #[serde(default)]
+    pub input_hash: Option<String>,
+    #[serde(default)]
+    pub file_sha256: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+    #[serde(default = "empty_json_object")]
+    pub preview: serde_json::Value,
+    #[serde(default = "empty_json_object")]
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PatchMaterialImportJobRequest {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub progress: Option<f64>,
+    #[serde(default)]
+    pub error_code: Option<Option<String>>,
+    #[serde(default)]
+    pub error_message: Option<Option<String>>,
+    #[serde(default)]
+    pub result_material_id: Option<Option<String>>,
+    #[serde(default)]
+    pub preview: Option<serde_json::Value>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListMaterialImportJobsQuery {
+    pub status: Option<String>,
+    pub limit: Option<String>,
+    pub offset: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DuplicateCheckRequest {
+    pub source_url: Option<String>,
+    pub content: Option<String>,
+    pub content_sha256: Option<String>,
+    pub file_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DuplicateMatch {
+    pub material_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    pub matched_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicateCheckResponse {
+    pub duplicate: bool,
+    pub normalized_source_url: Option<String>,
+    pub content_sha256: Option<String>,
+    pub file_sha256: Option<String>,
+    pub matches: Vec<DuplicateMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkMaterialIdsRequest {
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkOperationResponse {
+    pub affected: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteResponse {
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImportJobOptions {
+    pub import_job_id: Option<String>,
+    pub duplicate_policy: Option<String>,
+}
+
+pub const MATERIAL_IMPORT_SOURCE_KINDS: &[&str] = &[
+    "article",
+    "url",
+    "text_file",
+    "book",
+    "audio",
+    "video",
+    "subtitle",
+    "youtube",
+];
+
+pub const MATERIAL_IMPORT_COMMIT_METADATA_KEY: &str = "import_commit";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterialImportCommitState {
+    #[serde(default)]
+    pub duplicate_policy: Option<String>,
+    #[serde(default)]
+    pub commit_kind: Option<String>,
+    #[serde(default)]
+    pub target_material_id: Option<String>,
+    #[serde(default)]
+    pub result_material_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaterialImportRecoveryStrategy {
+    NoRecordedSideEffect,
+    SettleRecordedMaterial(String),
+    SettleOpenExisting(String),
+    VerifyTargetMaterialImportMarker(String),
+}
+
+pub fn is_supported_material_import_source_kind(source_kind: &str) -> bool {
+    MATERIAL_IMPORT_SOURCE_KINDS.contains(&source_kind)
+}
+
+pub fn material_import_commit_state_from_metadata(
+    metadata: &serde_json::Value,
+) -> MaterialImportCommitState {
+    metadata
+        .get(MATERIAL_IMPORT_COMMIT_METADATA_KEY)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+pub fn material_import_metadata_with_commit_state(
+    metadata: serde_json::Value,
+    state: &MaterialImportCommitState,
+) -> serde_json::Value {
+    let mut metadata = metadata
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new);
+    metadata.insert(
+        MATERIAL_IMPORT_COMMIT_METADATA_KEY.to_string(),
+        serde_json::to_value(state).expect("MaterialImportCommitState must serialize"),
+    );
+    serde_json::Value::Object(metadata)
+}
+
+pub fn material_import_effective_duplicate_policy(
+    requested: Option<&str>,
+    recorded: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let (Some(requested), Some(recorded)) = (requested, recorded) {
+        if requested != recorded {
+            return Err(
+                "duplicate_policy does not match the policy recorded for this import job"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(requested.or(recorded).map(str::to_string))
+}
+
+pub fn material_import_recorded_duplicate_policy(metadata: &serde_json::Value) -> Option<String> {
+    material_import_commit_state_from_metadata(metadata).duplicate_policy
+}
+
+pub fn material_import_commit_recovery_strategy(
+    state: &MaterialImportCommitState,
+) -> MaterialImportRecoveryStrategy {
+    if let Some(material_id) = state.result_material_id.clone() {
+        return MaterialImportRecoveryStrategy::SettleRecordedMaterial(material_id);
+    }
+    if state.commit_kind.as_deref() == Some("open_existing") {
+        if let Some(material_id) = state.target_material_id.clone() {
+            return MaterialImportRecoveryStrategy::SettleOpenExisting(material_id);
+        }
+    }
+    if let Some(material_id) = state.target_material_id.clone() {
+        return MaterialImportRecoveryStrategy::VerifyTargetMaterialImportMarker(material_id);
+    }
+    MaterialImportRecoveryStrategy::NoRecordedSideEffect
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewMaterialImportRequest {
+    pub source_kind: String,
+    #[serde(default)]
+    pub source_uri: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub file_id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub input_hash: Option<String>,
+    #[serde(default)]
+    pub file_sha256: Option<String>,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewMaterialFileInfo {
+    pub file_path: Option<String>,
+    pub file_id: Option<String>,
+    pub file_name: Option<String>,
+    pub byte_size: Option<u64>,
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewMaterialImportResponse {
+    pub title: String,
+    pub source_uri: Option<String>,
+    pub file: PreviewMaterialFileInfo,
+    pub paragraph_count: usize,
+    pub content_snippet: Option<String>,
+    pub duplicates: DuplicateCheckResponse,
+    pub job: MaterialImportJob,
+}
+
+fn empty_json_object() -> serde_json::Value {
+    serde_json::Value::Object(Default::default())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,6 +716,14 @@ pub struct AgentTaskInput {
     pub max_depth: i32,
     pub evidence_mode: String,
     pub prefer_structure: String,
+    #[serde(default)]
+    pub user_message: Option<String>,
+    #[serde(default)]
+    pub conversation: Vec<AssistantConversationMessage>,
+    #[serde(default)]
+    pub source_locator: Option<serde_json::Value>,
+    #[serde(default)]
+    pub learning_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -381,6 +750,46 @@ pub struct AgentTask {
     pub started_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub root_task_id: Option<String>,
+    #[serde(default)]
+    pub retry_of_task_id: Option<String>,
+    #[serde(default = "default_agent_task_attempt")]
+    pub attempt: i32,
+    #[serde(default = "empty_json_object")]
+    pub input_snapshot: serde_json::Value,
+    #[serde(
+        default = "default_agent_task_output_version",
+        deserialize_with = "deserialize_agent_task_output_version"
+    )]
+    pub output_version: i32,
+    #[serde(default)]
+    pub legacy_status: Option<String>,
+}
+
+fn default_agent_task_attempt() -> i32 {
+    1
+}
+
+fn default_agent_task_output_version() -> i32 {
+    0
+}
+
+fn deserialize_agent_task_output_version<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| serde::de::Error::custom("output_version must be an i32")),
+        serde_json::Value::String(value) => value
+            .parse::<i32>()
+            .map_err(|_| serde::de::Error::custom("output_version must be an i32")),
+        _ => Err(serde::de::Error::custom("output_version must be an i32")),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -391,6 +800,10 @@ pub enum ArtifactType {
     PptOutline,
     PptSlides,
     ArticleAnswer,
+    StructuredReport,
+    File,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -580,6 +993,8 @@ pub struct ArticleSegment {
     pub article_id: String,
     pub order: i32,
     pub text: String,
+    #[serde(default)]
+    pub text_sha256: Option<String>,
     pub reading_text: Option<String>,
     pub translation: Option<String>,
     pub explanation: Option<SegmentExplanation>,

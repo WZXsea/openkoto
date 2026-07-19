@@ -1,8 +1,14 @@
+use crate::assistant::actions::{
+    assistant_action_from_result_payload, execute_registered_assistant_action,
+};
+use crate::assistant::dto::{AssistantTaskListQuery, AssistantTimelineIngestRequest};
+use crate::backend_client::{BackendClient, PatchMaterialRequest};
 use crate::moonshot::moonshot_base_url;
-use crate::commands::save_mind_map_artifact_in_dir;
 use crate::storage::{
-    list_agent_tasks_in_dir, load_agent_task_in_dir, save_agent_task_in_dir,
-    update_article_active_mind_map_artifact_in_dir,
+    list_legacy_agent_tasks_in_dir, list_worker_task_checkpoints_in_dir, load_config,
+    load_legacy_agent_task_in_dir, load_worker_task_checkpoint_in_dir,
+    persist_worker_artifact_checkpoint_after_backend, persist_worker_task_checkpoint_after_backend,
+    save_legacy_agent_task_in_dir, save_legacy_artifact_in_dir, save_worker_task_checkpoint_in_dir,
 };
 use crate::types::{
     AgentTask, AgentTaskStatus, Article, Artifact, AssistantConversationMessage, MaterialSummary,
@@ -11,15 +17,28 @@ use crate::types::{
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
+use uuid::Uuid;
 
 const WORKER_HEALTH_TIMEOUT_SECONDS: i64 = 45;
 const WORKER_LOG_LIMIT: usize = 100;
+const WORKER_ENTRYPOINT: &str = "dist/index.js";
+const WORKER_RUNTIME: &str = "pi-agent-core";
+const REQUIRED_WORKER_OUTPUTS: [&str; 6] = [
+    "index.js",
+    "assistantTask.js",
+    "mindMapTask.js",
+    "piRuntime.js",
+    "protocol.js",
+    "runtime.js",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,7 +69,11 @@ impl Default for WorkerRuntimeState {
 impl WorkerRuntimeState {
     pub fn health(&self, now: DateTime<Utc>, timeout: Duration) -> WorkerHealth {
         if self.worker_session_id.is_none() {
-            return WorkerHealth::Stopped;
+            return if self.started_at.is_some() {
+                WorkerHealth::Starting
+            } else {
+                WorkerHealth::Stopped
+            };
         }
         match self.last_heartbeat_at {
             Some(last_heartbeat) if now - last_heartbeat <= timeout => WorkerHealth::Healthy,
@@ -61,7 +84,7 @@ impl WorkerRuntimeState {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum WorkerEvent {
     #[serde(rename = "worker.ready")]
@@ -94,7 +117,7 @@ impl WorkerEvent {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskStartedPayload {
     pub task_id: String,
     #[allow(dead_code)]
@@ -102,22 +125,24 @@ pub struct WorkerTaskStartedPayload {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskProgressPayload {
     pub task_id: String,
     pub stage: String,
     pub progress: f64,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default = "default_worker_event_timestamp")]
+    pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerHeartbeatPayload {
     pub worker_session_id: String,
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerReadyPayload {
     pub worker_session_id: String,
     pub timestamp: String,
@@ -136,19 +161,21 @@ pub struct WorkerTaskLogPayload {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskResultPayload {
     pub task_id: String,
     #[serde(default = "default_worker_task_result_artifact_type")]
     pub artifact_type: String,
     pub content: Value,
+    #[serde(default = "default_worker_event_timestamp")]
+    pub timestamp: String,
 }
 
 fn default_worker_task_result_artifact_type() -> String {
     "mind_map".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskErrorPayload {
     pub task_id: String,
     #[serde(default)]
@@ -156,6 +183,12 @@ pub struct WorkerTaskErrorPayload {
     pub message: String,
     #[serde(default)]
     pub details: Option<String>,
+    #[serde(default = "default_worker_event_timestamp")]
+    pub timestamp: String,
+}
+
+fn default_worker_event_timestamp() -> String {
+    Utc::now().to_rfc3339()
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +304,28 @@ impl AgentWorkerManager {
         Ok(())
     }
 
+    pub fn cancel_task(&self, task_id: &str) -> Result<bool, String> {
+        let mut guard = self.stdin.lock().unwrap();
+        let Some(stdin) = guard.as_mut() else {
+            self.record_log(
+                WorkerLogLevel::Info,
+                "task",
+                format!("cancel requested for inactive task {task_id}"),
+            );
+            return Ok(false);
+        };
+        let request = build_worker_cancel_request(task_id);
+        writeln!(stdin, "{}", request)
+            .and_then(|_| stdin.flush())
+            .map_err(|error| format!("Failed to cancel agent worker task: {error}"))?;
+        self.record_log(
+            WorkerLogLevel::Info,
+            "task",
+            format!("cancel requested for task {task_id}"),
+        );
+        Ok(true)
+    }
+
     pub fn ensure_started(&self, app_handle: &AppHandle) -> Result<(), String> {
         if self.is_process_alive()? {
             return Ok(());
@@ -297,9 +352,14 @@ impl AgentWorkerManager {
             command.env(key, value);
         }
 
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("Failed to launch agent worker: {}", e))?;
+        let mut child = command.spawn().map_err(|e| {
+            format!(
+                "Failed to launch agent worker: {} (program: {}, cwd: {})",
+                e,
+                config.program,
+                config.cwd.display()
+            )
+        })?;
         let stdin = child
             .stdin
             .take()
@@ -351,26 +411,15 @@ impl AgentWorkerManager {
         provider_config: &RuntimeProviderConfig,
     ) -> Result<(), String> {
         self.ensure_started(app_handle)?;
-        let mut persisted_task = task.clone();
-        persisted_task.status = AgentTaskStatus::Running;
-        persisted_task.stage = Some("queued".to_string());
-        persisted_task.updated_at = Utc::now().to_rfc3339();
-        if persisted_task.started_at.is_none() {
-            persisted_task.started_at = Some(persisted_task.updated_at.clone());
-        }
-        let session_id = self.runtime_state.lock().unwrap().worker_session_id.clone();
-        if persisted_task.worker_session_id.is_none() {
-            persisted_task.worker_session_id = session_id;
-        }
-        save_agent_task_in_dir(
-            &app_handle
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("Failed to get app data dir: {}", e))?,
-            &persisted_task,
-        )?;
+        let data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        // The command has already received this snapshot from Backend. The
+        // checkpoint is only a restart-recovery record for this worker process.
+        save_worker_task_checkpoint_in_dir(&data_dir, task)?;
 
-        let request = build_mind_map_worker_request(&persisted_task, article, provider_config);
+        let request = build_mind_map_worker_request(task, article, provider_config);
         self.record_log(
             WorkerLogLevel::Info,
             "task",
@@ -400,27 +449,14 @@ impl AgentWorkerManager {
         provider_config: &RuntimeProviderConfig,
     ) -> Result<(), String> {
         self.ensure_started(app_handle)?;
-        let mut persisted_task = task.clone();
-        persisted_task.status = AgentTaskStatus::Running;
-        persisted_task.stage = Some("queued".to_string());
-        persisted_task.updated_at = Utc::now().to_rfc3339();
-        if persisted_task.started_at.is_none() {
-            persisted_task.started_at = Some(persisted_task.updated_at.clone());
-        }
-        let session_id = self.runtime_state.lock().unwrap().worker_session_id.clone();
-        if persisted_task.worker_session_id.is_none() {
-            persisted_task.worker_session_id = session_id;
-        }
-        save_agent_task_in_dir(
-            &app_handle
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("Failed to get app data dir: {}", e))?,
-            &persisted_task,
-        )?;
+        let data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        save_worker_task_checkpoint_in_dir(&data_dir, task)?;
 
         let request = build_assistant_worker_request(
-            &persisted_task.id,
+            &task.id,
             provider_config,
             user_message,
             conversation,
@@ -432,7 +468,10 @@ impl AgentWorkerManager {
         self.record_log(
             WorkerLogLevel::Info,
             "task",
-            format!("submitted assistant.agent_turn for article {}", task.article_id),
+            format!(
+                "submitted assistant.agent_turn for article {}",
+                task.article_id
+            ),
         );
         let mut guard = self.stdin.lock().unwrap();
         let stdin = guard
@@ -682,6 +721,17 @@ pub fn build_assistant_worker_request(
     })
 }
 
+pub fn build_worker_cancel_request(task_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("cancel-{task_id}-{}", Uuid::new_v4()),
+        "type": "request",
+        "method": "agent.cancel",
+        "params": {
+            "task_id": task_id,
+        }
+    })
+}
+
 pub fn parse_worker_event_line(line: &str) -> Result<WorkerEvent, String> {
     let envelope: WorkerEventEnvelope =
         serde_json::from_str(line).map_err(|e| format!("Failed to parse worker event: {}", e))?;
@@ -699,9 +749,34 @@ pub fn apply_worker_event_in_dir(
     runtime_state: &mut WorkerRuntimeState,
     event: WorkerEvent,
 ) -> Result<Option<Artifact>, String> {
+    // Legacy fixture helper. Production event processing fetches the current
+    // Backend task and calls apply_worker_event_to_task before checkpointing.
+    let Some(task_id) = worker_event_task_id(&event).map(ToOwned::to_owned) else {
+        apply_worker_runtime_event(runtime_state, &event)?;
+        return Ok(None);
+    };
+    let mut task = load_legacy_agent_task_in_dir(data_dir, &task_id)?;
+    let artifact = apply_worker_event_to_task(&mut task, runtime_state, &event)?;
+    if let Some(artifact) = artifact.as_ref() {
+        save_legacy_artifact_in_dir(data_dir, artifact)?;
+    }
+    save_legacy_agent_task_in_dir(data_dir, &task)?;
+    Ok(artifact)
+}
+
+fn apply_worker_runtime_event(
+    runtime_state: &mut WorkerRuntimeState,
+    event: &WorkerEvent,
+) -> Result<(), String> {
     match event {
         WorkerEvent::WorkerReady { payload } => {
-            runtime_state.worker_session_id = Some(payload.worker_session_id);
+            if payload.runtime != WORKER_RUNTIME {
+                return Err(format!(
+                    "Unsupported agent worker runtime: expected {}, received {}",
+                    WORKER_RUNTIME, payload.runtime
+                ));
+            }
+            runtime_state.worker_session_id = Some(payload.worker_session_id.clone());
             runtime_state.last_heartbeat_at = Some(
                 DateTime::parse_from_rfc3339(&payload.timestamp)
                     .map_err(|e| format!("Failed to parse ready timestamp: {}", e))?
@@ -710,10 +785,34 @@ pub fn apply_worker_event_in_dir(
             if runtime_state.started_at.is_none() {
                 runtime_state.started_at = runtime_state.last_heartbeat_at;
             }
-            Ok(None)
         }
+        WorkerEvent::WorkerHeartbeat { payload } => {
+            runtime_state.worker_session_id = Some(payload.worker_session_id.clone());
+            runtime_state.last_heartbeat_at = Some(
+                DateTime::parse_from_rfc3339(&payload.timestamp)
+                    .map_err(|e| format!("Failed to parse heartbeat timestamp: {}", e))?
+                    .with_timezone(&Utc),
+            );
+            if runtime_state.started_at.is_none() {
+                runtime_state.started_at = runtime_state.last_heartbeat_at;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn apply_worker_event_to_task(
+    task: &mut AgentTask,
+    runtime_state: &mut WorkerRuntimeState,
+    event: &WorkerEvent,
+) -> Result<Option<Artifact>, String> {
+    apply_worker_runtime_event(runtime_state, event)?;
+    match event {
         WorkerEvent::TaskStarted { payload } => {
-            let mut task = load_agent_task_in_dir(data_dir, &payload.task_id)?;
+            if payload.task_id != task.id || is_terminal_task_status(&task.status) {
+                return Ok(None);
+            }
             task.status = AgentTaskStatus::Running;
             task.stage = Some("started".to_string());
             task.message = Some("Agent task started".to_string());
@@ -729,36 +828,16 @@ pub fn apply_worker_event_in_dir(
             if task.worker_session_id.is_none() {
                 task.worker_session_id = runtime_state.worker_session_id.clone();
             }
-            save_agent_task_in_dir(data_dir, &task)?;
-            Ok(None)
-        }
-        WorkerEvent::WorkerHeartbeat { payload } => {
-            runtime_state.worker_session_id = Some(payload.worker_session_id);
-            runtime_state.last_heartbeat_at = Some(
-                DateTime::parse_from_rfc3339(&payload.timestamp)
-                    .map_err(|e| format!("Failed to parse heartbeat timestamp: {}", e))?
-                    .with_timezone(&Utc),
-            );
-            if runtime_state.started_at.is_none() {
-                runtime_state.started_at = runtime_state.last_heartbeat_at;
-            }
             Ok(None)
         }
         WorkerEvent::TaskProgress { payload } => {
-            let mut task = load_agent_task_in_dir(data_dir, &payload.task_id)?;
-            if matches!(
-                task.status,
-                AgentTaskStatus::Succeeded
-                    | AgentTaskStatus::Failed
-                    | AgentTaskStatus::Cancelled
-                    | AgentTaskStatus::Interrupted
-            ) {
+            if payload.task_id != task.id || is_terminal_task_status(&task.status) {
                 return Ok(None);
             }
             task.status = AgentTaskStatus::Running;
             task.progress = payload.progress.clamp(0.0, 1.0);
-            task.stage = Some(payload.stage);
-            task.message = payload.message;
+            task.stage = Some(payload.stage.clone());
+            task.message = payload.message.clone();
             task.updated_at = Utc::now().to_rfc3339();
             if task.started_at.is_none() {
                 task.started_at = Some(task.updated_at.clone());
@@ -766,17 +845,20 @@ pub fn apply_worker_event_in_dir(
             if task.worker_session_id.is_none() {
                 task.worker_session_id = runtime_state.worker_session_id.clone();
             }
-            save_agent_task_in_dir(data_dir, &task)?;
             Ok(None)
         }
         WorkerEvent::TaskLog { .. } => Ok(None),
         WorkerEvent::TaskResult { payload } => {
-            let mut task = load_agent_task_in_dir(data_dir, &payload.task_id)?;
+            if payload.task_id != task.id || is_terminal_task_status(&task.status) {
+                return Ok(None);
+            }
             task.status = AgentTaskStatus::Succeeded;
             task.progress = 1.0;
             task.stage = Some("done".to_string());
             task.message = Some(match task.task_type {
-                crate::types::AgentTaskType::AssistantAgentTurn => "Agent turn completed".to_string(),
+                crate::types::AgentTaskType::AssistantAgentTurn => {
+                    "Agent turn completed".to_string()
+                }
                 _ => "Mind map generated".to_string(),
             });
             task.error = None;
@@ -790,26 +872,22 @@ pub fn apply_worker_event_in_dir(
                 None
             } else {
                 let artifact =
-                    save_mind_map_artifact_in_dir(data_dir, &task.id, &task.article_id, payload.content)?;
-                update_article_active_mind_map_artifact_in_dir(
-                    data_dir,
-                    &task.article_id,
-                    Some(artifact.id.clone()),
-                )?;
+                    new_mind_map_artifact(&task.id, &task.article_id, payload.content.clone());
                 if !task.artifact_ids.iter().any(|id| id == &artifact.id) {
                     task.artifact_ids.push(artifact.id.clone());
                 }
                 Some(artifact)
             };
-            save_agent_task_in_dir(data_dir, &task)?;
             Ok(artifact)
         }
         WorkerEvent::TaskError { payload } => {
-            let mut task = load_agent_task_in_dir(data_dir, &payload.task_id)?;
+            if payload.task_id != task.id || is_terminal_task_status(&task.status) {
+                return Ok(None);
+            }
             task.status = AgentTaskStatus::Failed;
-            task.error = Some(match payload.details {
+            task.error = Some(match payload.details.as_deref() {
                 Some(details) => format!("{}: {}", payload.message, details),
-                None => payload.message,
+                None => payload.message.clone(),
             });
             task.updated_at = Utc::now().to_rfc3339();
             task.finished_at = Some(task.updated_at.clone());
@@ -817,30 +895,54 @@ pub fn apply_worker_event_in_dir(
             if task.started_at.is_none() {
                 task.started_at = Some(task.updated_at.clone());
             }
-            save_agent_task_in_dir(data_dir, &task)?;
             Ok(None)
         }
+        WorkerEvent::WorkerReady { .. } | WorkerEvent::WorkerHeartbeat { .. } => Ok(None),
     }
 }
 
-fn extract_open_material_id(content: &Value) -> Option<String> {
-    content
-        .get("action")
-        .and_then(|value| value.as_object())
-        .filter(|action| action.get("kind").and_then(|value| value.as_str()) == Some("open_material"))
-        .and_then(|action| action.get("material_id"))
-        .and_then(|value| value.as_str())
-        .map(ToOwned::to_owned)
+fn is_terminal_task_status(status: &AgentTaskStatus) -> bool {
+    matches!(
+        status,
+        AgentTaskStatus::Succeeded
+            | AgentTaskStatus::Failed
+            | AgentTaskStatus::Cancelled
+            | AgentTaskStatus::Interrupted
+    )
+}
+
+fn new_mind_map_artifact(task_id: &str, article_id: &str, content: Value) -> Artifact {
+    let now = Utc::now().to_rfc3339();
+    Artifact {
+        id: Uuid::new_v4().to_string(),
+        task_id: task_id.to_string(),
+        article_id: article_id.to_string(),
+        artifact_type: crate::types::ArtifactType::MindMap,
+        version: "1".to_string(),
+        content,
+        metadata: None,
+        created_at: now.clone(),
+        updated_at: now,
+    }
 }
 
 pub fn mark_running_tasks_interrupted_in_dir(
     data_dir: &std::path::Path,
 ) -> Result<Vec<String>, String> {
-    let task_ids = list_agent_tasks_in_dir(data_dir)?;
+    let mut task_ids = list_worker_task_checkpoints_in_dir(data_dir)?;
+    for task_id in list_legacy_agent_tasks_in_dir(data_dir)? {
+        if !task_ids.iter().any(|existing| existing == &task_id) {
+            task_ids.push(task_id);
+        }
+    }
     let mut interrupted = Vec::new();
 
     for task_id in task_ids {
-        let mut task = load_agent_task_in_dir(data_dir, &task_id)?;
+        let (mut task, legacy_source) = match load_worker_task_checkpoint_in_dir(data_dir, &task_id)
+        {
+            Ok(task) => (task, false),
+            Err(_) => (load_legacy_agent_task_in_dir(data_dir, &task_id)?, true),
+        };
         if matches!(
             task.status,
             AgentTaskStatus::Running | AgentTaskStatus::Queued
@@ -850,7 +952,10 @@ pub fn mark_running_tasks_interrupted_in_dir(
             if task.finished_at.is_none() {
                 task.finished_at = Some(task.updated_at.clone());
             }
-            save_agent_task_in_dir(data_dir, &task)?;
+            save_worker_task_checkpoint_in_dir(data_dir, &task)?;
+            if legacy_source {
+                save_legacy_agent_task_in_dir(data_dir, &task)?;
+            }
             interrupted.push(task.id.clone());
         }
     }
@@ -877,14 +982,130 @@ pub fn resolve_worker_launch_config(app_handle: &AppHandle) -> Result<WorkerLaun
         });
     }
 
+    if cfg!(debug_assertions) {
+        let cwd = worker_project_dir();
+        if worker_source_project_exists(&cwd) {
+            ensure_worker_bundle(&cwd)?;
+            return Ok(WorkerLaunchConfig {
+                program: resolve_node_program(app_handle),
+                args: vec![WORKER_ENTRYPOINT.to_string()],
+                cwd,
+                envs: default_worker_envs(app_handle)?,
+            });
+        }
+    }
+
+    if let Some(cwd) = bundled_worker_dir(app_handle) {
+        if worker_bundle_outputs_exist(&cwd) {
+            return Ok(WorkerLaunchConfig {
+                program: resolve_node_program(app_handle),
+                args: vec![WORKER_ENTRYPOINT.to_string()],
+                cwd,
+                envs: default_worker_envs(app_handle)?,
+            });
+        }
+    }
+
     let cwd = worker_project_dir();
-    ensure_worker_bundle(&cwd)?;
-    Ok(WorkerLaunchConfig {
-        program: "node".to_string(),
-        args: vec!["dist/index.js".to_string()],
-        cwd,
-        envs: default_worker_envs(app_handle)?,
-    })
+    if worker_source_project_exists(&cwd) {
+        ensure_worker_bundle(&cwd)?;
+        return Ok(WorkerLaunchConfig {
+            program: resolve_node_program(app_handle),
+            args: vec![WORKER_ENTRYPOINT.to_string()],
+            cwd,
+            envs: default_worker_envs(app_handle)?,
+        });
+    }
+
+    let bundled_hint = bundled_worker_dir(app_handle)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<resource dir unavailable>".to_string());
+    Err(format!(
+        "Agent worker bundle not found. Expected built worker files under bundled resource path {} or source path {}. Run `npm run build:agent-worker` before packaging, and ensure agent-worker resources are bundled.",
+        bundled_hint,
+        cwd.display()
+    ))
+}
+
+fn worker_source_project_exists(cwd: &Path) -> bool {
+    cwd.join("package.json").is_file() && cwd.join("src").is_dir()
+}
+
+fn bundled_worker_dir(app_handle: &AppHandle) -> Option<PathBuf> {
+    app_handle
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|resource_dir| resource_dir.join("agent-worker"))
+}
+
+fn worker_bundle_outputs_exist(cwd: &Path) -> bool {
+    REQUIRED_WORKER_OUTPUTS
+        .iter()
+        .all(|file| cwd.join("dist").join(file).is_file())
+}
+
+fn resolve_node_program(app_handle: &AppHandle) -> String {
+    if let Some(program) = bundled_node_program(app_handle) {
+        return program.to_string_lossy().to_string();
+    }
+
+    resolve_program_from_env_or_common_paths(
+        "TEXTLINGO_AGENT_WORKER_NODE",
+        &[
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ],
+        "node",
+    )
+}
+
+fn bundled_node_program(app_handle: &AppHandle) -> Option<PathBuf> {
+    let binary_name = if cfg!(target_os = "windows") {
+        "node.exe"
+    } else {
+        "node"
+    };
+    app_handle
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|resource_dir| resource_dir.join("node").join("bin").join(binary_name))
+        .filter(|path| path.is_file())
+}
+
+fn resolve_npm_program() -> String {
+    resolve_program_from_env_or_common_paths(
+        "TEXTLINGO_AGENT_WORKER_NPM",
+        &[
+            "/opt/homebrew/bin/npm",
+            "/usr/local/bin/npm",
+            "/usr/bin/npm",
+        ],
+        "npm",
+    )
+}
+
+fn resolve_program_from_env_or_common_paths(
+    env_key: &str,
+    common_paths: &[&str],
+    fallback: &str,
+) -> String {
+    if let Ok(path) = std::env::var(env_key) {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    for path in common_paths {
+        if Path::new(path).is_file() {
+            return (*path).to_string();
+        }
+    }
+
+    fallback.to_string()
 }
 
 fn default_worker_envs(app_handle: &AppHandle) -> Result<Vec<(String, String)>, String> {
@@ -922,13 +1143,10 @@ fn worker_project_dir() -> PathBuf {
 pub fn worker_bundle_is_fresh(cwd: &Path) -> Result<bool, String> {
     let dist_dir = cwd.join("dist");
     let src_dir = cwd.join("src");
-    let required_outputs = [
-        dist_dir.join("index.js"),
-        dist_dir.join("assistantTask.js"),
-        dist_dir.join("mindMapTask.js"),
-        dist_dir.join("protocol.js"),
-        dist_dir.join("runtime.js"),
-    ];
+    let required_outputs: Vec<PathBuf> = REQUIRED_WORKER_OUTPUTS
+        .iter()
+        .map(|file| dist_dir.join(file))
+        .collect();
 
     if required_outputs.iter().any(|path| !path.exists()) {
         return Ok(false);
@@ -956,15 +1174,29 @@ pub fn worker_bundle_is_fresh(cwd: &Path) -> Result<bool, String> {
 }
 
 fn ensure_worker_bundle(cwd: &Path) -> Result<(), String> {
+    if !worker_source_project_exists(cwd) {
+        return Err(format!(
+            "Agent worker source project not found at {}",
+            cwd.display()
+        ));
+    }
     if worker_bundle_is_fresh(cwd)? {
         return Ok(());
     }
 
-    let status = Command::new("npm")
+    let npm = resolve_npm_program();
+    let status = Command::new(&npm)
         .args(["run", "build"])
         .current_dir(cwd)
         .status()
-        .map_err(|e| format!("Failed to build agent worker bundle: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to build agent worker bundle: {} (program: {}, cwd: {})",
+                e,
+                npm,
+                cwd.display()
+            )
+        })?;
     if !status.success() {
         return Err("Failed to build agent worker bundle".to_string());
     }
@@ -1006,37 +1238,404 @@ fn spawn_stdout_listener(
                 push_worker_log(&mut guard, level, "worker", message);
             }
 
-            let artifact = {
+            let persisted = {
                 let mut state = runtime_state.lock().unwrap();
-                match apply_worker_event_in_dir(&data_dir, &mut state, event.clone()) {
-                    Ok(artifact) => artifact,
-                    Err(error) => {
-                        {
-                            let mut guard = logs.lock().unwrap();
-                            push_worker_log(
-                                &mut guard,
-                                WorkerLogLevel::Error,
-                                "stdout",
-                                format!("failed to apply worker event: {}", error),
-                            );
-                        }
-                        emit_status_snapshot(&app_handle, &runtime_state, &logs);
-                        eprintln!("[AgentWorker] Failed to apply worker event: {}", error);
-                        continue;
+                tauri::async_runtime::block_on(sync_worker_event_backend(
+                    &app_handle,
+                    &data_dir,
+                    &mut state,
+                    &event,
+                ))
+            };
+            let persisted = match persisted {
+                Ok(persisted) => persisted,
+                Err(error) => {
+                    {
+                        let mut guard = logs.lock().unwrap();
+                        push_worker_log(
+                            &mut guard,
+                            WorkerLogLevel::Error,
+                            "stdout",
+                            format!("failed to persist worker event: {}", error),
+                        );
                     }
+                    emit_status_snapshot(&app_handle, &runtime_state, &logs);
+                    eprintln!("[AgentWorker] Failed to persist worker event: {}", error);
+                    continue;
                 }
             };
 
             emit_worker_event(
                 &app_handle,
-                &data_dir,
                 &event,
-                artifact.as_ref(),
+                persisted.task.as_ref(),
+                persisted.artifact.as_ref(),
                 &runtime_state,
                 &logs,
             );
         }
+
+        *runtime_state.lock().unwrap() = WorkerRuntimeState::default();
+        {
+            let mut guard = logs.lock().unwrap();
+            push_worker_log(
+                &mut guard,
+                WorkerLogLevel::Warn,
+                "manager",
+                "agent worker process exited",
+            );
+        }
+        emit_status_snapshot(&app_handle, &runtime_state, &logs);
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) =
+                recover_worker_checkpoints_from_backend(&app_handle, &data_dir).await
+            {
+                let mut guard = logs.lock().unwrap();
+                push_worker_log(
+                    &mut guard,
+                    WorkerLogLevel::Error,
+                    "recovery",
+                    format!("failed to finalize tasks after worker exit: {error}"),
+                );
+            }
+            emit_status_snapshot(&app_handle, &runtime_state, &logs);
+        });
     });
+}
+
+fn worker_event_task_id(event: &WorkerEvent) -> Option<&str> {
+    match event {
+        WorkerEvent::TaskStarted { payload } => Some(&payload.task_id),
+        WorkerEvent::TaskProgress { payload } => Some(&payload.task_id),
+        WorkerEvent::TaskResult { payload } => Some(&payload.task_id),
+        WorkerEvent::TaskError { payload } => Some(&payload.task_id),
+        WorkerEvent::TaskLog { payload } => Some(&payload.task_id),
+        WorkerEvent::WorkerReady { .. } | WorkerEvent::WorkerHeartbeat { .. } => None,
+    }
+}
+
+fn agent_task_status_name(status: &AgentTaskStatus) -> String {
+    serde_json::to_value(status)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn worker_event_timestamp(event: &WorkerEvent) -> String {
+    match event {
+        WorkerEvent::TaskStarted { payload } => payload.timestamp.clone(),
+        WorkerEvent::TaskProgress { payload } => payload.timestamp.clone(),
+        WorkerEvent::TaskLog { payload } => payload.timestamp.clone(),
+        WorkerEvent::TaskResult { payload } => payload.timestamp.clone(),
+        WorkerEvent::TaskError { payload } => payload.timestamp.clone(),
+        WorkerEvent::WorkerReady { payload } => payload.timestamp.clone(),
+        WorkerEvent::WorkerHeartbeat { payload } => payload.timestamp.clone(),
+    }
+}
+
+fn worker_event_stable_id(task_id: &str, event: &WorkerEvent) -> Result<String, String> {
+    let serialized = serde_json::to_vec(event)
+        .map_err(|error| format!("Failed to serialize worker event for timeline: {error}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(task_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(serialized);
+    Ok(format!("worker:{}", hex::encode(hasher.finalize())))
+}
+
+pub fn worker_event_timeline_request(
+    before: &AgentTask,
+    after: &AgentTask,
+    event: &WorkerEvent,
+) -> Result<AssistantTimelineIngestRequest, String> {
+    let ignored_terminal = is_terminal_task_status(&before.status);
+    let event_type = if ignored_terminal {
+        "worker.late_event_ignored".to_string()
+    } else {
+        event.event_name().to_string()
+    };
+    let from_status = agent_task_status_name(&before.status);
+    let to_status = agent_task_status_name(&after.status);
+    let (stage, message, error, mut metadata) = match event {
+        WorkerEvent::TaskStarted { payload } => (
+            after.stage.clone(),
+            after.message.clone(),
+            None,
+            serde_json::json!({ "task_type": payload.task_type }),
+        ),
+        WorkerEvent::TaskProgress { payload } => (
+            Some(payload.stage.clone()),
+            payload.message.clone(),
+            None,
+            serde_json::json!({ "progress": payload.progress.clamp(0.0, 1.0) }),
+        ),
+        WorkerEvent::TaskLog { payload } => (
+            after.stage.clone(),
+            Some(payload.message.clone()),
+            None,
+            serde_json::json!({
+                "level": payload.level,
+                "source": payload.source,
+            }),
+        ),
+        WorkerEvent::TaskResult { payload } => (
+            after.stage.clone(),
+            after.message.clone(),
+            None,
+            serde_json::json!({ "artifact_type": payload.artifact_type }),
+        ),
+        WorkerEvent::TaskError { payload } => (
+            after.stage.clone(),
+            Some(payload.message.clone()),
+            after
+                .error
+                .clone()
+                .or_else(|| Some(payload.message.clone())),
+            serde_json::json!({
+                "code": payload.code,
+                "details": payload.details,
+            }),
+        ),
+        WorkerEvent::WorkerReady { .. } | WorkerEvent::WorkerHeartbeat { .. } => {
+            (None, None, None, serde_json::json!({}))
+        }
+    };
+    if ignored_terminal {
+        metadata["original_event_type"] = Value::String(event.event_name().to_string());
+        metadata["terminal_status"] = Value::String(from_status.clone());
+    }
+    Ok(AssistantTimelineIngestRequest {
+        event_id: worker_event_stable_id(&before.id, event)?,
+        event_type,
+        from_status: Some(from_status),
+        to_status: Some(to_status),
+        stage,
+        message,
+        error,
+        metadata,
+        created_at: worker_event_timestamp(event),
+    })
+}
+
+#[derive(Default)]
+struct PersistedWorkerEvent {
+    task: Option<AgentTask>,
+    artifact: Option<Artifact>,
+}
+
+async fn sync_worker_event_backend(
+    app_handle: &AppHandle,
+    data_dir: &Path,
+    runtime_state: &mut WorkerRuntimeState,
+    event: &WorkerEvent,
+) -> Result<PersistedWorkerEvent, String> {
+    if worker_event_task_id(event).is_none() {
+        apply_worker_runtime_event(runtime_state, event)?;
+        return Ok(PersistedWorkerEvent::default());
+    }
+    let config = load_config(app_handle)?.unwrap_or_default();
+    let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
+    let task_id = worker_event_task_id(event).expect("checked above");
+    let mut task = client
+        .get_agent_task(task_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let task_before_event = task.clone();
+    let artifact = apply_worker_event_to_task(&mut task, runtime_state, event)?;
+    let timeline = worker_event_timeline_request(&task_before_event, &task, event)?;
+
+    let artifact = match artifact {
+        Some(artifact) => {
+            let artifact = client
+                .save_artifact(&artifact)
+                .await
+                .map_err(|error| error.to_string())?;
+            Some(artifact)
+        }
+        None => None,
+    };
+    let task_changed = serde_json::to_value(&task_before_event)
+        .map_err(|error| error.to_string())?
+        != serde_json::to_value(&task).map_err(|error| error.to_string())?;
+    let task = if task_changed {
+        client
+            .save_agent_task(&task)
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        task
+    };
+    client
+        .ingest_agent_task_timeline_event(task_id, &timeline)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(artifact) = artifact.as_ref() {
+        let article = client
+            .get_material(&artifact.article_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        client
+            .patch_material(
+                &article.id,
+                &PatchMaterialRequest {
+                    active_mind_map_artifact_id: Some(artifact.id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let task = persist_worker_task_checkpoint_after_backend(data_dir, Ok(task))?;
+    let artifact = match artifact {
+        Some(artifact) => Some(persist_worker_artifact_checkpoint_after_backend(
+            data_dir,
+            Ok(artifact),
+        )?),
+        None => None,
+    };
+    Ok(PersistedWorkerEvent {
+        task: Some(task),
+        artifact,
+    })
+}
+
+pub async fn recover_worker_checkpoints_from_backend(
+    app_handle: &AppHandle,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let task_ids = list_worker_task_checkpoints_in_dir(data_dir)?;
+    if task_ids.is_empty() {
+        return Ok(());
+    }
+
+    let config = load_config(app_handle)?.unwrap_or_default();
+    let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
+    for task_id in task_ids {
+        let checkpoint = load_worker_task_checkpoint_in_dir(data_dir, &task_id)?;
+        let backend_task = client
+            .get_agent_task(&task_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let backend_is_terminal = is_terminal_task_status(&backend_task.status);
+        let mut task = reconcile_task_after_restart(&checkpoint, &backend_task, Utc::now());
+        if !backend_is_terminal {
+            task = client
+                .save_agent_task(&task)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        persist_worker_task_checkpoint_after_backend(data_dir, Ok(task))?;
+    }
+    Ok(())
+}
+
+pub async fn recover_orphaned_worker_tasks_from_backend(
+    app_handle: &AppHandle,
+    data_dir: &Path,
+    app_started_at: DateTime<Utc>,
+) -> Result<Vec<String>, String> {
+    let checkpoint_task_ids = list_worker_task_checkpoints_in_dir(data_dir)?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let config = load_config(app_handle)?.unwrap_or_default();
+    let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
+    let mut recovered_task_ids = Vec::new();
+    let mut active_tasks = Vec::new();
+
+    for status in ["queued", "running"] {
+        active_tasks.extend(list_backend_tasks_by_status(&client, status).await?);
+    }
+
+    for backend_task in active_tasks {
+        if checkpoint_task_ids.contains(&backend_task.id)
+            || !task_updated_before(&backend_task, app_started_at)
+        {
+            continue;
+        }
+        let task_id = backend_task.id.clone();
+        let recovered = reconcile_orphaned_task_after_restart(&backend_task, Utc::now());
+        let recovered = client
+            .save_agent_task(&recovered)
+            .await
+            .map_err(|error| error.to_string())?;
+        persist_worker_task_checkpoint_after_backend(data_dir, Ok(recovered))?;
+        recovered_task_ids.push(task_id);
+    }
+
+    Ok(recovered_task_ids)
+}
+
+async fn list_backend_tasks_by_status(
+    client: &BackendClient,
+    status: &str,
+) -> Result<Vec<AgentTask>, String> {
+    let mut tasks = Vec::new();
+    let mut offset = 0_i64;
+    loop {
+        let page = client
+            .list_agent_tasks(&AssistantTaskListQuery {
+                status: Some(status.to_string()),
+                limit: Some(200),
+                offset: Some(offset),
+                ..Default::default()
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let item_count = page.items.len() as i64;
+        tasks.extend(page.items);
+        offset += item_count;
+        if item_count == 0 || offset >= page.total {
+            break;
+        }
+    }
+    Ok(tasks)
+}
+
+fn task_updated_before(task: &AgentTask, cutoff: DateTime<Utc>) -> bool {
+    DateTime::parse_from_rfc3339(&task.updated_at)
+        .map(|updated_at| updated_at.with_timezone(&Utc) < cutoff)
+        .unwrap_or(true)
+}
+
+pub fn reconcile_orphaned_task_after_restart(
+    backend_task: &AgentTask,
+    now: DateTime<Utc>,
+) -> AgentTask {
+    if is_terminal_task_status(&backend_task.status) {
+        return backend_task.clone();
+    }
+
+    let mut failed = backend_task.clone();
+    failed.status = AgentTaskStatus::Failed;
+    failed.stage = Some("worker_checkpoint_missing".to_string());
+    failed.message = Some("Task could not be resumed after app restart".to_string());
+    failed.error = Some(
+        "Local agent worker checkpoint is missing; retry the task to run it again".to_string(),
+    );
+    failed.updated_at = now.to_rfc3339();
+    failed.finished_at = Some(failed.updated_at.clone());
+    failed
+}
+
+pub fn reconcile_task_after_restart(
+    checkpoint: &AgentTask,
+    backend_task: &AgentTask,
+    now: DateTime<Utc>,
+) -> AgentTask {
+    if is_terminal_task_status(&backend_task.status) {
+        return backend_task.clone();
+    }
+    if is_terminal_task_status(&checkpoint.status) {
+        return checkpoint.clone();
+    }
+
+    let mut interrupted = backend_task.clone();
+    interrupted.status = AgentTaskStatus::Interrupted;
+    interrupted.stage = Some("worker_restarted".to_string());
+    interrupted.error = Some("Agent worker restarted before the task completed".to_string());
+    interrupted.updated_at = now.to_rfc3339();
+    interrupted.finished_at = Some(interrupted.updated_at.clone());
+    interrupted
 }
 
 fn spawn_stderr_listener(
@@ -1064,8 +1663,8 @@ fn spawn_stderr_listener(
 
 fn emit_worker_event(
     app_handle: &AppHandle,
-    data_dir: &Path,
     event: &WorkerEvent,
+    task: Option<&AgentTask>,
     artifact: Option<&Artifact>,
     runtime_state: &Arc<Mutex<WorkerRuntimeState>>,
     logs: &Arc<Mutex<Vec<WorkerLogEntry>>>,
@@ -1074,13 +1673,13 @@ fn emit_worker_event(
         WorkerEvent::WorkerReady { .. } => {
             emit_status_snapshot(app_handle, runtime_state, logs);
         }
-        WorkerEvent::TaskStarted { payload } => {
-            if let Ok(task) = load_agent_task_in_dir(data_dir, &payload.task_id) {
+        WorkerEvent::TaskStarted { payload: _ } => {
+            if let Some(task) = task {
                 let _ = app_handle.emit("agent-task-updated", &task);
             }
         }
         WorkerEvent::TaskProgress { payload } => {
-            if let Ok(task) = load_agent_task_in_dir(data_dir, &payload.task_id) {
+            if let Some(task) = task {
                 let progress_event = match task.task_type {
                     crate::types::AgentTaskType::AssistantAgentTurn => {
                         format!("assistant-agent-progress://{}", payload.task_id)
@@ -1095,25 +1694,36 @@ fn emit_worker_event(
             let _ = app_handle.emit(&format!("agent-task-log://{}", payload.task_id), payload);
         }
         WorkerEvent::TaskResult { payload } => {
-            if let Ok(task) = load_agent_task_in_dir(data_dir, &payload.task_id) {
+            if let Some(task) = task {
                 match task.task_type {
                     crate::types::AgentTaskType::AssistantAgentTurn => {
                         let _ = app_handle.emit(
                             &format!("assistant-agent-result://{}", payload.task_id),
                             &payload.content,
                         );
-                        if let Some(material_id) = extract_open_material_id(&payload.content) {
-                            let _ = app_handle.emit(
-                                "agent://open-material",
-                                serde_json::json!({ "materialId": material_id }),
-                            );
+                        if let Some(action) = assistant_action_from_result_payload(&payload.content)
+                        {
+                            let action_app_handle = app_handle.clone();
+                            let action_task_id = payload.task_id.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(error) = execute_registered_assistant_action(
+                                    &action_app_handle,
+                                    &action_task_id,
+                                    &action,
+                                )
+                                .await
+                                {
+                                    eprintln!(
+                                        "[AgentWorker] Failed to audit Assistant action for task {}: {}",
+                                        action_task_id, error.message
+                                    );
+                                }
+                            });
                         }
                     }
                     _ => {
-                        let _ = app_handle.emit(
-                            &format!("mind-map-finished://{}", payload.task_id),
-                            &task,
-                        );
+                        let _ = app_handle
+                            .emit(&format!("mind-map-finished://{}", payload.task_id), &task);
                     }
                 }
                 let _ = app_handle.emit("agent-task-updated", &task);
@@ -1123,7 +1733,7 @@ fn emit_worker_event(
             }
         }
         WorkerEvent::TaskError { payload } => {
-            if let Ok(task) = load_agent_task_in_dir(data_dir, &payload.task_id) {
+            if let Some(task) = task {
                 let error_event = match task.task_type {
                     crate::types::AgentTaskType::AssistantAgentTurn => {
                         format!("assistant-agent-error://{}", payload.task_id)

@@ -6,6 +6,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Loader2, FolderOpen, Import } from "lucide-react";
 import { Article } from "../../types";
+import { MaterialImportPreviewDialogs, useMaterialImportPreview } from "../../features/materials/useMaterialImportPreview";
 
 interface LocalSubtitleImportFormProps {
     onSave?: (article: Article) => void;
@@ -16,8 +17,18 @@ export function LocalSubtitleImportForm({ onSave, onCancel }: LocalSubtitleImpor
     const { t } = useTranslation();
     const [filePath, setFilePath] = useState("");
     const [title, setTitle] = useState("");
-    const [isImporting, setIsImporting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const importPreview = useMaterialImportPreview<Article>({
+        commit: (importJobId, duplicatePolicy) => invoke<Article>("import_srt_file_cmd", {
+            filePath,
+            ...(title.trim() ? { title: title.trim() } : {}),
+            importJobId,
+            duplicatePolicy,
+        }),
+        onSuccess: onSave,
+        onError: (err) => setError(String(err)),
+    });
+    const isImporting = importPreview.isBusy;
 
     const handleSelectFile = async () => {
         try {
@@ -45,25 +56,25 @@ export function LocalSubtitleImportForm({ onSave, onCancel }: LocalSubtitleImpor
             return;
         }
 
-        setIsImporting(true);
         setError(null);
-
-        try {
-            const article = await invoke<Article>("import_srt_file_cmd", {
-                filePath,
-                ...(title.trim() ? { title: title.trim() } : {}),
-            });
-            onSave?.(article);
-        } catch (err) {
-            console.error("Subtitle import failed:", err);
-            setError(String(err));
-        } finally {
-            setIsImporting(false);
-        }
+        await importPreview.startPreview({
+            sourceKind: "subtitle",
+            sourceUri: `file://${filePath}`,
+            filePath,
+            title: title.trim() || undefined,
+        });
     };
 
     return (
         <div className="flex flex-col h-full">
+            <MaterialImportPreviewDialogs
+                preview={importPreview.preview}
+                duplicate={importPreview.duplicate}
+                isBusy={importPreview.isBusy}
+                onConfirm={() => void importPreview.confirmPreview()}
+                onCancel={() => void importPreview.cancelPreview()}
+                onResolve={(action) => void importPreview.resolveDuplicate(action)}
+            />
             <div className="flex-1 space-y-4">
                 {error && (
                     <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm break-all">

@@ -63,6 +63,7 @@ pub fn parse_srt_content(content: &str, article_id: &str) -> Result<Vec<ArticleS
             article_id: article_id.to_string(),
             order: segments.len() as i32,
             text,
+            text_sha256: None,
             reading_text: None,
             translation: None,
             explanation: None,
@@ -107,9 +108,13 @@ fn validate_srt_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn load_segments_from_srt(path: &Path, article_id: &str) -> Result<Vec<ArticleSegment>, String> {
+pub fn load_segments_from_srt(
+    path: &Path,
+    article_id: &str,
+) -> Result<Vec<ArticleSegment>, String> {
     validate_srt_path(path)?;
-    let content = fs::read_to_string(path).map_err(|e| format!("Failed to read subtitle file: {}", e))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read subtitle file: {}", e))?;
     parse_srt_content(&content, article_id)
 }
 
@@ -144,5 +149,9 @@ pub fn create_article_from_srt(path: &Path, title: Option<String>) -> Result<Art
         translated: false,
         active_mind_map_artifact_id: None,
         segments,
+        metadata: serde_json::json!({}),
+        tags: Vec::new(),
+        reading_progress: None,
+        archived_at: None,
     })
 }

@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *$py.class 
 *.env
+target/
 !api/config.example.yml
 api/data/*
 .DS_Store
@@ -10,6 +11,13 @@ api/config.yml
 old/
 web/
 textlingo-desktop/src-tauri/binaries/
+textlingo-desktop/src-tauri/resources/backend/openkoto-backend*
+textlingo-desktop/src-tauri/resources/postgres/**
+!textlingo-desktop/src-tauri/resources/postgres/
+!textlingo-desktop/src-tauri/resources/postgres/.gitkeep
+textlingo-desktop/src-tauri/resources/node/**
+!textlingo-desktop/src-tauri/resources/node/
+!textlingo-desktop/src-tauri/resources/node/.gitkeep
 api/
 koto_intro_web/
 pnpm-lock.yaml

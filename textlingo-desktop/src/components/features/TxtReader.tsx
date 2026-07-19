@@ -27,8 +27,25 @@ import {
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Label } from "../ui/label";
+import {
+    createPageLocator,
+    createReadingProgressUpdate,
+    getInitialProgressForReader,
+    getPageNumberFromLocator,
+    getPageNumberFromProgress,
+    useReadingProgressReporter,
+    type ReadingProgressChangeHandler,
+    type ReadingProgressUpdate,
+} from "../../features/reader";
+import {
+    createAnnotationDraft,
+    resolveAnnotation,
+    type AnnotationResolution,
+    type ReaderAnnotationDraft,
+    type ReaderAnnotationReference,
+} from "../../features/reader";
 
-interface TxtReaderProps {
+export interface TxtReaderProps {
     /** TXT 文件内容 */
     content: string;
     /** 书籍标题 */
@@ -41,6 +58,17 @@ interface TxtReaderProps {
     fontSize?: number;
     /** 返回按钮回调 */
     onBack?: () => void;
+    /** 后端保存的阅读进度 */
+    initialProgress?: ReadingProgressUpdate;
+    /** 阅读位置变化回调 */
+    onProgressChange?: ReadingProgressChangeHandler;
+    /** 工作台请求回跳的 annotation；受控，变化后自动定位。 */
+    annotation?: ReaderAnnotationReference | null;
+    onAnnotationResolved?: (resolution: AnnotationResolution) => void;
+    onAnnotationDraftCreated?: (draft: ReaderAnnotationDraft) => void;
+    materialId?: string;
+    materialRevision?: string;
+    contentSha256?: string;
 }
 
 // 每页大约显示的字符数
@@ -53,6 +81,14 @@ export function TxtReader({
     onTextSelect,
     fontSize: initialFontSize = 18,
     onBack,
+    initialProgress,
+    onProgressChange,
+    annotation,
+    onAnnotationResolved,
+    onAnnotationDraftCreated,
+    materialId,
+    materialRevision,
+    contentSha256,
 }: TxtReaderProps) {
     const { t } = useTranslation();
 
@@ -68,6 +104,8 @@ export function TxtReader({
     const [bookmarkTitle, setBookmarkTitle] = useState("");
     const [bookmarkNote, setBookmarkNote] = useState("");
     const [bookmarkSelectedText, setBookmarkSelectedText] = useState("");
+    const { reportProgress } = useReadingProgressReporter(onProgressChange);
+    const [annotationResolution, setAnnotationResolution] = useState<AnnotationResolution | undefined>();
 
     // 将内容分页
     const pages = useMemo(() => {
@@ -100,6 +138,51 @@ export function TxtReader({
     // 总页数
     const totalPages = pages.length;
 
+    useEffect(() => {
+        if (!annotation) {
+            setAnnotationResolution(undefined);
+            return;
+        }
+        const resolution = resolveAnnotation(annotation, {
+            reader_kind: "txt",
+            material_revision: materialRevision,
+            content_sha256: contentSha256,
+            segments: pages.map((text, order) => ({ text, order, page: order + 1 })),
+        });
+        setAnnotationResolution(resolution);
+        onAnnotationResolved?.(resolution);
+        const target = resolution.locator;
+        if (target?.reader_kind === "txt") {
+            const targetPage = target.kind === "text_range"
+                ? target.page ?? (target.segment_order !== undefined ? target.segment_order + 1 : undefined)
+                : target.segment_order + 1;
+            if (targetPage !== undefined) setCurrentPage(Math.min(totalPages - 1, Math.max(0, targetPage - 1)));
+        }
+    }, [annotation, contentSha256, materialRevision, onAnnotationResolved, pages, totalPages]);
+
+    useEffect(() => {
+        if (annotation) return;
+        const initialTxtProgress = getInitialProgressForReader(initialProgress, "txt");
+        const initialPage = getPageNumberFromLocator(initialTxtProgress?.locator)
+            ?? getPageNumberFromProgress(initialTxtProgress?.progress_ratio, totalPages);
+        if (initialPage) {
+            setCurrentPage(initialPage - 1);
+            return;
+        }
+
+        setCurrentPage((current) => Math.min(Math.max(0, current), totalPages - 1));
+    }, [content, initialProgress, totalPages]);
+
+    useEffect(() => {
+        if (totalPages < 1) return;
+        const pageNumber = currentPage + 1;
+        reportProgress(createReadingProgressUpdate(
+            "txt",
+            createPageLocator(pageNumber, totalPages),
+            pageNumber / totalPages,
+        ), pageNumber >= totalPages);
+    }, [currentPage, reportProgress, totalPages]);
+
     // 翻页
     const handlePrevPage = useCallback(() => {
         setCurrentPage((prev) => Math.max(0, prev - 1));
@@ -130,9 +213,20 @@ export function TxtReader({
             const text = selection.toString().trim();
             if (text.length > 0) {
                 onTextSelect?.(text);
+                onAnnotationDraftCreated?.(createAnnotationDraft({
+                    materialId: materialId ?? annotation?.material_id ?? bookPath ?? title ?? "txt",
+                    readerKind: "txt",
+                    sourceText: pages[currentPage] ?? text,
+                    selectedText: text,
+                    segmentOrder: currentPage,
+                    page: currentPage + 1,
+                    totalPages,
+                    materialRevision,
+                    contentSha256,
+                }));
             }
         }
-    }, [onTextSelect]);
+    }, [annotation?.material_id, bookPath, contentSha256, currentPage, materialId, materialRevision, onAnnotationDraftCreated, onTextSelect, pages, title, totalPages]);
 
     // 调整字体大小
     const increaseFontSize = () => {
@@ -194,7 +288,7 @@ export function TxtReader({
             <div className="flex items-center justify-between p-3 border-b border-border bg-card/50 backdrop-blur-sm gap-4">
                 <div className="flex items-center gap-2 shrink-0">
                     {onBack && (
-                        <Button variant="ghost" size="sm" onClick={onBack}>
+                        <Button variant="ghost" size="sm" onClick={onBack} aria-label={t("common.back", "返回")} title={t("common.back", "返回")}>
                             <ChevronLeft size={18} />
                         </Button>
                     )}
@@ -297,14 +391,31 @@ export function TxtReader({
                     className="flex-1 overflow-y-auto px-12 py-8 md:px-20 lg:px-32"
                     onMouseUp={handleMouseUp}
                 >
+                    {annotationResolution && (
+                        <div role="status" className="mb-3 text-xs text-muted-foreground" data-testid="txt-annotation-status">
+                            {annotationResolution.message}
+                        </div>
+                    )}
                     <div
-                        className="max-w-3xl mx-auto whitespace-pre-wrap text-foreground leading-relaxed"
+                        className="openkoto-reader-font max-w-3xl mx-auto whitespace-pre-wrap text-foreground leading-relaxed"
                         style={{
                             fontSize: `${fontSize}px`,
                             lineHeight: 2,
                         }}
                     >
-                        {pages[currentPage]}
+                        {annotationResolution?.locator?.reader_kind === "txt"
+                            && annotationResolution.locator.kind === "text_range"
+                            && annotationResolution.locator.page === currentPage + 1
+                            ? (
+                                <>
+                                    {pages[currentPage].slice(0, annotationResolution.locator.start_offset)}
+                                    <mark data-testid="txt-annotation-highlight" className="bg-primary/25 text-foreground rounded-sm">
+                                        {pages[currentPage].slice(annotationResolution.locator.start_offset, annotationResolution.locator.end_offset)}
+                                    </mark>
+                                    {pages[currentPage].slice(annotationResolution.locator.end_offset)}
+                                </>
+                            )
+                            : pages[currentPage]}
                     </div>
                 </div>
 

@@ -14,6 +14,194 @@
  * 不设置 :root 默认值，让主题 CSS 完全控制颜色
  */
 
+body {
+  font-family: var(--font-sans);
+}
+
+.openkoto-reader-font {
+  font-family: var(--openkoto-reader-font-family, var(--font-serif, var(--font-sans)));
+}
+
+.openkoto-material-editor .tiptap {
+  min-height: calc(100vh - 260px);
+  outline: none;
+  color: var(--foreground);
+  font-size: 1.08rem;
+  line-height: 1.9;
+}
+
+.openkoto-material-editor .tiptap > * {
+  position: relative;
+  margin-block: 0.2rem;
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0.3rem 0.6rem;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.openkoto-material-editor .tiptap > *:hover {
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+.openkoto-material-editor .tiptap > *:focus-within {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--primary) 72%, transparent);
+}
+
+.openkoto-material-editor .tiptap > *.ProseMirror-selectednode {
+  outline: none;
+}
+
+.openkoto-material-editor .tiptap h2 {
+  margin-top: 1.35rem;
+  font-size: 1.55rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.openkoto-material-editor .tiptap h3 {
+  margin-top: 1rem;
+  font-size: 1.25rem;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.openkoto-material-editor .tiptap blockquote {
+  border-left: 3px solid var(--primary);
+  color: var(--muted-foreground);
+  padding-left: 1rem;
+}
+
+.openkoto-material-editor .tiptap ul,
+.openkoto-material-editor .tiptap ol {
+  padding-left: 2rem;
+}
+
+.openkoto-material-editor .tiptap ul {
+  list-style: disc;
+}
+
+.openkoto-material-editor .tiptap ol {
+  list-style: decimal;
+}
+
+.openkoto-material-editor .tiptap hr {
+  margin-block: 1.25rem;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.openkoto-material-editor .tiptap p.is-editor-empty:first-child::before {
+  float: left;
+  height: 0;
+  color: var(--muted-foreground);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.openkoto-editor-drag-handle {
+  display: flex;
+  height: 30px;
+  width: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  color: var(--muted-foreground);
+  box-shadow: var(--shadow-sm);
+  cursor: grab;
+}
+
+.openkoto-editor-drag-corridor {
+  position: fixed;
+  z-index: 40;
+  width: 38px;
+}
+
+.openkoto-editor-pointer-handle {
+  position: fixed;
+  touch-action: none;
+  user-select: none;
+}
+
+.openkoto-editor-pointer-handle[aria-pressed="true"] {
+  cursor: grabbing;
+}
+
+.openkoto-material-editor .tiptap > *.openkoto-editor-drag-source {
+  outline: none;
+  background: color-mix(in srgb, var(--muted) 32%, transparent);
+  box-shadow: none;
+  opacity: 0.32;
+}
+
+.openkoto-editor-drag-preview {
+  position: fixed;
+  z-index: 50;
+  box-sizing: border-box;
+  max-width: min(720px, calc(100vw - 32px));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: var(--radius);
+  padding: 0.42rem 0.72rem;
+  background: color-mix(in srgb, var(--popover) 92%, transparent);
+  color: var(--popover-foreground);
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--foreground) 16%, transparent), var(--shadow-sm);
+  line-height: 1.65;
+  opacity: 0.86;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre-wrap;
+}
+
+.openkoto-editor-drag-preview-content {
+  max-height: 5.2em;
+  overflow: hidden;
+}
+
+.openkoto-editor-drag-preview-content > * {
+  margin: 0;
+}
+
+.openkoto-editor-drop-indicator {
+  position: fixed;
+  z-index: 39;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 25%, transparent);
+  pointer-events: none;
+  transform: translateY(-1.5px);
+}
+
+.openkoto-editor-drag-handle:active {
+  cursor: grabbing;
+}
+
+.openkoto-editor-drag-handle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (max-width: 700px) {
+  .openkoto-editor-drag-corridor,
+  .openkoto-editor-drag-handle,
+  .openkoto-editor-drag-preview {
+    display: none;
+  }
+
+  .openkoto-material-editor .tiptap {
+    min-height: calc(100vh - 290px);
+    font-size: 1rem;
+    line-height: 1.75;
+  }
+
+  .openkoto-material-editor .tiptap > * {
+    padding-inline: 0.35rem;
+  }
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

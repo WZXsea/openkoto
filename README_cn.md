@@ -45,7 +45,7 @@ OpenKoto Desktop 是一款**开源的 AI 驱动语言学习应用**，让你可�
 
 | 版本 | 说明 | 链接 |
 |------|------|------|
-| **桌面版** | **推荐** 🖥️ 原生性能，本地数据，支持 Mac/Windows/Linux | [下载最新版本](https://github.com/hikariming/OpenKoto/releases) |
+| **桌面版** | **推荐** 🖥️ 原生性能，本地数据，支持 macOS（Apple Silicon/Intel） | [下载最新版本](https://github.com/hikariming/OpenKoto/releases) |
 | 网页版 | 在线使用，无需安装 | [https://openkoto.app](https://openkoto.app) |
 | 源代码 | 🆓 完全开源，Apache 2.0 许可证 | [GitHub 仓库](https://github.com/hikariming/OpenKoto) |
 
@@ -73,7 +73,11 @@ OpenKoto Desktop 是一款**开源的 AI 驱动语言学习应用**，让你可�
 ## 即将推出
 
 - 📚 个性化词汇和语法练习系统
-- 🎥 YouTube 视频学习支持
+
+## WZX PR-7 macOS 构建
+独立运行的 `0.7.0` Apple Silicon 预发布版已内置 Axum Backend、PostgreSQL 16、Node.js，并提供统一素材导入、检索和阅读进度持久化。安装前请阅读 [macOS 安装与数据说明](docs/INSTALL_MACOS.md)。
+
+[下载 WZX PR-7 预发布版](https://github.com/WZXsea/openkoto/releases/tag/wzx-v0.7.0-pr7-material-workbench)
 
 ## 快速开始
 
@@ -149,7 +153,7 @@ sudo xattr -r -d com.apple.quarantine /Applications/OpenKoto\ Desktop.app
 
 ## 当前版本
 
-**v0.1.4** (开发版)
+**v0.7.0** (WZX PR-7 预发布版)
 
 ## 作者的其他项目
 

@@ -178,7 +178,11 @@ impl LogStore {
             .iter()
             .filter(|e| after_id.map(|a| e.id > a).unwrap_or(true))
             .filter(|e| source.map(|s| e.source == s).unwrap_or(true))
-            .filter(|e| min_level.map(|m| e.level.rank() >= m.rank()).unwrap_or(true))
+            .filter(|e| {
+                min_level
+                    .map(|m| e.level.rank() >= m.rank())
+                    .unwrap_or(true)
+            })
             .filter(|e| {
                 search_lc
                     .as_ref()

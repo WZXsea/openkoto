@@ -1,29 +1,80 @@
 import type { ButtonHTMLAttributes } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 
 const invokeMock = vi.fn();
 const getApiClientMock = vi.fn();
+const appShellMocks = vi.hoisted(() => ({
+  capturedAgentOpenMaterial: null as null | ((materialId: string) => void),
+  capturedDragDropHandler: null as null | ((event: { payload: { type: string; paths?: string[] } }) => unknown),
+  onDragDropEvent: vi.fn(),
+  dragDropUnlisten: vi.fn(),
+}));
 
 vi.stubGlobal("__APP_VERSION__", "test");
 
+const authenticatedBackendSession = {
+  configured: true,
+  connected: true,
+  authenticated: true,
+  backend_url: "http://127.0.0.1:4000",
+  user: {
+    id: "user-1",
+    email: "reader@example.com",
+    display_name: "Reader",
+    created_at: "2026-03-30T00:00:00Z",
+    updated_at: "2026-03-30T00:00:00Z",
+  },
+  error: null,
+};
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  getApiClientMock.mockReset();
+  appShellMocks.capturedAgentOpenMaterial = null;
+  appShellMocks.capturedDragDropHandler = null;
+  appShellMocks.dragDropUnlisten.mockReset();
+  appShellMocks.onDragDropEvent.mockReset();
+  appShellMocks.onDragDropEvent.mockImplementation(async (handler) => {
+    appShellMocks.capturedDragDropHandler = handler;
+    return appShellMocks.dragDropUnlisten;
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.clearAllMocks();
+});
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: (...args: unknown[]) => appShellMocks.onDragDropEvent(...args),
+  }),
 }));
 
 vi.mock("./components/features/ArticleList", () => ({
   ArticleList: ({
     articles,
     onSelectArticle,
+    filters,
+    onFiltersChange,
   }: {
     articles: Array<{ id: string; title: string }>;
     onSelectArticle: (article: { id: string; title: string }) => void;
+    filters?: { query: string };
+    onFiltersChange?: (filters: Record<string, unknown>) => void;
   }) => (
     <div>
       <div>ArticleList</div>
+      {filters && <input aria-label="Search materials" value={filters.query} onChange={(event) => onFiltersChange?.({ ...filters, query: event.target.value })} />}
       {articles.map((article) => (
         <button key={article.id} type="button" onClick={() => onSelectArticle(article)}>
           {article.title}
@@ -33,12 +84,60 @@ vi.mock("./components/features/ArticleList", () => ({
   ),
 }));
 
+vi.mock("./components/features/HomePage", () => ({
+  HomePage: ({
+    articles,
+    onSelectArticle,
+    onOpenMaterials,
+  }: {
+    articles: Array<{ id: string; title: string }>;
+    onSelectArticle: (article: { id: string; title: string }) => void;
+    onOpenMaterials: () => void;
+  }) => (
+    <div>
+      <div>HomePage</div>
+      {articles.map((article) => <button key={article.id} type="button" onClick={() => onSelectArticle(article)}>{article.title}</button>)}
+      <button type="button" onClick={onOpenMaterials}>Open materials</button>
+    </div>
+  ),
+}));
+
 vi.mock("./components/features/ArticleReader", () => ({
-  ArticleReader: ({ onOpenKtvExport }: { onOpenKtvExport?: () => void }) => (
+  ArticleReader: ({
+    article,
+    hasNext,
+    onBack,
+    onNext,
+    onOpenKtvExport,
+    onAnnotationDraftCreated,
+  }: {
+    article: { title: string };
+    hasNext?: boolean;
+    onBack: () => void;
+    onNext: () => void;
+    onOpenKtvExport?: () => void;
+    onAnnotationDraftCreated?: (draft: Record<string, unknown>) => void;
+  }) => (
     <div>
       <div>ArticleReader</div>
+      <div>Reading {article.title}</div>
+      <button type="button" onClick={onBack}>
+        Back to list
+      </button>
+      <button type="button" onClick={onNext} disabled={!hasNext}>
+        Next Article
+      </button>
       <button type="button" onClick={onOpenKtvExport}>
         Open KTV Export
+      </button>
+      <button type="button" onClick={() => onAnnotationDraftCreated?.({
+        material_id: "article-1",
+        reader_kind: "article",
+        source_text: "Source text",
+        quote: { exact: "Source" },
+        locator: { reader_kind: "article", kind: "text_range", start_offset: 0, end_offset: 6, quote: { exact: "Source" } },
+      })}>
+        Save highlight
       </button>
     </div>
   ),
@@ -57,11 +156,68 @@ vi.mock("./components/features/NewMaterialDialog", () => ({
 }));
 
 vi.mock("./components/features/FavoritesPage", () => ({
-  FavoritesPage: () => <div>FavoritesPage</div>,
+  FavoritesPage: ({
+    onSelectArticle,
+  }: {
+    onSelectArticle: (article: { id: string; title: string }) => void;
+  }) => (
+    <div>
+      <div>FavoritesPage</div>
+      <button
+        type="button"
+        onClick={() => onSelectArticle({ id: "article-1", title: "Article One" })}
+      >
+        Open Favorite Article
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock("./components/features/AnnotationWorkbench", () => ({
+  AnnotationWorkbench: ({
+    onNavigateToSource,
+  }: {
+    onNavigateToSource: (annotation: { id: string; material_id: string }) => void;
+  }) => (
+    <div>
+      <div>AnnotationWorkbench</div>
+      <button type="button" onClick={() => onNavigateToSource({ id: "annotation-1", material_id: "article-1" })}>
+        Open annotation source
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock("./components/features/AssistantTaskCenter", () => ({
+  AssistantTaskCenter: ({
+    onNavigateSource,
+  }: {
+    onNavigateSource: (reference: Record<string, unknown>) => void;
+  }) => (
+    <div>
+      <div>AssistantTaskCenter</div>
+      <button type="button" onClick={() => onNavigateSource({
+        target: "source",
+        articleId: "article-1",
+        label: "Task evidence",
+        locator: { version: 1, kind: "text_range", start_offset: 0, end_offset: 6, quote: { exact: "Source" } },
+      })}>
+        Open Assistant source
+      </button>
+      <button type="button" onClick={() => onNavigateSource({
+        target: "learning_item",
+        articleId: "article-1",
+        learningItemId: "learning-1",
+        label: "Learning item",
+      })}>
+        Open Assistant learning item
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("./components/features/SettingsDialog", () => ({
-  SettingsButton: () => <button type="button">settings</button>,
+  SettingsButton: ({ onSave }: { onSave?: () => void }) => <button type="button" onClick={onSave}>settings</button>,
 }));
 
 vi.mock("./components/features/ApiQuickSwitcher", () => ({
@@ -107,10 +263,279 @@ vi.mock("./lib/api", () => ({
 }));
 
 vi.mock("./lib/hooks/useAgentOpenMaterialListener", () => ({
-  useAgentOpenMaterialListener: () => undefined,
+  useAgentOpenMaterialListener: (handler: (materialId: string) => void) => {
+    appShellMocks.capturedAgentOpenMaterial = handler;
+  },
 }));
 
 describe("App onboarding", () => {
+  it("starts at home and returns to the materials workbench with session filters intact", async () => {
+    const article = {
+      id: "article-1",
+      title: "Article One",
+      content: "Source text",
+      source_type: "article",
+      created_at: "2026-07-14T00:00:00Z",
+      translated: false,
+      segments: [],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") return Promise.resolve({ onboarding_completed: true, model_configs: [], prompt_features: [] });
+      if (command === "backend_check_session_cmd") return Promise.resolve(authenticatedBackendSession);
+      if (command === "list_articles_cmd") return Promise.resolve([article]);
+      if (command === "material_library_list_tags_cmd" || command === "material_library_list_import_jobs_cmd") return Promise.resolve([]);
+      if (command === "material_library_get_reading_progress_cmd") return Promise.resolve(null);
+      if (command === "list_annotations_cmd") return Promise.resolve([]);
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    expect(screen.getByLabelText("主导航")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "素材库" }));
+    await userEvent.type(await screen.findByRole("textbox", { name: "Search materials" }), "clinical");
+    await userEvent.click(screen.getByRole("button", { name: "Article One" }));
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+    expect(screen.queryByLabelText("主导航")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
+    expect(await screen.findByRole("textbox", { name: "Search materials" })).toHaveValue("clinical");
+    expect(screen.getByLabelText("主导航")).toBeInTheDocument();
+  });
+
+  it("opens the annotation workbench and navigates back to its source material", async () => {
+    const article = {
+      id: "article-1",
+      title: "Article One",
+      content: "Source text",
+      source_type: "article",
+      created_at: "2026-07-14T00:00:00Z",
+      translated: false,
+      segments: [],
+    };
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === "get_config") return Promise.resolve({ onboarding_completed: true, model_configs: [], prompt_features: [] });
+      if (command === "backend_check_session_cmd") return Promise.resolve(authenticatedBackendSession);
+      if (command === "list_articles_cmd") return Promise.resolve([article]);
+      if (command === "list_material_tags_cmd" || command === "list_material_import_jobs_cmd") return Promise.resolve([]);
+      if (command === "list_annotations_cmd") return Promise.resolve([]);
+      if (command === "create_annotation_cmd") return Promise.resolve({ id: "annotation-created", ...(args?.payload as object) });
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "笔记" }));
+    expect(await screen.findByText("AnnotationWorkbench")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open annotation source" }));
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save highlight" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("create_annotation_cmd", {
+        payload: expect.objectContaining({ material_id: "article-1", kind: "highlight" }),
+      });
+    });
+  });
+
+  it("opens Assistant evidence in the immersive reader and returns to the task center", async () => {
+    const article = {
+      id: "article-1",
+      title: "Article One",
+      content: "Source text",
+      source_type: "article",
+      created_at: "2026-07-15T00:00:00Z",
+      translated: false,
+      segments: [],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") return Promise.resolve({ onboarding_completed: true, model_configs: [], prompt_features: [] });
+      if (command === "backend_check_session_cmd") return Promise.resolve(authenticatedBackendSession);
+      if (command === "list_articles_cmd") return Promise.resolve([article]);
+      if (command === "material_library_get_reading_progress_cmd") return Promise.resolve(null);
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Assistant" }));
+    expect(await screen.findByText("AssistantTaskCenter")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open Assistant source" }));
+
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+    expect(screen.queryByLabelText("主导航")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
+    expect(await screen.findByText("AssistantTaskCenter")).toBeInTheDocument();
+  });
+
+  it("opens an Assistant learning-item reference in the learning workbench", async () => {
+    const now = "2026-07-15T00:00:00Z";
+    const linkedItem = {
+      id: "learning-1",
+      material_id: "article-1",
+      segment_id: null,
+      item_type: "word",
+      text: "focused term",
+      source_sentence: "Source text",
+      context_before: null,
+      context_after: null,
+      meaning_in_context: "linked meaning",
+      definition_en: null,
+      definition_zh: null,
+      collocations: [],
+      examples: [],
+      tags: [],
+      quality_flags: [],
+      status: "accepted",
+      priority: 0,
+      difficulty: null,
+      ai_explanation: null,
+      review_state: {},
+      source_material_title: "Article One",
+      source_type: "article",
+      source_segment_order: null,
+      accepted_at: now,
+      rejected_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+    invokeMock.mockImplementation((command: string, args?: { query?: { status?: string } }) => {
+      if (command === "get_config") return Promise.resolve({ onboarding_completed: true, model_configs: [], prompt_features: [] });
+      if (command === "backend_check_session_cmd") return Promise.resolve(authenticatedBackendSession);
+      if (command === "list_articles_cmd") return Promise.resolve([]);
+      if (command === "list_learning_items_cmd") return Promise.resolve(args?.query?.status === "accepted" ? [linkedItem] : []);
+      if (command === "get_learning_item_cmd") return Promise.resolve(linkedItem);
+      if (command === "get_daily_learning_review_cmd") return Promise.resolve({ total_events: 0, event_counts: {}, unique_learning_items: 0, events: [] });
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Assistant" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open Assistant learning item" }));
+
+    expect(await screen.findByDisplayValue("focused term")).toBeInTheDocument();
+    expect(screen.getByTestId("learning-workbench")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("get_learning_item_cmd", { id: "learning-1" });
+  });
+
+  it("waits for the packaged backend before restoring the session", async () => {
+    vi.useFakeTimers();
+    let backendStatusChecks = 0;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "packaged_backend_status_cmd") {
+        backendStatusChecks += 1;
+        return Promise.resolve({
+          enabled: true,
+          running: backendStatusChecks >= 3,
+          message: backendStatusChecks >= 3 ? "ready" : null,
+        });
+      }
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          model_configs: [],
+          prompt_features: [],
+        });
+      }
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+      if (command === "list_articles_cmd") return Promise.resolve([]);
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(screen.getByText("app.loading")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(screen.getByText("HomePage")).toBeInTheDocument();
+    expect(backendStatusChecks).toBe(3);
+    expect(invokeMock).toHaveBeenCalledWith("backend_check_session_cmd");
+  });
+
+  it("leaves the loading screen when a startup command never settles", async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return new Promise(() => {});
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve({
+          configured: true,
+          connected: true,
+          authenticated: false,
+          backend_url: "http://127.0.0.1:19421",
+          user: null,
+          error: null,
+        });
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(screen.getByText("app.loading")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
+
+    expect(screen.getByText("OpenKoto Backend")).toBeInTheDocument();
+    expect(screen.getByText("需要登录 Backend")).toBeInTheDocument();
+  });
+
+  it("blocks material loading until backend is configured and authenticated", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve(null);
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve({
+          configured: false,
+          connected: false,
+          authenticated: false,
+          backend_url: null,
+          user: null,
+          error: null,
+        });
+      }
+
+      if (command === "list_articles_cmd") {
+        throw new Error("list_articles_cmd should not run before backend auth");
+      }
+
+      if (command === "import_book_cmd" || command === "get_article") {
+        throw new Error(`${command} should not run before backend auth`);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("OpenKoto Backend")).toBeInTheDocument();
+    expect(screen.getByText("需要配置 Backend 地址")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
+      expect(appShellMocks.capturedAgentOpenMaterial).toEqual(expect.any(Function));
+    });
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "drop", paths: ["/tmp/dropped.pdf"] },
+      });
+    });
+    act(() => {
+      appShellMocks.capturedAgentOpenMaterial?.("article-remote");
+    });
+
+    expect(invokeMock).not.toHaveBeenCalledWith("list_articles_cmd");
+    expect(invokeMock).not.toHaveBeenCalledWith("import_book_cmd", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("get_article", expect.anything());
+  });
+
   it("does not reopen onboarding in the same session after the user finishes it", async () => {
     const completedConfig = {
       onboarding_completed: true,
@@ -126,6 +551,10 @@ describe("App onboarding", () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_config") {
         return Promise.resolve(configState === "completed" ? completedConfig : null);
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
       }
 
       if (command === "list_articles_cmd") {
@@ -147,14 +576,14 @@ describe("App onboarding", () => {
     });
 
     configState = "missing";
-    await userEvent.click(screen.getByRole("button", { name: "Reload Config" }));
+    await userEvent.click(screen.getByRole("button", { name: "settings" }));
 
     await waitFor(() => {
       expect(screen.queryByText("Onboarding Visible")).not.toBeInTheDocument();
     });
   });
 
-  it("switches from reader to ktv export screen for the selected video article", async () => {
+  it("opens ktv export when the capability is enabled", async () => {
     const sampleVideoArticle = {
       id: "video-1",
       title: "Sample Video",
@@ -205,6 +634,10 @@ describe("App onboarding", () => {
         return Promise.resolve(validConfig);
       }
 
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
       if (command === "list_articles_cmd") {
         return Promise.resolve([sampleVideoArticle]);
       }
@@ -220,6 +653,562 @@ describe("App onboarding", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Open KTV Export" }));
 
-    expect(await screen.findByText("KtvExportPage")).toBeInTheDocument();
+    expect(screen.getByText("KtvExportPage")).toBeInTheDocument();
+  });
+
+  it("shows the signed-in backend account and returns to the login gate after logout", async () => {
+    const sampleArticles = [
+      {
+        id: "article-1",
+        title: "Article One",
+        content: "one",
+        source_type: "article",
+        source_url: null,
+        media_path: null,
+        book_path: null,
+        book_type: null,
+        created_at: "2026-03-30T00:00:00Z",
+        translated: false,
+        active_mind_map_artifact_id: null,
+        segments: [],
+      },
+    ];
+
+    const authenticatedConfig = {
+      onboarding_completed: true,
+      active_model_id: undefined,
+      model_configs: [],
+      target_language: "zh-CN",
+      interface_language: "zh",
+      prompt_features: [],
+      backend_url: "http://127.0.0.1:4000",
+      auth_token: "token",
+    };
+    const loggedOutConfig = {
+      ...authenticatedConfig,
+      auth_token: undefined,
+    };
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve(authenticatedConfig);
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve(sampleArticles);
+      }
+
+      if (command === "backend_logout_cmd") {
+        return Promise.resolve(loggedOutConfig);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    expect(screen.getByText("Reader")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "账户" }));
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByText("退出登录"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("backend_logout_cmd");
+    });
+    expect(await screen.findByText("OpenKoto Backend")).toBeInTheDocument();
+    expect(screen.getByText("需要登录 Backend")).toBeInTheDocument();
+    expect(screen.queryByText("HomePage")).not.toBeInTheDocument();
+    expect(screen.queryByText("Article One")).not.toBeInTheDocument();
+  });
+
+  it("switches accounts by clearing the session and restores materials after re-authentication", async () => {
+    const sampleArticles = [{
+      id: "article-1", title: "Article One", content: "one", source_type: "article",
+      source_url: null, media_path: null, book_path: null, book_type: null,
+      created_at: "2026-03-30T00:00:00Z", translated: false,
+      active_mind_map_artifact_id: null, segments: [],
+    }];
+    const authenticatedConfig = {
+      onboarding_completed: true, active_model_id: undefined, model_configs: [],
+      target_language: "zh-CN", interface_language: "zh", prompt_features: [],
+      backend_url: "http://127.0.0.1:4000", auth_token: "account-a-token",
+    };
+    const loggedOutConfig = { ...authenticatedConfig, auth_token: undefined };
+    let session: "authenticated" | "logged-out" = "authenticated";
+
+    invokeMock.mockImplementation((command: string, args?: { email?: string; password?: string }) => {
+      if (command === "get_config") return Promise.resolve(session === "authenticated" ? authenticatedConfig : loggedOutConfig);
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(session === "authenticated" ? authenticatedBackendSession : {
+          ...authenticatedBackendSession, authenticated: false, user: null, error: null,
+        });
+      }
+      if (command === "list_articles_cmd") return Promise.resolve(session === "authenticated" ? sampleArticles : []);
+      if (command === "backend_logout_cmd") {
+        session = "logged-out";
+        return Promise.resolve(loggedOutConfig);
+      }
+      if (command === "backend_login_cmd") {
+        expect(args).toMatchObject({ email: "new@example.com", password: "new-password" });
+        session = "authenticated";
+        return Promise.resolve({ config: authenticatedConfig, user: authenticatedBackendSession.user, expires_at: "2026-03-31T00:00:00Z" });
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "账户" }));
+    await userEvent.click(screen.getByText("切换账户"));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("backend_logout_cmd"));
+    expect(await screen.findByText("需要登录 Backend")).toBeInTheDocument();
+    expect(screen.queryByText("HomePage")).not.toBeInTheDocument();
+    expect(screen.queryByText("Article One")).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("Email"), "new@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "new-password");
+    await userEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    expect(screen.getByText("Article One")).toBeInTheDocument();
+  });
+
+  it("keeps the favorites return target after switching articles in the reader", async () => {
+    const sampleArticles = [
+      {
+        id: "article-1",
+        title: "Article One",
+        content: "one",
+        source_type: "article",
+        source_url: null,
+        media_path: null,
+        book_path: null,
+        book_type: null,
+        created_at: "2026-03-30T00:00:00Z",
+        translated: false,
+        active_mind_map_artifact_id: null,
+        segments: [],
+      },
+      {
+        id: "article-2",
+        title: "Article Two",
+        content: "two",
+        source_type: "article",
+        source_url: null,
+        media_path: null,
+        book_path: null,
+        book_type: null,
+        created_at: "2026-03-31T00:00:00Z",
+        translated: false,
+        active_mind_map_artifact_id: null,
+        segments: [],
+      },
+    ];
+
+    const validConfig = {
+      onboarding_completed: true,
+      active_model_id: "model-1",
+      model_configs: [
+        {
+          id: "model-1",
+          name: "Primary",
+          api_key: "secret",
+          api_provider: "google",
+          model: "gemini-2.0-flash",
+          is_default: true,
+        },
+      ],
+      target_language: "zh-CN",
+      interface_language: "en",
+      prompt_features: [],
+    };
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve(validConfig);
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve(sampleArticles);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "学习" }));
+    await userEvent.click(screen.getByRole("button", { name: "词包与已收录" }));
+    expect(await screen.findByText("FavoritesPage")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open Favorite Article" }));
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Next Article" }));
+    expect(await screen.findByText("Reading Article Two")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
+    expect(await screen.findByText("FavoritesPage")).toBeInTheDocument();
+    expect(screen.queryByText("HomePage")).not.toBeInTheDocument();
+  });
+
+  it("opens an existing material from the agent event without fetching it again", async () => {
+    const sampleArticles = [
+      {
+        id: "article-1",
+        title: "Article One",
+        content: "one",
+        source_type: "article",
+        source_url: null,
+        media_path: null,
+        book_path: null,
+        book_type: null,
+        created_at: "2026-03-30T00:00:00Z",
+        translated: false,
+        active_mind_map_artifact_id: null,
+        segments: [],
+      },
+    ];
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve(sampleArticles);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedAgentOpenMaterial).toEqual(expect.any(Function));
+    });
+
+    act(() => {
+      appShellMocks.capturedAgentOpenMaterial?.("article-1");
+    });
+
+    expect(await screen.findByText("Reading Article One")).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("get_article", expect.anything());
+  });
+
+  it("fetches and opens a missing material from the agent event", async () => {
+    const fetchedArticle = {
+      id: "article-remote",
+      title: "Fetched Article",
+      content: "remote",
+      source_type: "article",
+      source_url: null,
+      media_path: null,
+      book_path: null,
+      book_type: null,
+      created_at: "2026-03-30T00:00:00Z",
+      translated: false,
+      active_mind_map_artifact_id: null,
+      segments: [],
+    };
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve([]);
+      }
+
+      if (command === "get_article") {
+        return Promise.resolve(fetchedArticle);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedAgentOpenMaterial).toEqual(expect.any(Function));
+    });
+
+    act(() => {
+      appShellMocks.capturedAgentOpenMaterial?.("article-remote");
+    });
+
+    expect(await screen.findByText("Reading Fetched Article")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("get_article", { id: "article-remote" });
+  });
+
+  it("opens a single dropped file after import and cleans up the drag listener", async () => {
+    const importedArticle = {
+      id: "book-1",
+      title: "Dropped Book",
+      content: "book",
+      source_type: "book",
+      source_url: null,
+      media_path: null,
+      book_path: "/tmp/dropped.pdf",
+      book_type: "pdf",
+      created_at: "2026-03-30T00:00:00Z",
+      translated: false,
+      active_mind_map_artifact_id: null,
+      segments: [],
+    };
+    let listCalls = 0;
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        listCalls += 1;
+        return Promise.resolve(listCalls > 1 ? [importedArticle] : []);
+      }
+
+      if (command === "preview_material_import_cmd") {
+        return Promise.resolve({ job: { id: "job-dropped" }, duplicates: { duplicate: false, matches: [] } });
+      }
+
+      if (command === "import_book_cmd") {
+        return Promise.resolve(importedArticle);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const { unmount } = render(<App />);
+
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
+    });
+    const registrationsBeforeDrop = appShellMocks.onDragDropEvent.mock.calls.length;
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "drop", paths: ["/tmp/dropped.pdf"] },
+      });
+    });
+
+    expect(await screen.findByText("BookReader")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("import_book_cmd", {
+      filePath: "/tmp/dropped.pdf",
+      title: null,
+      importJobId: "job-dropped",
+      duplicatePolicy: "keep_copy",
+    });
+    expect(appShellMocks.onDragDropEvent).toHaveBeenCalledTimes(registrationsBeforeDrop);
+
+    unmount();
+
+    expect(appShellMocks.dragDropUnlisten).toHaveBeenCalledTimes(
+      appShellMocks.onDragDropEvent.mock.calls.length,
+    );
+  });
+
+  it("keeps the file-import overlay hidden for internal block drags while external file drags still show it", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        return Promise.resolve([]);
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
+    });
+
+    // Tauri surfaces an HTML5 editor block drag as native drag events without
+    // filesystem paths. Those events must never activate file-import UI.
+    for (const type of ["enter", "over", "drop"] as const) {
+      await act(async () => {
+        await appShellMocks.capturedDragDropHandler?.({
+          payload: { type, paths: [] },
+        });
+      });
+      expect(screen.queryByText("松开以导入")).not.toBeInTheDocument();
+    }
+    expect(invokeMock).not.toHaveBeenCalledWith("preview_material_import_cmd", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("import_book_cmd", expect.anything());
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "enter", paths: ["/tmp/external.pdf"] },
+      });
+    });
+    expect(screen.getByText("松开以导入")).toBeVisible();
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "over", paths: [] },
+      });
+    });
+    expect(screen.getByText("松开以导入")).toBeVisible();
+
+    await act(async () => {
+      await appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "leave", paths: [] },
+      });
+    });
+    expect(screen.queryByText("松开以导入")).not.toBeInTheDocument();
+  });
+
+  it("does not continue an in-flight dropped-file import after unmount", async () => {
+    const importedArticle = {
+      id: "book-1",
+      title: "Dropped Book",
+      content: "book",
+      source_type: "book",
+      source_url: null,
+      media_path: null,
+      book_path: "/tmp/dropped.pdf",
+      book_type: "pdf",
+      created_at: "2026-03-30T00:00:00Z",
+      translated: false,
+      active_mind_map_artifact_id: null,
+      segments: [],
+    };
+    let listCalls = 0;
+    let resolveImport!: (article: typeof importedArticle) => void;
+    const importPromise = new Promise<typeof importedArticle>((resolve) => {
+      resolveImport = resolve;
+    });
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_config") {
+        return Promise.resolve({
+          onboarding_completed: true,
+          active_model_id: undefined,
+          model_configs: [],
+          target_language: "zh-CN",
+          interface_language: "en",
+          prompt_features: [],
+        });
+      }
+
+      if (command === "backend_check_session_cmd") {
+        return Promise.resolve(authenticatedBackendSession);
+      }
+
+      if (command === "list_articles_cmd") {
+        listCalls += 1;
+        return Promise.resolve([]);
+      }
+
+      if (command === "preview_material_import_cmd") {
+        return Promise.resolve({ job: { id: "job-dropped" }, duplicates: { duplicate: false, matches: [] } });
+      }
+
+      if (command === "import_book_cmd") {
+        return importPromise;
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const { unmount } = render(<App />);
+
+    expect(await screen.findByText("HomePage")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(appShellMocks.capturedDragDropHandler).toEqual(expect.any(Function));
+    });
+
+    let dropPromise: Promise<unknown> | undefined;
+    await act(async () => {
+      dropPromise = appShellMocks.capturedDragDropHandler?.({
+        payload: { type: "drop", paths: ["/tmp/dropped.pdf"] },
+      }) as Promise<unknown> | undefined;
+    });
+    expect(dropPromise).toEqual(expect.any(Promise));
+    expect(invokeMock).toHaveBeenCalledWith("import_book_cmd", {
+      filePath: "/tmp/dropped.pdf",
+      title: null,
+      importJobId: "job-dropped",
+      duplicatePolicy: "keep_copy",
+    });
+    expect(listCalls).toBe(1);
+
+    unmount();
+
+    await act(async () => {
+      resolveImport(importedArticle);
+      await dropPromise;
+    });
+
+    expect(listCalls).toBe(1);
+    expect(appShellMocks.dragDropUnlisten).toHaveBeenCalledTimes(
+      appShellMocks.onDragDropEvent.mock.calls.length,
+    );
   });
 });

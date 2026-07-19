@@ -1,21 +1,34 @@
 // Modules
 pub mod agent_worker;
 mod ai_service;
+pub mod app_config;
+pub mod assistant;
+pub mod backend_client;
 pub mod commands;
+pub mod data_backup;
+pub mod document_editor;
+pub mod feature_gate;
 pub mod ffmpeg;
 pub mod ktv_export;
+pub mod legacy_import;
 pub mod logging;
 pub mod moonshot;
+pub mod packaged_backend;
 pub mod pdf_sidecar;
+pub mod platform;
+pub mod source_locator;
 pub mod storage;
 mod subtitle_extraction;
 pub mod subtitle_import;
 pub mod types;
-mod video_server;
+pub mod video_server;
 mod youtube;
 
 // Re-exports
-use agent_worker::{mark_running_tasks_interrupted_in_dir, AgentWorkerManager};
+use agent_worker::{
+    mark_running_tasks_interrupted_in_dir, recover_orphaned_worker_tasks_from_backend,
+    recover_worker_checkpoints_from_backend, AgentWorkerManager,
+};
 use ai_service::AIServiceCache;
 use tauri::Manager;
 
@@ -27,26 +40,88 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AIServiceCache::default())
         .manage(AgentWorkerManager::default())
+        .manage(packaged_backend::PackagedBackendManager::default())
         .invoke_handler(tauri::generate_handler![
             // App initialization
-            commands::init_app,
+            app_config::commands::init_app,
             // Configuration
-            commands::get_config,
-            commands::save_config_cmd,
-            commands::set_api_key,
-            commands::save_model_config,
-            commands::delete_model_config,
-            commands::set_active_model_config,
-            commands::get_active_model_config,
+            app_config::commands::get_config,
+            app_config::commands::save_config_cmd,
+            app_config::commands::backend_check_session_cmd,
+            app_config::commands::backend_health_cmd,
+            app_config::commands::backend_login_cmd,
+            app_config::commands::backend_register_cmd,
+            app_config::commands::backend_logout_cmd,
+            packaged_backend::packaged_backend_status_cmd,
+            legacy_import::run_legacy_import_cmd,
+            legacy_import::get_legacy_import_cmd,
+            app_config::commands::set_api_key,
+            app_config::commands::save_model_config,
+            app_config::commands::delete_model_config,
+            app_config::commands::set_active_model_config,
+            app_config::commands::get_active_model_config,
             // Articles
             commands::create_article,
             commands::resegment_article,
             commands::get_article,
             commands::list_articles_cmd,
+            commands::material_library_list_cmd,
+            commands::material_library_list_tags_cmd,
+            commands::material_library_create_tag_cmd,
+            commands::material_library_patch_tag_cmd,
+            commands::material_library_delete_tag_cmd,
+            commands::material_library_merge_tag_cmd,
+            commands::material_library_get_tags_cmd,
+            commands::material_library_set_tags_cmd,
+            commands::material_library_bulk_tags_cmd,
+            commands::material_library_get_reading_progress_cmd,
+            commands::material_library_upsert_reading_progress_cmd,
+            commands::material_library_create_import_job_cmd,
+            commands::material_library_list_import_jobs_cmd,
+            commands::material_library_get_import_job_cmd,
+            commands::material_library_patch_import_job_cmd,
+            commands::material_library_cancel_import_job_cmd,
+            commands::material_library_resume_import_job_cmd,
+            commands::material_library_duplicate_check_cmd,
+            commands::material_library_bulk_archive_cmd,
+            commands::material_library_bulk_unarchive_cmd,
+            commands::material_library_bulk_delete_cmd,
+            commands::preview_material_import_cmd,
             commands::update_article,
             commands::update_article_segment,
+            document_editor::get_material_document_cmd,
+            document_editor::preview_material_edit_cmd,
+            document_editor::commit_material_edit_cmd,
+            document_editor::get_material_draft_cmd,
+            document_editor::save_material_draft_cmd,
+            document_editor::delete_material_draft_cmd,
+            document_editor::list_material_revisions_cmd,
+            document_editor::get_material_revision_cmd,
+            document_editor::restore_material_revision_cmd,
+            document_editor::update_segment_derived_cmd,
+            document_editor::create_editable_derivative_cmd,
             commands::delete_article_cmd,
+            commands::list_learning_items_cmd,
+            commands::get_learning_item_cmd,
+            commands::create_learning_item_cmd,
+            commands::create_learning_item_from_selection_cmd,
+            commands::update_learning_item_cmd,
+            commands::accept_learning_item_cmd,
+            commands::delete_learning_item_cmd,
+            commands::bulk_organize_learning_items_cmd,
+            commands::migrate_legacy_learning_items_cmd,
+            commands::list_learning_activity_events_cmd,
+            commands::get_daily_learning_review_cmd,
+            commands::get_learning_activity_heatmap_cmd,
+            commands::get_material_learning_review_cmd,
+            commands::record_local_preview_cmd,
+            commands::list_annotations_cmd,
+            commands::create_annotation_cmd,
+            commands::update_annotation_cmd,
+            commands::delete_annotation_cmd,
+            commands::convert_annotation_to_learning_item_cmd,
             commands::fetch_url_content,
+            video_server::get_resource_server_info_cmd,
             commands::import_web_material_cmd,
             commands::article_get_overview_cmd,
             commands::article_read_window_cmd,
@@ -60,6 +135,15 @@ pub fn run() {
             commands::get_artifact_cmd,
             commands::get_agent_worker_status_cmd,
             commands::stop_agent_worker_cmd,
+            assistant::commands::assistant_task_list_cmd,
+            assistant::commands::assistant_task_detail_cmd,
+            assistant::commands::assistant_task_timeline_cmd,
+            assistant::commands::assistant_task_cancel_cmd,
+            assistant::commands::assistant_task_retry_cmd,
+            assistant::commands::assistant_task_artifacts_cmd,
+            assistant::commands::assistant_artifact_detail_cmd,
+            assistant::commands::assistant_action_execute_cmd,
+            assistant::commands::assistant_task_actions_cmd,
             // AI operations
             commands::translate_text,
             commands::analyze_text,
@@ -94,6 +178,7 @@ pub fn run() {
             commands::export_ktv_video_cmd,
             // 书籍导入
             commands::import_book_cmd,
+            commands::import_text_file_cmd,
             // 字幕提取
             commands::extract_subtitles_cmd,
             // 文件操作
@@ -121,9 +206,10 @@ pub fn run() {
         .setup(|app| {
             // Initialize app on startup
             let app_handle = app.handle().clone();
+            let app_started_at = chrono::Utc::now();
             tauri::async_runtime::spawn(async move {
                 // Ensure app directories exist
-                let _ = commands::init_app(app_handle.clone()).await;
+                let _ = app_config::commands::init_app(app_handle.clone()).await;
                 if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
                     // Start the persistent log file as early as possible so the
                     // very first PDF translation of a session is captured.
@@ -131,10 +217,45 @@ pub fn run() {
                     let _ = mark_running_tasks_interrupted_in_dir(&app_data_dir);
                 }
 
+                packaged_backend::start_packaged_backend_if_enabled(app_handle.clone()).await;
+                if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+                    if let Err(error) =
+                        recover_worker_checkpoints_from_backend(&app_handle, &app_data_dir).await
+                    {
+                        eprintln!("[AgentWorker] Failed to recover Backend task state: {error}");
+                    }
+                    match recover_orphaned_worker_tasks_from_backend(
+                        &app_handle,
+                        &app_data_dir,
+                        app_started_at,
+                    )
+                    .await
+                    {
+                        Ok(task_ids) if !task_ids.is_empty() => {
+                            eprintln!(
+                                "[AgentWorker] Finalized orphaned Backend tasks after restart: {}",
+                                task_ids.join(", ")
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "[AgentWorker] Failed to recover orphaned Backend tasks: {error}"
+                            );
+                        }
+                    }
+                }
+
                 // 启动资源服务器 (视频 + 书籍)
-                let app_data_dir = app_handle.path().app_data_dir().unwrap();
-                if let Err(e) = video_server::start_resource_server(app_data_dir).await {
-                    eprintln!("[ResourceServer] Failed to start: {}", e);
+                match app_handle.path().app_data_dir() {
+                    Ok(app_data_dir) => {
+                        if let Err(e) = video_server::start_resource_server(app_data_dir).await {
+                            eprintln!("[ResourceServer] Failed to start: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[ResourceServer] Failed to resolve app data dir: {}", e);
+                    }
                 }
             });
             Ok(())

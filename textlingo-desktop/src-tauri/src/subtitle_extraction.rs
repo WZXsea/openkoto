@@ -7,8 +7,8 @@
 // 3. 发送至 Gemini API 进行转录
 // 4. 解析转录结果为 ArticleSegment
 
-use crate::ffmpeg::run_ffmpeg;
 use crate::ai_service::AIService;
+use crate::ffmpeg::run_ffmpeg;
 use crate::moonshot::{is_moonshot_provider, moonshot_chat_completions_url};
 use crate::types::{
     ArticleSegment, ChatContent, ChatMessage, ChatRequest, ContentPart, TranscriptionResult,
@@ -88,8 +88,10 @@ pub async fn extract_subtitles(
         let _ = app.emit(&format!("subtitle-extraction-progress://{}", event_id), 
             serde_json::json!({ "phase": "processing", "message": "正在使用 Kimi 视频理解模式..." }));
 
-        return extract_subtitles_with_kimi(app, video_path, video_id, provider, api_key, model, event_id)
-            .await;
+        return extract_subtitles_with_kimi(
+            app, video_path, video_id, provider, api_key, model, event_id,
+        )
+        .await;
     }
 
     if duration > CHUNK_THRESHOLD_SECONDS {
@@ -638,9 +640,7 @@ fn find_duplicate_index(result: &[ChunkedSegment], cand: &ChunkedSegment) -> Opt
         let overlap_ratio = overlap_duration / cand_duration;
 
         // 条件1: 时间重叠 > 30% 且内容相似度 > 60%
-        if overlap_ratio > 0.3
-            && text_similarity(&cand.seg.content, &existing.seg.content) > 0.6
-        {
+        if overlap_ratio > 0.3 && text_similarity(&cand.seg.content, &existing.seg.content) > 0.6 {
             return Some(idx);
         }
 
@@ -674,8 +674,7 @@ fn deduplicate_segments(segments: Vec<ChunkedSegment>) -> Vec<TranscriptionSegme
     for cand in segments {
         match find_duplicate_index(&result, &cand) {
             Some(idx) => {
-                let cand_freshness =
-                    cand.seg.start_time.unwrap_or(0.0) - cand.chunk_offset;
+                let cand_freshness = cand.seg.start_time.unwrap_or(0.0) - cand.chunk_offset;
                 let existing_freshness =
                     result[idx].seg.start_time.unwrap_or(0.0) - result[idx].chunk_offset;
                 // 新鲜度小 => 离所在分片起点更近 => 时间轴更可信
@@ -913,7 +912,13 @@ fn segment_words_into_cues(words: &[AsrWord], time_offset: f64) -> Vec<Transcrip
             .map(|w| w.text.trim())
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
-            .join(if contains_cjk(&cur.iter().map(|w| w.text.as_str()).collect::<String>()) { "" } else { " " });
+            .join(
+                if contains_cjk(&cur.iter().map(|w| w.text.as_str()).collect::<String>()) {
+                    ""
+                } else {
+                    " "
+                },
+            );
         if !text.is_empty() {
             cues.push(TranscriptionSegment {
                 speaker: None,
@@ -1122,7 +1127,8 @@ async fn extract_subtitles_with_whisper(
             &format!("subtitle-extraction-progress://{}", event_id),
             serde_json::json!({ "phase": "transcribe", "message": "转录音频中..." }),
         );
-        let result = transcribe_audio_with_whisper(&full_audio, &endpoint, api_key, model, 0.0).await?;
+        let result =
+            transcribe_audio_with_whisper(&full_audio, &endpoint, api_key, model, 0.0).await?;
         all_segments = result.segments;
         let _ = fs::remove_file(&full_audio);
     } else {
@@ -1147,9 +1153,14 @@ async fn extract_subtitles_with_whisper(
                     "total": parts,
                 }),
             );
-            let seg_audio =
-                extract_audio_for_asr(&app, video_path, &i.to_string(), Some(start), Some(chunk_dur))
-                    .await?;
+            let seg_audio = extract_audio_for_asr(
+                &app,
+                video_path,
+                &i.to_string(),
+                Some(start),
+                Some(chunk_dur),
+            )
+            .await?;
             let result =
                 transcribe_audio_with_whisper(&seg_audio, &endpoint, api_key, model, start).await?;
             all_segments.extend(result.segments);
@@ -1253,11 +1264,7 @@ async fn extract_subtitles_with_kimi(
 4. 忽略背景音和无意义语气词。
 "#;
 
-    let ai_service = AIService::new(
-        api_key.to_string(),
-        provider.to_string(),
-        model.to_string(),
-    );
+    let ai_service = AIService::new(api_key.to_string(), provider.to_string(), model.to_string());
 
     let chat_request = ChatRequest {
         model: model.to_string(),
@@ -1738,6 +1745,7 @@ fn transcription_to_segments(
             article_id: article_id.to_string(),
             order: i as i32,
             text: seg.content.clone(),
+            text_sha256: None,
             reading_text: None,
             translation: None,
             explanation: None,
@@ -1754,7 +1762,11 @@ mod tests {
     use super::*;
 
     fn w(text: &str, start: f64, end: f64) -> AsrWord {
-        AsrWord { text: text.to_string(), start, end }
+        AsrWord {
+            text: text.to_string(),
+            start,
+            end,
+        }
     }
 
     #[test]

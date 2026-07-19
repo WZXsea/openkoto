@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "OpenKoto",
-    "subtitle": "Cross-Language Reading, Playback & Learning Tool",
+    "subtitle": "Local reading workspace. AI translation and explanations are enhancements.",
     "loading": "Loading OpenKoto...",
     "notConfigured": "Not configured"
   },
@@ -9,19 +9,35 @@
     "refresh": "Refresh",
     "close": "Close",
     "cancel": "Cancel",
-    "fast": "Fast Translate"
+    "fast": "Fast Translate",
+    "aiUnavailable": "Core reading is available. Configure an AI model to enable translation, explanations, and analysis.",
+    "phase1Disabled": "Phase 1 keeps the local reading core enabled. This enhanced feature is not enabled yet."
   },
   "header": {
-    "configureApiKey": "Configure your API key to get started",
+    "configureApiKey": "Core reading is available; configure AI for translation, explanations, and analysis",
+    "localReadingReady": "Local reading is available; AI is optional",
     "newArticle": "New Article",
     "settings": "Settings",
     "favorites": "Favorites",
+    "annotations": "Annotations",
+    "learningWorkbench": "Learning Workbench",
     "newMaterial": "New Material"
+  },
+  "navigation": {
+    "home": "Home",
+    "materials": "Material Library"
   },
   "footer": {
     "provider": "Provider",
     "model": "Model",
     "quickSwitch": "Quick Switch"
+  },
+  "account": {
+    "menuLabel": "Account",
+    "signedIn": "Signed in",
+    "switch": "Switch Account",
+    "logout": "Log Out",
+    "loggingOut": "Logging out"
   },
   "assistant": {
     "mode": {
@@ -74,7 +90,7 @@
     "back": "Back",
     "prev": "Prev",
     "next": "Next",
-    "edit": "Edit",
+    "edit": "Edit content",
     "cancel": "Cancel",
     "translate": "Quick Translate",
     "translating": "Translating...",
@@ -93,6 +109,7 @@
     "resegment": "Resegment Article",
     "translated": "Translated",
     "parsed": "Deep Dived",
+    "viewModeLabel": "View Mode",
     "viewMode": {
       "original": "Original",
       "bilingual": "Bilingual",
@@ -341,6 +358,25 @@
       "themeName": "Theme Style",
       "themeMode": "Display Mode"
     },
+    "fonts": {
+      "uiFont": "UI font",
+      "readerFont": "Reader font",
+      "uiFontInput": "UI font family",
+      "readerFontInput": "Reader font family",
+      "custom": "Custom",
+      "customInput": "Custom font-family",
+      "inputPlaceholder": "e.g. \"PingFang SC\", sans-serif",
+      "uiHelp": "Applies to navigation, buttons, dialogs and most interface text.",
+      "readerHelp": "Applies to article text, plain text and EPUB reading areas.",
+      "preview": "The quick brown fox jumps over OpenKoto. 中文字体预览。",
+      "themeDefault": "Theme default",
+      "systemSans": "System Sans",
+      "inter": "Inter",
+      "helvetica": "Helvetica / Arial",
+      "chineseSans": "Chinese Sans",
+      "serif": "Serif",
+      "chineseSerif": "Chinese Serif"
+    },
     "models": {
       "siliconflow": {
         "deepseek-v3": "DeepSeek V3",
@@ -571,7 +607,7 @@
   },
   "dropImport": {
     "hint": "Release to import",
-    "types": "PDF / EPUB / video / audio / subtitle",
+    "types": "PDF / EPUB / MD / TXT / DOCX / video / audio / subtitle",
     "importing": "Importing {{count}} file(s)…",
     "done": "Imported {{count}} item(s)",
     "unsupported": "Unsupported file type: {{name}}",
@@ -618,12 +654,12 @@
   },
   "bookImport": {
     "title": "Reading Materials",
-    "hint": "Supports papers, books, novels, etc. Supports PDF, TXT, EPUB formats. Used for multilingual accessible reading and learning of articles and literature.",
+    "hint": "Supports papers, books, novels, etc. Supports PDF and EPUB formats for accessible reading and learning.",
     "fileLabel": "Book File",
-    "filePlaceholder": "Select EPUB, TXT or PDF file...",
+    "filePlaceholder": "Select EPUB or PDF file...",
     "titleLabel": "Book Title",
     "titlePlaceholder": "Leave empty to use filename",
-    "description": "Supports EPUB, TXT and PDF formats. EPUB for complex layouts, TXT for plain text, PDF preserves original formatting.",
+    "description": "Supports EPUB and PDF formats. Use Text File import for Markdown, TXT and DOCX.",
     "import": "Import Book",
     "importing": "Importing...",
     "fileFilterName": "eBooks",
@@ -631,6 +667,24 @@
       "fileRequired": "Please select a file",
       "selectFailed": "Failed to select file",
       "unsupportedFormat": "Unsupported file format"
+    }
+  },
+  "textFileImport": {
+    "title": "Text File",
+    "hint": "Import local text content and turn it into article material for sentence reading, selection, and learning candidates.",
+    "fileLabel": "Text File",
+    "filePlaceholder": "Select Markdown, TXT or DOCX file...",
+    "selectFileTitle": "Select text file",
+    "description": "Supports .md, .markdown, .txt and .docx. Use Reading Materials for PDF/EPUB.",
+    "titleLabel": "Title",
+    "titlePlaceholder": "Leave empty to use the file name",
+    "import": "Import Text",
+    "importing": "Importing...",
+    "fileFilterName": "Text Files",
+    "errors": {
+      "fileRequired": "Please select a text file",
+      "selectFailed": "Failed to select file",
+      "unsupportedFormat": "Unsupported text file format"
     }
   },
   "epubReader": {
@@ -661,7 +715,7 @@
   },
   "onboarding": {
     "title": "Welcome to OpenKoto",
-    "subtitle": "Let's get you set up in a few simple steps to start your cross-language learning journey.",
+    "subtitle": "Set up the local reading basics first. AI models are optional enhancements you can configure now or later.",
     "steps": {
       "style": "Core Settings",
       "model": "AI Model Setup",
@@ -675,7 +729,7 @@
     },
     "model": {
       "title": "Configure AI Model",
-      "desc": "Connect an AI service to enable translation and analysis. You can do this now or later in Settings.",
+      "desc": "Core reading does not require AI. Connect an AI service to enable translation, explanations, analysis, and chat.",
       "regionTitle": "Select Your Region",
       "globalUser": "Global User",
       "chinaUser": "China User",
@@ -720,7 +774,7 @@
     },
     "welcome": {
       "title": "Congratulations!",
-      "desc": "You're all set up. Welcome to the world of OpenKoto!",
+      "desc": "Core reading is ready. Configure an AI model later to enable translation, explanations, and analysis.",
       "celebration": "🎉 Congratulations on completing the setup!",
       "ready": "Ready to explore",
       "startButton": "Start Your Journey"

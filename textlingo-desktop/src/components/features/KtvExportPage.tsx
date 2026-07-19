@@ -58,6 +58,7 @@ export function KtvExportPage({ article, onBack }: KtvExportPageProps) {
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportState, setExportState] = useState<ExportState>({ status: "idle" });
+  const [mediaUrl, setMediaUrl] = useState("");
 
   useEffect(() => {
     const initialConfig = createInitialConfig(article);
@@ -205,10 +206,25 @@ export function KtvExportPage({ article, onBack }: KtvExportPageProps) {
 
   const previewStyle = useMemo(() => createPreviewStyle(exportConfig), [exportConfig]);
   const canExport = Boolean(workingArticle.media_path && timedSegments.length > 0);
-  const mediaUrl = useMemo(
-    () => buildMediaResourceUrl(workingArticle.media_path, "video"),
-    [workingArticle.media_path],
-  );
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMediaUrl = async () => {
+      try {
+        const url = await buildMediaResourceUrl(workingArticle.media_path, "video");
+        if (!cancelled) setMediaUrl(url);
+      } catch (error) {
+        console.warn("[KtvExportPage] Failed to build media URL:", error);
+        if (!cancelled) setMediaUrl("");
+      }
+    };
+
+    void loadMediaUrl();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workingArticle.media_path]);
   const playbackStorageKey = useMemo(
     () => buildPlaybackPositionKey(workingArticle.id, mediaUrl),
     [mediaUrl, workingArticle.id],

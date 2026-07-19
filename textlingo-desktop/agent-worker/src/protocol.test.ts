@@ -5,6 +5,7 @@ import {
   createTaskLogEvent,
   createTaskStartedEvent,
   createWorkerReadyEvent,
+  parseAgentCancelRequest,
   parseAgentRunRequest,
 } from "./protocol.js";
 
@@ -50,7 +51,7 @@ describe("protocol", () => {
   });
 
   it("creates worker and task lifecycle events", () => {
-    const ready = createWorkerReadyEvent("worker-1", "opencode", "0.1.0");
+    const ready = createWorkerReadyEvent("worker-1", "pi-agent-core", "0.1.0");
     const started = createTaskStartedEvent("task-1", "mind_map.generate");
     const log = createTaskLogEvent("task-1", "info", "provider", "Gemini request started");
     const error = createTaskErrorEvent("task-1", "provider_auth_error", "Authentication failed", "bad key");
@@ -110,5 +111,19 @@ describe("protocol", () => {
     }
     expect(request.params.input.user_message).toBe("打开标题带 N1 的 PDF");
     expect(request.params.input.available_materials).toHaveLength(1);
+  });
+
+  it("parses a task-scoped agent.cancel request", () => {
+    const request = parseAgentCancelRequest(
+      JSON.stringify({
+        id: "cancel-1",
+        type: "request",
+        method: "agent.cancel",
+        params: { task_id: "task-agent-1" },
+      }),
+    );
+
+    expect(request.method).toBe("agent.cancel");
+    expect(request.params.task_id).toBe("task-agent-1");
   });
 });
