@@ -6,11 +6,14 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS,
   buildMindMapWorkspaceFiles,
   findAvailablePort,
   normalizeMindMapResult,
   resolveProviderModel,
+  runAgentPrompt,
   runMindMapTask,
+  runOpenAICompatiblePrompt,
 } from "./mindMapTask.js";
 
 describe("mindMapTask", () => {
@@ -55,6 +58,153 @@ describe("mindMapTask", () => {
   it("allocates an ephemeral port for OpenCode server startup", async () => {
     const port = await findAvailablePort();
     expect(port).toBeGreaterThan(0);
+  });
+
+  it("calls OpenAI-compatible chat completions without starting OpenCode", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "```json\n{\"status\":\"not_applicable\",\"map\":null,\"diagnostics\":{\"content_type\":\"unknown\",\"coverage\":\"none\",\"notes\":[],\"window_count\":1,\"evidence_density\":0,\"low_confidence_node_ids\":[]}}\n```",
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    const providerConfig = {
+      kind: "openai_compatible" as const,
+      provider: "openai-compatible",
+      model: "custom-model",
+      api_key: "test-secret",
+      baseUrl: "https://models.example.test/v1/",
+    };
+    const result = await runAgentPrompt({
+      cwd: "/tmp/unused",
+      model: "textlingo_openai_compatible/custom-model",
+      prompt: "Return JSON",
+      system: "System",
+      config: {},
+      providerConfig,
+    });
+
+    expect(result).toMatchObject({ status: "not_applicable" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://models.example.test/v1/chat/completions",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          authorization: "Bearer test-secret",
+        }),
+      }),
+    );
+    const request = fetchMock.mock.calls[0][1];
+    expect(JSON.parse(String(request?.body))).toMatchObject({
+      model: "custom-model",
+      messages: [
+        { role: "system", content: "System" },
+        { role: "user", content: "Return JSON" },
+      ],
+    });
+    fetchMock.mockRestore();
+  });
+
+  it("redacts the API key from OpenAI-compatible provider errors", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "Rejected credential test-secret",
+          },
+        }),
+        {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    await expect(
+      runOpenAICompatiblePrompt({
+        cwd: "/tmp/unused",
+        model: "textlingo_openai_compatible/custom-model",
+        prompt: "Return JSON",
+        system: "System",
+        config: {},
+        providerConfig: {
+          kind: "openai_compatible",
+          provider: "openai-compatible",
+          model: "custom-model",
+          api_key: "test-secret",
+          baseUrl: "https://models.example.test/v1",
+        },
+      }),
+    ).rejects.toThrow("Rejected credential [redacted]");
+    fetchMock.mockRestore();
+  });
+
+  it("aborts an OpenAI-compatible request after the runtime timeout", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+
+    const pending = runOpenAICompatiblePrompt({
+      cwd: "/tmp/unused",
+      model: "textlingo_openai_compatible/custom-model",
+      prompt: "Return JSON",
+      system: "System",
+      config: {},
+      providerConfig: {
+        kind: "openai_compatible",
+        provider: "openai-compatible",
+        model: "custom-model",
+        api_key: "test-secret",
+        baseUrl: "https://models.example.test/v1",
+      },
+    });
+    const assertion = expect(pending).rejects.toThrow(
+      "OpenAI-compatible request timed out after 120 seconds",
+    );
+
+    await vi.advanceTimersByTimeAsync(OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS);
+    await assertion;
+    fetchMock.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("fails fast for providers without a built-in direct runtime", async () => {
+    await expect(
+      runAgentPrompt({
+        cwd: "/tmp/unused",
+        model: "google/gemini-2.0-flash-exp",
+        prompt: "Return JSON",
+        system: "System",
+        config: {},
+        providerConfig: {
+          kind: "native_google",
+          provider: "google",
+          model: "gemini-2.0-flash-exp",
+          api_key: "test-secret",
+        },
+      }),
+    ).rejects.toThrow(
+      "Built-in direct runtime does not support provider kind native_google; configure an OpenAI-compatible provider",
+    );
   });
 
   it("normalizes partial model output into a schema-valid result", () => {
@@ -187,15 +337,15 @@ describe("mindMapTask", () => {
     );
     expect(reportProgress.mock.calls).toEqual([
       ["task-1", "planning", 0.1, "Preparing mind map task"],
-      ["task-1", "starting_agent", 0.2, "Starting OpenCode agent"],
-      ["task-1", "analyzing", 0.35, "OpenCode agent is analyzing the source"],
+      ["task-1", "starting_agent", 0.2, "Starting agent runtime"],
+      ["task-1", "analyzing", 0.35, "Agent runtime is analyzing the source"],
       ["task-1", "validating", 0.75, "Validating mind map output"],
       ["task-1", "saving", 0.9, "Saving mind map artifact"],
     ]);
     expect(log.mock.calls).toEqual([
       ["info", expect.stringContaining("Prepared task workspace:"), "recipe"],
-      ["info", "Starting OpenCode mind map run", "provider"],
-      ["info", "OpenCode agent returned a final result", "provider"],
+      ["info", "Starting mind map model request", "provider"],
+      ["info", "Mind map model returned a final result", "provider"],
       ["info", "Mind map result validated", "recipe"],
       ["info", "Mind map artifact saved: artifact-1", "runtime"],
     ]);

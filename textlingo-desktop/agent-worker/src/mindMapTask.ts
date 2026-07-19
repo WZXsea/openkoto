@@ -10,6 +10,8 @@ import type { Config, Part, SessionPromptResponse } from "@opencode-ai/sdk";
 import { parseMindMapResult } from "./mindMapSchema.js";
 import type { ArticleSnapshot, RuntimeProvider } from "./protocol.js";
 
+export const OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS = 120_000;
+
 const MIND_MAP_OUTPUT_SCHEMA = {
   type: "object",
   required: ["status", "diagnostics"],
@@ -142,6 +144,7 @@ export interface OpenCodePromptRequest {
   prompt: string;
   system: string;
   config: Config;
+  providerConfig: RuntimeProvider;
   signal?: AbortSignal;
 }
 
@@ -503,14 +506,27 @@ async function createTaskWorkspace(input: MindMapTaskInput, workspaceRoot?: stri
 }
 
 function buildPrompt(input: MindMapTaskInput) {
-  return [
-    "Generate an evidence-grounded mind map for this article.",
-    "Read `TASK.md`, `article-source.json`, and `mind-map-schema.json` from the workspace.",
-    "Return only valid JSON, with no markdown fences.",
-    "Include every required field in `map` and `diagnostics`.",
-    "If the source is unsuitable, return status `not_applicable`, map `null`, and complete diagnostics.",
-    `The display language must be ${input.displayLanguage}.`,
-  ].join("\n");
+  return JSON.stringify(
+    {
+      task: "Generate an evidence-grounded mind map for this article.",
+      instructions: [
+        "Use article_source as the only source document.",
+        "Return only valid JSON, with no markdown fences.",
+        "Include every required field in map and diagnostics.",
+        "If the source is unsuitable, return status not_applicable, map null, and complete diagnostics.",
+        `The display language must be ${input.displayLanguage}.`,
+      ],
+      article_source: {
+        article_id: input.articleId,
+        title: input.articleSnapshot.title,
+        source_type: input.articleSnapshot.sourceType ?? null,
+        content: input.articleSnapshot.content,
+      },
+      output_schema: MIND_MAP_OUTPUT_SCHEMA,
+    },
+    null,
+    2,
+  );
 }
 
 export async function findAvailablePort() {
@@ -630,6 +646,158 @@ export async function runOpenCodePrompt(request: OpenCodePromptRequest) {
   }
 }
 
+function openAICompatibleEndpoint(baseUrl: string) {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  return normalized.endsWith("/chat/completions")
+    ? normalized
+    : `${normalized}/chat/completions`;
+}
+
+function redactProviderError(message: string, apiKey?: string) {
+  let sanitized = message;
+  if (apiKey) {
+    sanitized = sanitized.split(apiKey).join("[redacted]");
+  }
+  return sanitized
+    .replace(/Bearer\s+[^\s"',}]+/gi, "Bearer [redacted]")
+    .slice(0, 500);
+}
+
+function responseErrorMessage(payload: unknown) {
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error === "object" && error !== null) {
+    const message = (error as { message?: unknown }).message;
+    return typeof message === "string" ? message : null;
+  }
+  return null;
+}
+
+function openAICompatibleResponseText(payload: unknown) {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("OpenAI-compatible response is not a JSON object");
+  }
+  const choices = (payload as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || choices.length === 0) {
+    throw new Error("OpenAI-compatible response does not contain choices");
+  }
+  const message = (choices[0] as { message?: unknown } | undefined)?.message;
+  if (typeof message !== "object" || message === null) {
+    throw new Error("OpenAI-compatible response does not contain a message");
+  }
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string" && content.trim()) {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => {
+        if (typeof part !== "object" || part === null) {
+          return "";
+        }
+        const value = (part as { text?: unknown }).text;
+        return typeof value === "string" ? value : "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    if (text) {
+      return text;
+    }
+  }
+  throw new Error("OpenAI-compatible response message is empty");
+}
+
+export async function runOpenAICompatiblePrompt(request: OpenCodePromptRequest) {
+  if (request.providerConfig.kind !== "openai_compatible") {
+    throw new Error("OpenAI-compatible prompt runner received an incompatible provider");
+  }
+  throwIfCancelled(request.signal);
+
+  const providerConfig = request.providerConfig;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  if (providerConfig.api_key) {
+    headers.authorization = `Bearer ${providerConfig.api_key}`;
+  }
+
+  const requestController = new AbortController();
+  let timedOut = false;
+  const cancelRequest = () => requestController.abort(request.signal?.reason);
+  request.signal?.addEventListener("abort", cancelRequest, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    requestController.abort();
+  }, OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS);
+  timeout.unref();
+
+  try {
+    const response = await fetch(openAICompatibleEndpoint(providerConfig.baseUrl), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: providerConfig.model,
+        messages: [
+          {
+            role: "system",
+            content: request.system,
+          },
+          {
+            role: "user",
+            content: request.prompt,
+          },
+        ],
+      }),
+      signal: requestController.signal,
+    });
+    throwIfCancelled(request.signal);
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`OpenAI-compatible request returned invalid JSON (HTTP ${response.status})`);
+    }
+    throwIfCancelled(request.signal);
+
+    if (!response.ok) {
+      const providerMessage = responseErrorMessage(payload);
+      const suffix = providerMessage
+        ? `: ${redactProviderError(providerMessage, providerConfig.api_key)}`
+        : "";
+      throw new Error(`OpenAI-compatible request failed (HTTP ${response.status})${suffix}`);
+    }
+
+    return parsePromptResult(openAICompatibleResponseText(payload));
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(
+        `OpenAI-compatible request timed out after ${OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS / 1000} seconds`,
+      );
+    }
+    throwIfCancelled(request.signal);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    request.signal?.removeEventListener("abort", cancelRequest);
+  }
+}
+
+export async function runAgentPrompt(request: OpenCodePromptRequest) {
+  if (request.providerConfig.kind === "openai_compatible") {
+    return runOpenAICompatiblePrompt(request);
+  }
+  throw new Error(
+    `Built-in direct runtime does not support provider kind ${request.providerConfig.kind}; configure an OpenAI-compatible provider`,
+  );
+}
+
 export async function runMindMapTask(input: MindMapTaskInput, deps: MindMapTaskDeps) {
   throwIfCancelled(deps.signal);
   await deps.reportProgress(input.taskId, "planning", 0.1, "Preparing mind map task");
@@ -644,17 +812,17 @@ export async function runMindMapTask(input: MindMapTaskInput, deps: MindMapTaskD
 
   try {
     const resolvedProvider = resolveProviderModel(deps.providerConfig);
-    const promptRunner = deps.promptRunner ?? runOpenCodePrompt;
+    const promptRunner = deps.promptRunner ?? runAgentPrompt;
     throwIfCancelled(deps.signal);
 
-    await deps.reportProgress(input.taskId, "starting_agent", 0.2, "Starting OpenCode agent");
+    await deps.reportProgress(input.taskId, "starting_agent", 0.2, "Starting agent runtime");
     await deps.reportProgress(
       input.taskId,
       "analyzing",
       0.35,
-      "OpenCode agent is analyzing the source",
+      "Agent runtime is analyzing the source",
     );
-    log("info", "Starting OpenCode mind map run", "provider");
+    log("info", "Starting mind map model request", "provider");
 
     const result = await promptRunner({
       cwd,
@@ -662,11 +830,12 @@ export async function runMindMapTask(input: MindMapTaskInput, deps: MindMapTaskD
       prompt: buildPrompt(input),
       system: buildSystemPrompt(input),
       config: resolvedProvider.config,
+      providerConfig: deps.providerConfig,
       signal: deps.signal,
     });
 
     throwIfCancelled(deps.signal);
-    log("info", "OpenCode agent returned a final result", "provider");
+    log("info", "Mind map model returned a final result", "provider");
     await deps.reportProgress(input.taskId, "validating", 0.75, "Validating mind map output");
     const normalized = normalizeMindMapResult(parsePromptResult(result), input);
     const parsed = parseMindMapResult(normalized);

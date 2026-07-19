@@ -1,7 +1,7 @@
 {
   "name": "openkoto-desktop",
   "private": true,
-  "version": "0.12.4",
+  "version": "0.12.7",
   "type": "module",
   "scripts": {
     "dev": "vite",

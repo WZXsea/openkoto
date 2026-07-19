@@ -26,8 +26,8 @@ mod youtube;
 
 // Re-exports
 use agent_worker::{
-    mark_running_tasks_interrupted_in_dir, recover_worker_checkpoints_from_backend,
-    AgentWorkerManager,
+    mark_running_tasks_interrupted_in_dir, recover_orphaned_worker_tasks_from_backend,
+    recover_worker_checkpoints_from_backend, AgentWorkerManager,
 };
 use ai_service::AIServiceCache;
 use tauri::Manager;
@@ -206,6 +206,7 @@ pub fn run() {
         .setup(|app| {
             // Initialize app on startup
             let app_handle = app.handle().clone();
+            let app_started_at = chrono::Utc::now();
             tauri::async_runtime::spawn(async move {
                 // Ensure app directories exist
                 let _ = app_config::commands::init_app(app_handle.clone()).await;
@@ -222,6 +223,26 @@ pub fn run() {
                         recover_worker_checkpoints_from_backend(&app_handle, &app_data_dir).await
                     {
                         eprintln!("[AgentWorker] Failed to recover Backend task state: {error}");
+                    }
+                    match recover_orphaned_worker_tasks_from_backend(
+                        &app_handle,
+                        &app_data_dir,
+                        app_started_at,
+                    )
+                    .await
+                    {
+                        Ok(task_ids) if !task_ids.is_empty() => {
+                            eprintln!(
+                                "[AgentWorker] Finalized orphaned Backend tasks after restart: {}",
+                                task_ids.join(", ")
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "[AgentWorker] Failed to recover orphaned Backend tasks: {error}"
+                            );
+                        }
                     }
                 }
 

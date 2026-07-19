@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import type { AssistantRunInput, RuntimeProvider } from "./protocol.js";
-import { runOpenCodePrompt, type OpenCodePromptRequest, resolveProviderModel } from "./mindMapTask.js";
+import { runAgentPrompt, type OpenCodePromptRequest, resolveProviderModel } from "./mindMapTask.js";
 
 const assistantActionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -195,7 +195,7 @@ export async function runAssistantTask(input: AssistantTaskInput, deps: Assistan
   await deps.reportProgress(input.taskId, "planning", 0.1, "Preparing assistant turn");
 
   const resolvedProvider = resolveProviderModel(deps.providerConfig);
-  const promptRunner = deps.promptRunner ?? runOpenCodePrompt;
+  const promptRunner = deps.promptRunner ?? runAgentPrompt;
   const cwd = deps.workspaceRoot
     ? join(deps.workspaceRoot, input.taskId)
     : process.cwd();
@@ -212,6 +212,7 @@ export async function runAssistantTask(input: AssistantTaskInput, deps: Assistan
       prompt: buildPrompt(input),
       system: buildSystemPrompt(),
       config: resolvedProvider.config,
+      providerConfig: deps.providerConfig,
       signal: deps.signal,
     });
 

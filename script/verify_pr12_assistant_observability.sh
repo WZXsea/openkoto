@@ -110,6 +110,9 @@ for path in \
   textlingo-desktop/src-tauri/src/assistant/commands.rs \
   textlingo-desktop/src-tauri/src/assistant/dto.rs \
   textlingo-desktop/src-tauri/src/assistant/service.rs \
+  textlingo-desktop/agent-worker/src/index.ts \
+  textlingo-desktop/agent-worker/src/mindMapTask.ts \
+  textlingo-desktop/agent-worker/src/mindMapTask.test.ts \
   textlingo-desktop/src/features/assistant/api.ts \
   textlingo-desktop/src/features/assistant/state.ts \
   textlingo-desktop/src/features/assistant/types.ts \
@@ -167,6 +170,23 @@ done
 require_pattern 'execute_registered_assistant_action' textlingo-desktop/src-tauri/src/assistant/actions.rs
 require_pattern 'execute_registered_assistant_action' textlingo-desktop/src-tauri/src/commands.rs
 require_pattern 'execute_registered_assistant_action' textlingo-desktop/src-tauri/src/agent_worker.rs
+require_pattern 'worker_task_event_idempotency_key' openkoto-backend/src/assistant.rs
+require_pattern 'recover_orphaned_worker_tasks_from_backend' textlingo-desktop/src-tauri/src/agent_worker.rs
+require_pattern 'get_agent_task_cmd' textlingo-desktop/src/components/features/ArticleMindMapPanel.tsx
+require_pattern 'runAgentPrompt' textlingo-desktop/agent-worker/src/index.ts
+require_pattern 'direct-provider' textlingo-desktop/agent-worker/src/index.ts
+require_pattern 'OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS' textlingo-desktop/agent-worker/src/mindMapTask.ts
+require_pattern 'chat/completions' textlingo-desktop/agent-worker/src/mindMapTask.ts
+if rg -q 'runOpenCodePrompt' textlingo-desktop/agent-worker/src/index.ts; then
+  fail "production worker entrypoint must not call the external OpenCode CLI runtime"
+fi
+ensure_started_body="$(
+  sed -n '/pub fn ensure_started/,/pub fn submit_mind_map_task/p' \
+    textlingo-desktop/src-tauri/src/agent_worker.rs
+)"
+if rg -q 'block_on' <<<"$ensure_started_body"; then
+  fail "AgentWorkerManager::ensure_started must not nest block_on inside the Tauri async runtime"
+fi
 if rg -q 'extract_open_material_id' textlingo-desktop/src-tauri/src; then
   fail "legacy direct Assistant navigation bypass is still present"
 fi

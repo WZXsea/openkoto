@@ -13,7 +13,7 @@ import {
   parseAgentCancelRequest,
   parseAgentRunRequest,
 } from "./protocol.js";
-import { runOpenCodePrompt } from "./mindMapTask.js";
+import { runAgentPrompt } from "./mindMapTask.js";
 import { executeAgentRunRequest, handleAgentRunRequest, parseWorkerRequest } from "./runtime.js";
 
 function writeEvent(event: unknown) {
@@ -30,7 +30,7 @@ export function createWorkerHost(deps: {
   ) => Promise<void>;
 }) {
   const activeTasks = new Map<string, AbortController>();
-  deps.writeEvent(createWorkerReadyEvent(deps.workerSessionId, "opencode", deps.version));
+  deps.writeEvent(createWorkerReadyEvent(deps.workerSessionId, "direct-provider", deps.version));
 
   return {
     emitHeartbeat() {
@@ -113,7 +113,7 @@ async function main() {
     writeEvent,
     async runAgentTask(request, signal) {
       await executeAgentRunRequest(request, {
-        promptRunner: runOpenCodePrompt,
+        promptRunner: runAgentPrompt,
         workspaceRoot: join(tmpdir(), "textlingo-agent-worker"),
         async reportProgress(taskId, stage, progress, message) {
           writeEvent(createTaskProgressEvent(taskId, stage, progress, message));

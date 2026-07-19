@@ -21,6 +21,11 @@ const ARTICLE: Article = {
   translated: false,
 };
 
+const STATUS_LABELS_FOR_TEST = {
+  queued: "排队中",
+  running: "运行中",
+} as const;
+
 function task(overrides: Partial<AssistantTaskDetail> = {}): AssistantTaskDetail {
   return {
     id: "task-1",
@@ -78,6 +83,41 @@ function apiFor(getCurrent: () => AssistantTaskDetail, artifacts: AssistantArtif
 }
 
 describe("AssistantTaskCenter", () => {
+  it.each(["queued", "running"] as const)("shows accessible, reduced-motion-safe activity for %s tasks", async (status) => {
+    const current = task({
+      status,
+      progress: status === "queued" ? 0 : 0.4,
+      stage: status,
+      message: status === "queued" ? "Waiting for local worker" : "Worker is running",
+    });
+    const api = apiFor(() => current);
+
+    render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
+
+    expect(await screen.findByTestId("assistant-task-detail-task-1")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: STATUS_LABELS_FOR_TEST[status] })).toHaveAttribute("aria-live", "polite");
+    const statusIndicators = screen.getAllByTestId("assistant-active-status-indicator");
+    expect(statusIndicators).toHaveLength(2);
+    for (const indicator of statusIndicators) {
+      expect(indicator).toHaveClass("motion-safe:animate-spin", "motion-reduce:animate-none");
+      expect(indicator).toHaveAttribute("aria-hidden", "true");
+    }
+
+    const listProgress = screen.getByRole("progressbar", { name: "Assistant 任务列表进度" });
+    const detailProgress = screen.getByRole("progressbar", { name: "Assistant 任务详情进度" });
+    const expectedPercentage = status === "queued" ? "0" : "40";
+    expect(listProgress).toHaveAttribute("aria-valuenow", expectedPercentage);
+    expect(listProgress).toHaveAttribute("aria-valuetext", `${STATUS_LABELS_FOR_TEST[status]}，已完成 ${expectedPercentage}%`);
+    expect(detailProgress).toHaveAttribute("aria-valuenow", expectedPercentage);
+
+    const progressIndicators = screen.getAllByTestId("assistant-active-progress-indicator");
+    expect(progressIndicators).toHaveLength(2);
+    for (const indicator of progressIndicators) {
+      expect(indicator).toHaveClass("motion-safe:animate-pulse", "motion-reduce:hidden");
+      expect(indicator).toHaveAttribute("aria-hidden", "true");
+    }
+  });
+
   it("shows the current user's workflow, evidence timeline, and source navigation", async () => {
     const current = task();
     const api = apiFor(() => current);
@@ -162,6 +202,9 @@ describe("AssistantTaskCenter", () => {
     render(<AssistantTaskCenter api={api} articles={[ARTICLE]} onNavigateSource={() => undefined} />);
     expect(await screen.findByText("产物文件不可用")).toBeInTheDocument();
     expect(screen.getByText(/deleted-report\.md/)).toBeInTheDocument();
+    expect(screen.queryByTestId("assistant-active-status-indicator")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("assistant-active-progress-indicator")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Assistant 任务详情进度" })).toHaveAttribute("aria-valuenow", "100");
   });
 
   it("keeps task details visible when artifact loading fails independently", async () => {

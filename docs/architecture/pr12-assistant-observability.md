@@ -65,6 +65,10 @@ stateDiagram-v2
 2. 取消必须同时更新 Backend 状态并终止/忽略对应 worker 的后续事件。
 3. 重试复制原始输入快照，创建递增 attempt 的新 task，并由 Desktop 重新调度。
 4. Backend 使用事务和行锁校验状态转换；重复事件必须幂等，终态不可静默改写。
+5. Worker 启动热路径不得在 Tauri/Tokio async runtime 内嵌套 `block_on`；恢复只在应用启动或独立 stdout 监听线程中执行。
+6. Worker 状态事件的幂等键必须包含完整 task payload 指纹，不能只依赖可能重复的 `updated_at`。
+7. Worker stdout 结束时立即将仍有 checkpoint 的非终态任务收敛为失败；应用启动时将 Backend 中早于本次启动且缺少 checkpoint 的孤立 `queued/running` 任务转为可重试失败。
+8. 思维导图面板同时使用实时事件和按 task ID 轮询；重新挂载时从 Backend 恢复当前素材的活动任务。
 
 ### 验收门槛
 
@@ -77,6 +81,8 @@ stateDiagram-v2
 - [x] task、event、artifact 和 action audit 账户隔离测试通过。
 - [x] 未登记动作和外部软件写操作被拒绝并留下审计记录。
 - [x] Backend、agent-worker、Desktop、Frontend、Playwright 和 packaged smoke 全部通过。
+- [x] Worker 启动不再嵌套 async runtime，worker 退出和无 checkpoint 孤立任务不会永久停留在 queued/running。
+- [x] 同一 updated_at 下连续 running→succeeded 更新不会发生时间线幂等冲突。
 
 ### 验证记录
 

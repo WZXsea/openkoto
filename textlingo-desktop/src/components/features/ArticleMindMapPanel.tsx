@@ -369,6 +369,42 @@ export function ArticleMindMapPanel({
   const [showDetails, setShowDetails] = useState(panelMode !== "compact");
   const [showLogs, setShowLogs] = useState(panelMode !== "compact");
 
+  const loadCurrentArtifact = useEffectEvent(async (artifactId: string) => {
+    setIsLoadingArtifact(true);
+    try {
+      const nextArtifact = await invoke<Artifact>("get_artifact_cmd", {
+        articleId: article.id,
+        artifactId,
+      });
+      setArtifact(nextArtifact);
+      const nextResult = nextArtifact.content as MindMapResult;
+      setResult(nextResult);
+      setDraftResult(nextResult);
+      setSelectedNode(nextResult.map?.root ?? null);
+      setIsDirty(false);
+    } catch (err) {
+      setError(typeof err === "string" ? err : "Failed to load mind map artifact");
+    } finally {
+      setIsLoadingArtifact(false);
+    }
+  });
+
+  const applyTaskUpdate = useEffectEvent((nextTask: AgentTask) => {
+    if (nextTask.article_id !== article.id) {
+      return;
+    }
+
+    setTask(nextTask);
+    if (nextTask.status === "failed" && nextTask.error) {
+      setError(nextTask.error);
+    }
+
+    const latestArtifactId = nextTask.artifact_ids[nextTask.artifact_ids.length - 1];
+    if (latestArtifactId) {
+      void loadCurrentArtifact(latestArtifactId);
+    }
+  });
+
   const workerLabels = {
     session: t("articleReader.mindMapPanel.agentSession", "会话"),
     startedAt: t("articleReader.mindMapPanel.agentStartedAt", "启动时间"),
@@ -388,26 +424,6 @@ export function ArticleMindMapPanel({
     let unlistenTask: UnlistenFn | undefined;
     let unlistenStatus: UnlistenFn | undefined;
 
-    const loadCurrentArtifact = async (artifactId: string) => {
-      setIsLoadingArtifact(true);
-      try {
-        const nextArtifact = await invoke<Artifact>("get_artifact_cmd", {
-          articleId: article.id,
-          artifactId,
-        });
-        setArtifact(nextArtifact);
-        const nextResult = nextArtifact.content as MindMapResult;
-        setResult(nextResult);
-        setDraftResult(nextResult);
-        setSelectedNode(nextResult.map?.root ?? null);
-        setIsDirty(false);
-      } catch (err) {
-        setError(typeof err === "string" ? err : "Failed to load mind map artifact");
-      } finally {
-        setIsLoadingArtifact(false);
-      }
-    };
-
     const refreshWorkerStatus = async () => {
       try {
         const snapshot = await invoke<AgentWorkerStatusSnapshot>("get_agent_worker_status_cmd");
@@ -419,25 +435,32 @@ export function ArticleMindMapPanel({
 
     const setup = async () => {
       unlistenTask = await listen<AgentTask>("agent-task-updated", (event) => {
-        const nextTask = event.payload;
-        if (nextTask.article_id !== article.id) {
-          return;
-        }
-
-        setTask(nextTask);
-        if (nextTask.status === "failed" && nextTask.error) {
-          setError(nextTask.error);
-        }
-
-        const latestArtifactId = nextTask.artifact_ids[nextTask.artifact_ids.length - 1];
-        if (latestArtifactId) {
-          void loadCurrentArtifact(latestArtifactId);
-        }
+        applyTaskUpdate(event.payload);
       });
 
       unlistenStatus = await listen<AgentWorkerStatusSnapshot>("agent-worker-status", (event) => {
         setWorkerStatus(event.payload);
       });
+
+      try {
+        const response = await invoke<{ items?: AgentTask[] }>("assistant_task_list_cmd", {
+          query: {
+            article_id: article.id,
+            limit: 100,
+            offset: 0,
+          },
+        });
+        const activeTask = response?.items?.find(
+          (candidate) =>
+            candidate.task_type === "mind_map_generate"
+            && (candidate.status === "queued" || candidate.status === "running"),
+        );
+        if (activeTask) {
+          applyTaskUpdate(activeTask);
+        }
+      } catch {
+        // The task-center API can be unavailable during initial Backend startup.
+      }
     };
 
     setTask(null);
@@ -463,6 +486,35 @@ export function ArticleMindMapPanel({
       }
     };
   }, [article.active_mind_map_artifact_id, article.id]);
+
+  useEffect(() => {
+    if (!task || (task.status !== "queued" && task.status !== "running")) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const refreshTask = async () => {
+      try {
+        const nextTask = await invoke<AgentTask | null>("get_agent_task_cmd", {
+          taskId: task.id,
+        });
+        if (!cancelled && nextTask) {
+          applyTaskUpdate(nextTask);
+        }
+      } catch {
+        // Global task events remain the fast path; the next poll can recover.
+      }
+    };
+    void refreshTask();
+    const timer = window.setInterval(() => {
+      void refreshTask();
+    }, 2_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [task?.id, task?.status]);
 
   useEffect(() => {
     setShowDetails(panelMode !== "compact");

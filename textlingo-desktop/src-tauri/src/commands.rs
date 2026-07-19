@@ -2304,8 +2304,9 @@ async fn complete_builtin_agent_turn(
     task.stage = Some("done".to_string());
     task.message = Some("Agent turn handled locally".to_string());
     task.error = None;
-    task.updated_at = now.clone();
-    task.finished_at = Some(now);
+    let finished_at = chrono::Utc::now().to_rfc3339();
+    task.updated_at = finished_at.clone();
+    task.finished_at = Some(finished_at);
     let task = persist_agent_task_backend(app_handle, &task).await?;
 
     let _ = app_handle.emit(&format!("assistant-agent-progress://{}", task.id), &task);

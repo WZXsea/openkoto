@@ -5,9 +5,10 @@ use openkoto_desktop_lib::{
         apply_worker_event_in_dir, apply_worker_event_to_task, build_assistant_worker_request,
         build_mind_map_worker_request, build_status_snapshot, build_worker_cancel_request,
         mark_running_tasks_interrupted_in_dir, parse_worker_event_line, push_worker_log,
-        reconcile_task_after_restart, resolve_runtime_provider_config, worker_bundle_is_fresh,
-        worker_event_log_entry, worker_event_timeline_request, WorkerHealth, WorkerLogEntry,
-        WorkerLogLevel, WorkerRuntimeState,
+        reconcile_orphaned_task_after_restart, reconcile_task_after_restart,
+        resolve_runtime_provider_config, worker_bundle_is_fresh, worker_event_log_entry,
+        worker_event_timeline_request, WorkerHealth, WorkerLogEntry, WorkerLogLevel,
+        WorkerRuntimeState,
     },
     storage::{
         load_legacy_agent_task_in_dir, load_legacy_artifact_in_dir, save_legacy_agent_task_in_dir,
@@ -380,6 +381,21 @@ fn worker_health_turns_unhealthy_after_timeout() {
 }
 
 #[test]
+fn worker_health_reports_starting_before_ready_event() {
+    let now = chrono::Utc::now();
+    let starting = WorkerRuntimeState {
+        worker_session_id: None,
+        started_at: Some(now),
+        last_heartbeat_at: None,
+    };
+
+    assert!(matches!(
+        starting.health(now, chrono::Duration::seconds(10)),
+        WorkerHealth::Starting
+    ));
+}
+
+#[test]
 fn running_tasks_can_be_marked_interrupted_after_restart() {
     let data_dir = temp_data_dir("interrupt");
     let task = sample_task(AgentTaskStatus::Running);
@@ -423,6 +439,26 @@ fn restart_recovery_never_reopens_terminal_state() {
     let backend_running = sample_task(AgentTaskStatus::Running);
     let recovered = reconcile_task_after_restart(&checkpoint_succeeded, &backend_running, now);
     assert!(matches!(recovered.status, AgentTaskStatus::Succeeded));
+}
+
+#[test]
+fn restart_recovery_finalizes_backend_tasks_without_local_checkpoints() {
+    let now = chrono::Utc::now();
+    for status in [AgentTaskStatus::Queued, AgentTaskStatus::Running] {
+        let backend = sample_task(status);
+        let recovered = reconcile_orphaned_task_after_restart(&backend, now);
+
+        assert!(matches!(recovered.status, AgentTaskStatus::Failed));
+        assert_eq!(
+            recovered.stage.as_deref(),
+            Some("worker_checkpoint_missing")
+        );
+        assert!(recovered
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("checkpoint")));
+        assert_eq!(recovered.finished_at, Some(now.to_rfc3339()));
+    }
 }
 
 #[test]

@@ -421,6 +421,81 @@ describe("ArticleMindMapPanel", () => {
     expect(screen.getByText("worker ready")).toBeInTheDocument();
   });
 
+  it("recovers a completed task by polling when the worker event is missed", async () => {
+    const completedTask = createTask({
+      status: "succeeded",
+      progress: 1,
+      stage: "done",
+      artifact_ids: ["artifact-1"],
+    });
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_agent_worker_status_cmd") {
+        return Promise.resolve({
+          health: "healthy",
+          logs: [],
+        });
+      }
+      if (command === "create_mind_map_task_cmd") {
+        return Promise.resolve(createTask());
+      }
+      if (command === "get_agent_task_cmd") {
+        return Promise.resolve(completedTask);
+      }
+      if (command === "get_artifact_cmd") {
+        return Promise.resolve(createArtifact(createMindMapResult({})));
+      }
+      return Promise.resolve(null);
+    });
+
+    render(<ArticleMindMapPanel article={createArticle()} targetLanguage="zh-CN" />);
+
+    await userEvent.click(screen.getByRole("button", { name: "生成思维导图" }));
+
+    expect(await screen.findByText("Core Theme", { exact: false })).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("get_agent_task_cmd", {
+      taskId: "task-1",
+    });
+  });
+
+  it("restores an active mind map task when the panel is reopened", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_agent_worker_status_cmd") {
+        return Promise.resolve({
+          health: "healthy",
+          logs: [],
+        });
+      }
+      if (command === "assistant_task_list_cmd") {
+        return Promise.resolve({
+          items: [
+            createTask({
+              status: "running",
+              progress: 0.42,
+              stage: "reading",
+              message: "Reading source windows",
+            }),
+          ],
+        });
+      }
+      if (command === "get_agent_task_cmd") {
+        return Promise.resolve(
+          createTask({
+            status: "running",
+            progress: 0.42,
+            stage: "reading",
+            message: "Reading source windows",
+          }),
+        );
+      }
+      return Promise.resolve(null);
+    });
+
+    render(<ArticleMindMapPanel article={createArticle()} targetLanguage="zh-CN" />);
+
+    expect(await screen.findByText("Reading source windows")).toBeInTheDocument();
+    expect(screen.getByText("42%")).toBeInTheDocument();
+  });
+
   it("renders a not-applicable empty state from the saved artifact", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_agent_worker_status_cmd") {

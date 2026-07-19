@@ -204,7 +204,7 @@ pub fn validate_retry_copy(
 mod tests {
     use super::*;
     use crate::{
-        assistant::commands::assistant_retry_replay_input,
+        assistant::commands::{assistant_retry_replay_input, prepare_retry_dispatch},
         types::{AgentTaskInput, AssistantConversationMessage},
     };
 
@@ -271,6 +271,20 @@ mod tests {
             retried.input.learning_item_id.as_deref(),
             Some("learning-1")
         );
+    }
+
+    #[test]
+    fn retry_dispatch_stays_queued_until_worker_started_event() {
+        let retried = assistant_task("task-retry", AgentTaskStatus::Queued);
+        let dispatching = prepare_retry_dispatch(retried);
+
+        assert!(matches!(dispatching.status, AgentTaskStatus::Queued));
+        assert_eq!(dispatching.stage.as_deref(), Some("retry_dispatch"));
+        assert_eq!(
+            dispatching.message.as_deref(),
+            Some("Dispatching retried task to local worker")
+        );
+        assert!(dispatching.started_at.is_none());
     }
 
     #[test]

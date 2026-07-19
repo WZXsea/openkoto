@@ -85,6 +85,79 @@ async fn agent_observability_enforces_timeline_lineage_actions_and_user_isolatio
     assert_eq!(status, StatusCode::OK, "{duplicate_created}");
     assert_eq!(duplicate_created, created);
 
+    let same_timestamp_task_id = format!("task-same-timestamp-{}", Uuid::new_v4());
+    let same_timestamp = (base_time + Duration::seconds(1)).to_rfc3339();
+    let (status, same_timestamp_queued) = json_request(
+        app.clone(),
+        Method::PUT,
+        &format!("/agent-tasks/{same_timestamp_task_id}"),
+        task_payload(
+            &same_timestamp_task_id,
+            material_id,
+            "queued",
+            0.0,
+            "queued",
+            base_time.to_rfc3339(),
+            None,
+        ),
+        Some(&token_a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{same_timestamp_queued}");
+    let (status, same_timestamp_running) = json_request(
+        app.clone(),
+        Method::PUT,
+        &format!("/agent-tasks/{same_timestamp_task_id}"),
+        task_payload(
+            &same_timestamp_task_id,
+            material_id,
+            "running",
+            0.5,
+            "builtin_action",
+            same_timestamp.clone(),
+            None,
+        ),
+        Some(&token_a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{same_timestamp_running}");
+    let (status, same_timestamp_succeeded) = json_request(
+        app.clone(),
+        Method::PUT,
+        &format!("/agent-tasks/{same_timestamp_task_id}"),
+        task_payload(
+            &same_timestamp_task_id,
+            material_id,
+            "succeeded",
+            1.0,
+            "done",
+            same_timestamp,
+            None,
+        ),
+        Some(&token_a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{same_timestamp_succeeded}");
+    assert_eq!(same_timestamp_succeeded["status"], "succeeded");
+    let (status, same_timestamp_timeline) = json_request(
+        app.clone(),
+        Method::GET,
+        &format!("/agent-tasks/{same_timestamp_task_id}/timeline"),
+        Value::Null,
+        Some(&token_a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{same_timestamp_timeline}");
+    assert_eq!(
+        same_timestamp_timeline
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "status_changed")
+            .count(),
+        2
+    );
+
     let (status, page) = json_request(
         app.clone(),
         Method::GET,

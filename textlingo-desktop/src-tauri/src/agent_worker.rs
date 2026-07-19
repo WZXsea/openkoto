@@ -1,7 +1,7 @@
 use crate::assistant::actions::{
     assistant_action_from_result_payload, execute_registered_assistant_action,
 };
-use crate::assistant::dto::AssistantTimelineIngestRequest;
+use crate::assistant::dto::{AssistantTaskListQuery, AssistantTimelineIngestRequest};
 use crate::backend_client::{BackendClient, PatchMaterialRequest};
 use crate::moonshot::moonshot_base_url;
 use crate::storage::{
@@ -18,6 +18,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -66,7 +67,11 @@ impl Default for WorkerRuntimeState {
 impl WorkerRuntimeState {
     pub fn health(&self, now: DateTime<Utc>, timeout: Duration) -> WorkerHealth {
         if self.worker_session_id.is_none() {
-            return WorkerHealth::Stopped;
+            return if self.started_at.is_some() {
+                WorkerHealth::Starting
+            } else {
+                WorkerHealth::Stopped
+            };
         }
         match self.last_heartbeat_at {
             Some(last_heartbeat) if now - last_heartbeat <= timeout => WorkerHealth::Healthy,
@@ -379,15 +384,6 @@ impl AgentWorkerManager {
             .path()
             .app_data_dir()
             .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-        if let Err(error) = tauri::async_runtime::block_on(recover_worker_checkpoints_from_backend(
-            app_handle, &data_dir,
-        )) {
-            self.record_log(
-                WorkerLogLevel::Warn,
-                "recovery",
-                format!("failed to recover worker checkpoints: {error}"),
-            );
-        }
         spawn_stdout_listener(
             stdout,
             app_handle.clone(),
@@ -1270,6 +1266,32 @@ fn spawn_stdout_listener(
                 &logs,
             );
         }
+
+        *runtime_state.lock().unwrap() = WorkerRuntimeState::default();
+        {
+            let mut guard = logs.lock().unwrap();
+            push_worker_log(
+                &mut guard,
+                WorkerLogLevel::Warn,
+                "manager",
+                "agent worker process exited",
+            );
+        }
+        emit_status_snapshot(&app_handle, &runtime_state, &logs);
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) =
+                recover_worker_checkpoints_from_backend(&app_handle, &data_dir).await
+            {
+                let mut guard = logs.lock().unwrap();
+                push_worker_log(
+                    &mut guard,
+                    WorkerLogLevel::Error,
+                    "recovery",
+                    format!("failed to finalize tasks after worker exit: {error}"),
+                );
+            }
+            emit_status_snapshot(&app_handle, &runtime_state, &logs);
+        });
     });
 }
 
@@ -1497,6 +1519,94 @@ pub async fn recover_worker_checkpoints_from_backend(
         persist_worker_task_checkpoint_after_backend(data_dir, Ok(task))?;
     }
     Ok(())
+}
+
+pub async fn recover_orphaned_worker_tasks_from_backend(
+    app_handle: &AppHandle,
+    data_dir: &Path,
+    app_started_at: DateTime<Utc>,
+) -> Result<Vec<String>, String> {
+    let checkpoint_task_ids = list_worker_task_checkpoints_in_dir(data_dir)?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let config = load_config(app_handle)?.unwrap_or_default();
+    let client = BackendClient::from_app_config(&config).map_err(|error| error.to_string())?;
+    let mut recovered_task_ids = Vec::new();
+    let mut active_tasks = Vec::new();
+
+    for status in ["queued", "running"] {
+        active_tasks.extend(list_backend_tasks_by_status(&client, status).await?);
+    }
+
+    for backend_task in active_tasks {
+        if checkpoint_task_ids.contains(&backend_task.id)
+            || !task_updated_before(&backend_task, app_started_at)
+        {
+            continue;
+        }
+        let task_id = backend_task.id.clone();
+        let recovered = reconcile_orphaned_task_after_restart(&backend_task, Utc::now());
+        let recovered = client
+            .save_agent_task(&recovered)
+            .await
+            .map_err(|error| error.to_string())?;
+        persist_worker_task_checkpoint_after_backend(data_dir, Ok(recovered))?;
+        recovered_task_ids.push(task_id);
+    }
+
+    Ok(recovered_task_ids)
+}
+
+async fn list_backend_tasks_by_status(
+    client: &BackendClient,
+    status: &str,
+) -> Result<Vec<AgentTask>, String> {
+    let mut tasks = Vec::new();
+    let mut offset = 0_i64;
+    loop {
+        let page = client
+            .list_agent_tasks(&AssistantTaskListQuery {
+                status: Some(status.to_string()),
+                limit: Some(200),
+                offset: Some(offset),
+                ..Default::default()
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let item_count = page.items.len() as i64;
+        tasks.extend(page.items);
+        offset += item_count;
+        if item_count == 0 || offset >= page.total {
+            break;
+        }
+    }
+    Ok(tasks)
+}
+
+fn task_updated_before(task: &AgentTask, cutoff: DateTime<Utc>) -> bool {
+    DateTime::parse_from_rfc3339(&task.updated_at)
+        .map(|updated_at| updated_at.with_timezone(&Utc) < cutoff)
+        .unwrap_or(true)
+}
+
+pub fn reconcile_orphaned_task_after_restart(
+    backend_task: &AgentTask,
+    now: DateTime<Utc>,
+) -> AgentTask {
+    if is_terminal_task_status(&backend_task.status) {
+        return backend_task.clone();
+    }
+
+    let mut failed = backend_task.clone();
+    failed.status = AgentTaskStatus::Failed;
+    failed.stage = Some("worker_checkpoint_missing".to_string());
+    failed.message = Some("Task could not be resumed after app restart".to_string());
+    failed.error = Some(
+        "Local agent worker checkpoint is missing; retry the task to run it again".to_string(),
+    );
+    failed.updated_at = now.to_rfc3339();
+    failed.finished_at = Some(failed.updated_at.clone());
+    failed
 }
 
 pub fn reconcile_task_after_restart(

@@ -85,11 +85,11 @@ pub async fn assistant_task_retry_cmd(
 ) -> Result<AssistantTaskView, AssistantCommandError> {
     let service = service_for_app(&app_handle)?;
     let retried = service.retry(&task_id).await?;
-    let running = mark_retry_running(&service, retried).await?;
-    match dispatch_retry(&app_handle, &worker_manager, &running).await {
-        Ok(()) => service.task_view(&running.id).await,
+    let dispatching = service.save_task(&prepare_retry_dispatch(retried)).await?;
+    match dispatch_retry(&app_handle, &worker_manager, &dispatching).await {
+        Ok(()) => service.task_view(&dispatching.id).await,
         Err(error) => {
-            let mut failed = running;
+            let mut failed = dispatching;
             failed.status = AgentTaskStatus::Failed;
             failed.stage = Some("retry_failed_to_start".to_string());
             failed.error = Some(error.message.clone());
@@ -101,16 +101,13 @@ pub async fn assistant_task_retry_cmd(
     }
 }
 
-async fn mark_retry_running(
-    service: &AssistantService,
-    mut task: AgentTask,
-) -> Result<AgentTask, AssistantCommandError> {
-    task.status = AgentTaskStatus::Running;
+pub fn prepare_retry_dispatch(mut task: AgentTask) -> AgentTask {
+    // Writing the request to the worker is not proof that execution started.
+    // Keep the task queued until the worker acknowledges it with task.started.
     task.stage = Some("retry_dispatch".to_string());
     task.message = Some("Dispatching retried task to local worker".to_string());
     task.updated_at = chrono::Utc::now().to_rfc3339();
-    task.started_at = Some(task.updated_at.clone());
-    service.save_task(&task).await
+    task
 }
 
 async fn dispatch_retry(

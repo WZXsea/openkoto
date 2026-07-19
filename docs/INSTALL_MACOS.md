@@ -1,8 +1,8 @@
-# OpenKoto 0.12.4 macOS 安装与数据说明
+# OpenKoto 0.12.7 macOS 安装与数据说明
 ## 适用版本
-本页适用于 PR-14 块拖动动效与纵向排序优化预发布版 `OpenKoto Desktop_0.12.4_aarch64.dmg`，仅支持 Apple Silicon Mac。Intel 用户应等待对应架构的发行资产。
+本页适用于 Assistant 内置 Provider 运行时修复版 `OpenKoto-Desktop-0.12.7-arm64.dmg`，包含此前的 Assistant Worker 可靠性、重试确认、进度动效与 PR-14 块拖动优化，仅支持 Apple Silicon Mac。Intel 用户应等待对应架构的发行资产。
 ## 安装
-1. 使用本地验证产物，或从后续发布的 0.12.4 Release 下载 `.dmg` 和 `SHA256SUMS`。
+1. 使用本地验证产物，或从后续发布的 0.12.7 Release 下载 `.dmg` 和 `SHA256SUMS`。
 2. 打开 `.dmg`，将 `OpenKoto Desktop.app` 拖入 `Applications`。
 3. 从“应用程序”打开 `OpenKoto Desktop`。
 4. 应用会自动启动内置 PostgreSQL 和 Backend，用户无需安装 Docker、PostgreSQL、Node.js，也无需配置端口。
@@ -12,7 +12,7 @@
 发布资产的 SHA-256 记录在同一 Release 的 `SHA256SUMS` 中。
 终端校验命令：
 ```bash
-shasum -a 256 "OpenKoto Desktop_0.12.4_aarch64.dmg"
+shasum -a 256 "OpenKoto-Desktop-0.12.7-arm64.dmg"
 ```
 ## 运行方式
 - 用户可见 Backend 固定为 `http://127.0.0.1:19421`。

@@ -826,7 +826,7 @@ pub(crate) async fn upsert_worker_task(
                     "source_updated_at": payload.updated_at,
                     "legacy_status": legacy_status,
                 }),
-                Some(format!("worker:{}:{}", payload.id, payload.updated_at)),
+                Some(worker_task_event_idempotency_key(&payload)),
                 None,
             )
             .await?;
@@ -885,7 +885,7 @@ pub(crate) async fn upsert_worker_task(
                 "initial_terminal_compatibility": is_terminal(&status),
                 "legacy_status": legacy_status,
             }),
-            Some(format!("worker:{}:{}", payload.id, payload.updated_at)),
+            Some(worker_task_event_idempotency_key(&payload)),
             None,
         )
         .await?;
@@ -1410,6 +1410,19 @@ fn worker_payload_same(existing: &TaskRecord, payload: &AgentTaskDto, status: &s
             .artifact_ids
             .iter()
             .all(|id| existing_artifact_ids.contains(id))
+}
+
+fn worker_task_event_idempotency_key(payload: &AgentTaskDto) -> String {
+    let fingerprint = serde_json::to_value(payload)
+        .map(|value| sha256_json(&value))
+        .unwrap_or_else(|_| {
+            sha256_json(&json!({
+                "id": payload.id,
+                "status": payload.status,
+                "updated_at": payload.updated_at,
+            }))
+        });
+    format!("worker:{}:{fingerprint}", payload.id)
 }
 
 fn is_terminal(status: &str) -> bool {

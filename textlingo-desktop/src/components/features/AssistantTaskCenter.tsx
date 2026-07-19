@@ -52,6 +52,72 @@ function taskTitle(task: AssistantTask): string {
   return TASK_TYPE_LABELS[task.task_type] || task.task_type || "Assistant 任务";
 }
 
+function isActiveTask(status: AssistantTaskStatus): status is "queued" | "running" {
+  return status === "queued" || status === "running";
+}
+
+function progressPercentage(progress: number): number {
+  return Math.round(Math.min(1, Math.max(0, progress)) * 100);
+}
+
+function TaskStatusBadge({ status, announce = false }: { status: AssistantTaskStatus; announce?: boolean }) {
+  const isActive = isActiveTask(status);
+  return (
+    <span
+      role={announce ? "status" : undefined}
+      aria-live={announce ? "polite" : undefined}
+      aria-label={announce ? STATUS_LABELS[status] : undefined}
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] ${STATUS_STYLES[status]}`}
+    >
+      {isActive && (
+        <Loader2
+          aria-hidden="true"
+          size={11}
+          className="motion-safe:animate-spin motion-reduce:animate-none"
+          data-testid="assistant-active-status-indicator"
+        />
+      )}
+      <span>{STATUS_LABELS[status]}</span>
+    </span>
+  );
+}
+
+function TaskProgress({
+  progress,
+  status,
+  label,
+}: {
+  progress: number;
+  status: AssistantTaskStatus;
+  label: string;
+}) {
+  const percentage = progressPercentage(progress);
+  const isActive = isActiveTask(status);
+  return (
+    <span
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percentage}
+      aria-valuetext={`${STATUS_LABELS[status]}，已完成 ${percentage}%`}
+      className="relative block h-1 overflow-hidden rounded-full bg-muted"
+    >
+      <span
+        className="block h-full rounded-full bg-primary transition-[width] duration-300 motion-reduce:transition-none"
+        style={{ width: `${percentage}%` }}
+      />
+      {isActive && (
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 bg-gradient-to-r from-transparent via-primary/25 to-transparent motion-safe:animate-pulse motion-reduce:hidden"
+          data-testid="assistant-active-progress-indicator"
+        />
+      )}
+    </span>
+  );
+}
+
 function durationLabel(start?: string | null, end?: string | null): string | null {
   if (!start) return null;
   const startMs = Date.parse(start);
@@ -101,8 +167,8 @@ export function AssistantTaskCenter({
                   return (
                     <div key={task.id} role="listitem" className="mb-1.5">
                     <button type="button" onClick={() => state.setSelectedTaskId(task.id)} className={`w-full rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${selected ? "border-primary/35 bg-primary/5" : "border-transparent hover:border-border hover:bg-muted/35"}`}>
-                      <span className="flex items-start justify-between gap-2"><span className="min-w-0"><span className="block truncate text-sm font-medium">{taskTitle(task)}</span><span className="mt-0.5 block truncate text-xs text-muted-foreground">{articleTitles.get(task.article_id) || task.article_id || "未关联素材"}</span></span><span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${STATUS_STYLES[task.status]}`}>{STATUS_LABELS[task.status]}</span></span>
-                      {(task.status === "queued" || task.status === "running") && <span className="mt-3 block h-1 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary transition-all" style={{ width: `${Math.round(task.progress * 100)}%` }} /></span>}
+                      <span className="flex items-start justify-between gap-2"><span className="min-w-0"><span className="block truncate text-sm font-medium">{taskTitle(task)}</span><span className="mt-0.5 block truncate text-xs text-muted-foreground">{articleTitles.get(task.article_id) || task.article_id || "未关联素材"}</span></span><TaskStatusBadge status={task.status} /></span>
+                      {isActiveTask(task.status) && <span className="mt-3 block"><TaskProgress progress={task.progress} status={task.status} label={`${taskTitle(task)}列表进度`} /></span>}
                       <span className="mt-2 block text-[11px] text-muted-foreground">{formatDate(task.updated_at)}</span>
                     </button>
                     </div>
@@ -118,15 +184,15 @@ export function AssistantTaskCenter({
               : (
                 <div className="mx-auto max-w-4xl space-y-5" data-testid={`assistant-task-detail-${detail.id}`}>
                   <header className="flex flex-wrap items-start justify-between gap-4">
-                    <div className="min-w-0"><div className="mb-2 flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-xs ${STATUS_STYLES[detail.status]}`}>{STATUS_LABELS[detail.status]}</span>{detail.retry_attempt != null && <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">尝试 {detail.retry_attempt}</span>}</div><h2 className="break-words text-xl font-semibold">{taskTitle(detail)}</h2><p className="mt-1 break-words text-sm text-muted-foreground">{articleTitles.get(detail.article_id) || detail.article_id}</p></div>
+                    <div className="min-w-0"><div className="mb-2 flex flex-wrap items-center gap-2"><TaskStatusBadge status={detail.status} announce />{detail.retry_attempt != null && <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">尝试 {detail.retry_attempt}</span>}</div><h2 className="break-words text-xl font-semibold">{taskTitle(detail)}</h2><p className="mt-1 break-words text-sm text-muted-foreground">{articleTitles.get(detail.article_id) || detail.article_id}</p></div>
                     <div className="flex gap-2">
-                      {["queued", "running"].includes(detail.status) && <Button variant="outline" size="sm" onClick={() => void state.cancelSelected()} disabled={state.pendingAction !== null} className="gap-1.5"><XCircle size={15} />{state.pendingAction === "cancel" ? "取消中" : "取消任务"}</Button>}
-                      {["failed", "cancelled"].includes(detail.status) && <Button size="sm" onClick={() => void state.retrySelected()} disabled={state.pendingAction !== null} className="gap-1.5"><RotateCcw size={15} />{state.pendingAction === "retry" ? "重试中" : "重试"}</Button>}
+                      {["queued", "running"].includes(detail.status) && <Button variant="outline" size="sm" onClick={() => void state.cancelSelected()} disabled={state.pendingAction !== null} className="gap-1.5">{state.pendingAction === "cancel" ? <Loader2 aria-hidden="true" size={15} className="motion-safe:animate-spin motion-reduce:animate-none" /> : <XCircle size={15} />}{state.pendingAction === "cancel" ? "取消中" : "取消任务"}</Button>}
+                      {["failed", "cancelled"].includes(detail.status) && <Button size="sm" onClick={() => void state.retrySelected()} disabled={state.pendingAction !== null} className="gap-1.5">{state.pendingAction === "retry" ? <Loader2 aria-hidden="true" size={15} className="motion-safe:animate-spin motion-reduce:animate-none" /> : <RotateCcw size={15} />}{state.pendingAction === "retry" ? "重试中" : "重试"}</Button>}
                     </div>
                   </header>
 
                   <section className="grid gap-3 sm:grid-cols-3" aria-label="运行摘要">
-                    <div className="rounded-xl border border-border bg-card p-3"><p className="text-xs text-muted-foreground">进度</p><p className="mt-1 text-lg font-semibold tabular-nums">{Math.round(detail.progress * 100)}%</p></div>
+                    <div className="rounded-xl border border-border bg-card p-3"><p className="text-xs text-muted-foreground">进度</p><p className="mt-1 text-lg font-semibold tabular-nums">{progressPercentage(detail.progress)}%</p><span className="mt-2 block"><TaskProgress progress={detail.progress} status={detail.status} label={`${taskTitle(detail)}详情进度`} /></span></div>
                     <div className="rounded-xl border border-border bg-card p-3"><p className="text-xs text-muted-foreground">运行时长</p><p className="mt-1 text-lg font-semibold">{durationLabel(detail.started_at, detail.finished_at) || "—"}</p></div>
                     <div className="rounded-xl border border-border bg-card p-3"><p className="text-xs text-muted-foreground">产物</p><p className="mt-1 text-lg font-semibold tabular-nums">{state.artifacts.length}</p></div>
                   </section>
