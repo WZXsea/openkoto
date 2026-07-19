@@ -41,7 +41,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.19.0
           cache: npm
           cache-dependency-path: |
             textlingo-desktop/package-lock.json
@@ -66,6 +66,11 @@ jobs:
       - name: Build and test agent worker
         run: npm run typecheck && npm run test && npm run build
         working-directory: ./textlingo-desktop/agent-worker
+
+      - name: Verify Pi agent runtime guardrails
+        run: |
+          EXPECTED_VERSION="$(node -p "require('./textlingo-desktop/package.json').version")" \
+            bash script/verify_pr12_assistant_observability.sh
 
       - name: Typecheck
         run: npm run typecheck
@@ -149,7 +154,7 @@ jobs:
       - name: setup node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.19.0
 
       - name: setup python
         uses: actions/setup-python@v6
@@ -314,6 +319,20 @@ jobs:
           test -x "$APP/Contents/Resources/node/bin/node"
           test -f "$APP/Contents/Resources/agent-worker/package.json"
           test -f "$APP/Contents/Resources/agent-worker/dist/index.js"
+          test -f "$APP/Contents/Resources/agent-worker/dist/piRuntime.js"
+          APP_ROOT="$PWD/$APP"
+          "$APP_ROOT/Contents/Resources/node/bin/node" -e '
+            const [major, minor] = process.versions.node.split(".").map(Number);
+            if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
+          '
+          (
+            cd "$APP_ROOT/Contents/Resources/agent-worker"
+            "$APP_ROOT/Contents/Resources/node/bin/node" --input-type=module -e '
+              await import("@earendil-works/pi-agent-core");
+              await import("@earendil-works/pi-ai");
+            '
+          )
+          grep -Eq '"pi-agent-core"' "$APP/Contents/Resources/agent-worker/dist/index.js"
           codesign --verify --deep --strict --verbose=2 "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
           xcrun stapler validate "$APP"

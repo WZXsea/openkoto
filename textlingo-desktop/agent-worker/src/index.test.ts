@@ -18,7 +18,7 @@ describe("worker host", () => {
       event: "worker.ready",
       payload: {
         worker_session_id: "worker-1",
-        runtime: "direct-provider",
+        runtime: "pi-agent-core",
         version: "0.1.0",
       },
     });

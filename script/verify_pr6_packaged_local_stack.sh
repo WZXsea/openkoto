@@ -164,6 +164,27 @@ smoke_bundled_agent_worker() {
 
   output_file="$(mktemp /tmp/openkoto-pr6-worker.XXXXXX)"
 
+  "$node_path" -e '
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
+  ' || fail "Bundled Node must satisfy Pi runtime requirement >=22.19.0"
+  (
+    cd "$worker_dir"
+    "$node_path" --input-type=module -e '
+      await import("@earendil-works/pi-agent-core");
+      await import("@earendil-works/pi-ai");
+    '
+  ) || fail "Bundled Node cannot resolve Pi agent runtime modules"
+  test -f "$worker_dir/dist/piRuntime.js" \
+    || fail "Bundled agent-worker is missing dist/piRuntime.js"
+  if rg -q '@opencode-ai/sdk|createOpencode|runOpenCodePrompt' \
+    "$worker_dir/package.json" "$worker_dir/dist"; then
+    fail "Bundled agent-worker contains the external OpenCode runtime"
+  fi
+  if rg -q '(^|[^[:alnum:]_])fetch[[:space:]]*\(' "$worker_dir/dist"; then
+    fail "Bundled agent-worker contains a raw fetch provider path"
+  fi
+
   cleanup_worker_smoke() {
     if [ -n "$worker_pid" ]; then
       kill "$worker_pid" >/dev/null 2>&1 || true
@@ -176,9 +197,9 @@ smoke_bundled_agent_worker() {
   worker_pid="$!"
 
   for _ in $(seq 1 40); do
-    if grep -q "worker.ready" "$output_file"; then
+    if grep -Eq '"event":"worker.ready".*"runtime":"pi-agent-core"' "$output_file"; then
       cleanup_worker_smoke
-      info "Bundled agent-worker smoke passed"
+      info "Bundled Pi agent-worker smoke passed"
       return
     fi
     if ! kill -0 "$worker_pid" >/dev/null 2>&1; then
@@ -275,6 +296,10 @@ if [ ! -x "$RESOURCE_NODE_PATH" ]; then
   fail "Bundled Node runtime is missing or not executable: $RESOURCE_NODE_PATH"
 fi
 "$ROOT_DIR/$RESOURCE_NODE_PATH" --version >/dev/null
+"$ROOT_DIR/$RESOURCE_NODE_PATH" -e '
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
+' || fail "Bundled Node must satisfy Pi runtime requirement >=22.19.0"
 info "Bundled Node runtime is executable"
 
 info "Running backend cargo check"

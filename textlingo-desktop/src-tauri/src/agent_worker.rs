@@ -30,10 +30,12 @@ use uuid::Uuid;
 const WORKER_HEALTH_TIMEOUT_SECONDS: i64 = 45;
 const WORKER_LOG_LIMIT: usize = 100;
 const WORKER_ENTRYPOINT: &str = "dist/index.js";
-const REQUIRED_WORKER_OUTPUTS: [&str; 5] = [
+const WORKER_RUNTIME: &str = "pi-agent-core";
+const REQUIRED_WORKER_OUTPUTS: [&str; 6] = [
     "index.js",
     "assistantTask.js",
     "mindMapTask.js",
+    "piRuntime.js",
     "protocol.js",
     "runtime.js",
 ];
@@ -768,6 +770,12 @@ fn apply_worker_runtime_event(
 ) -> Result<(), String> {
     match event {
         WorkerEvent::WorkerReady { payload } => {
+            if payload.runtime != WORKER_RUNTIME {
+                return Err(format!(
+                    "Unsupported agent worker runtime: expected {}, received {}",
+                    WORKER_RUNTIME, payload.runtime
+                ));
+            }
             runtime_state.worker_session_id = Some(payload.worker_session_id.clone());
             runtime_state.last_heartbeat_at = Some(
                 DateTime::parse_from_rfc3339(&payload.timestamp)

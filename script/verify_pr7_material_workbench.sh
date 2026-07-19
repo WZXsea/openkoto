@@ -70,7 +70,7 @@ cleanup_verify_database() {
 prepare_agent_worker() {
   info "building agent worker before Desktop Rust checks"
   npm --prefix textlingo-desktop run build:agent-worker
-  for worker_file in index.js assistantTask.js mindMapTask.js protocol.js runtime.js; do
+  for worker_file in index.js assistantTask.js mindMapTask.js piRuntime.js protocol.js runtime.js; do
     test -f "textlingo-desktop/agent-worker/dist/${worker_file}" \
       || fail "agent worker build is missing textlingo-desktop/agent-worker/dist/${worker_file}"
   done
@@ -187,6 +187,7 @@ if [ "$BUILD_APP" -eq 1 ]; then
   dmg_path="$(find textlingo-desktop/src-tauri/target -path '*/release/bundle/dmg/*.dmg' -type f -print -quit)"
   [ -n "$app_path" ] || fail "packaged build completed without a macOS app"
   [ -n "$dmg_path" ] || fail "packaged build completed without a DMG"
+  app_path="$(cd "$app_path" && pwd)"
 
   info "verifying packaged runtime resources"
   test -x "$app_path/Contents/Resources/backend/openkoto-backend" || fail "backend sidecar is missing from app bundle"
@@ -195,6 +196,20 @@ if [ "$BUILD_APP" -eq 1 ]; then
   test -x "$app_path/Contents/Resources/node/bin/node" || fail "Node.js is missing from app bundle"
   test -f "$app_path/Contents/Resources/agent-worker/package.json" || fail "agent worker package is missing from app bundle"
   test -f "$app_path/Contents/Resources/agent-worker/dist/index.js" || fail "agent worker build is missing from app bundle"
+  test -f "$app_path/Contents/Resources/agent-worker/dist/piRuntime.js" || fail "Pi runtime build is missing from app bundle"
+  app_node="$app_path/Contents/Resources/node/bin/node"
+  app_worker="$app_path/Contents/Resources/agent-worker"
+  "$app_node" -e '
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
+  ' || fail "packaged Node must satisfy Pi runtime requirement >=22.19.0"
+  (
+    cd "$app_worker"
+    "$app_node" --input-type=module -e '
+      await import("@earendil-works/pi-agent-core");
+      await import("@earendil-works/pi-ai");
+    '
+  ) || fail "packaged Node cannot resolve Pi runtime modules"
 
   info "verifying DMG image and bundled app"
   hdiutil verify "$dmg_path" >/dev/null
@@ -215,6 +230,20 @@ if [ "$BUILD_APP" -eq 1 ]; then
   test -x "$dmg_app/Contents/Resources/postgres/bin/postgres" || fail "DMG app is missing PostgreSQL"
   test -x "$dmg_app/Contents/Resources/node/bin/node" || fail "DMG app is missing Node.js"
   test -f "$dmg_app/Contents/Resources/agent-worker/dist/index.js" || fail "DMG app is missing agent worker build"
+  test -f "$dmg_app/Contents/Resources/agent-worker/dist/piRuntime.js" || fail "DMG app is missing Pi runtime build"
+  dmg_node="$dmg_app/Contents/Resources/node/bin/node"
+  dmg_worker="$dmg_app/Contents/Resources/agent-worker"
+  "$dmg_node" -e '
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
+  ' || fail "DMG bundled Node must satisfy Pi runtime requirement >=22.19.0"
+  (
+    cd "$dmg_worker"
+    "$dmg_node" --input-type=module -e '
+      await import("@earendil-works/pi-agent-core");
+      await import("@earendil-works/pi-ai");
+    '
+  ) || fail "DMG bundled Node cannot resolve Pi runtime modules"
   cleanup_dmg_mount
   mounted=0
 fi

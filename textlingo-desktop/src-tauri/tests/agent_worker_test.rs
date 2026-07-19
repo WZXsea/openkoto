@@ -804,7 +804,7 @@ fn worker_ready_event_updates_runtime_state() {
             "payload": {
                 "worker_session_id": "worker-ready-1",
                 "timestamp": "2026-03-07T00:00:00Z",
-                "runtime": "opencode",
+                "runtime": "pi-agent-core",
                 "version": "0.1.0"
             }
         })
@@ -819,6 +819,32 @@ fn worker_ready_event_updates_runtime_state() {
         Some("worker-ready-1".to_string())
     );
     assert!(runtime_state.started_at.is_some());
+}
+
+#[test]
+fn worker_ready_event_rejects_non_pi_runtime() {
+    let mut runtime_state = WorkerRuntimeState::default();
+    let data_dir = temp_data_dir("worker-ready-runtime-mismatch");
+
+    let event = parse_worker_event_line(
+        &serde_json::json!({
+            "type": "event",
+            "event": "worker.ready",
+            "payload": {
+                "worker_session_id": "worker-ready-legacy",
+                "timestamp": "2026-03-07T00:00:00Z",
+                "runtime": "direct-provider",
+                "version": "0.1.0"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let error = apply_worker_event_in_dir(&data_dir, &mut runtime_state, event).unwrap_err();
+
+    assert!(error.contains("expected pi-agent-core, received direct-provider"));
+    assert_eq!(runtime_state.worker_session_id, None);
 }
 
 #[test]
@@ -851,6 +877,7 @@ fn worker_bundle_is_stale_when_required_output_is_missing() {
         "index",
         "assistantTask",
         "mindMapTask",
+        "piRuntime",
         "protocol",
         "runtime",
     ] {
@@ -872,6 +899,7 @@ fn worker_bundle_is_stale_when_source_is_newer_than_dist() {
         "index",
         "assistantTask",
         "mindMapTask",
+        "piRuntime",
         "protocol",
         "runtime",
     ] {
